@@ -781,7 +781,14 @@ function SettingsTab({ appId, token, storage, streak }) {
   const [topics, setTopics] = useState('')
   const [hour, setHour] = useState(6)
   const [minute, setMinute] = useState(0)
-  const [useLocalTz, setUseLocalTz] = useState(false)
+  // Default to local time on first open: the bundled schedule.json
+  // seed ships timezone:null (= UTC) because the installer has no way
+  // to know the user's zone, but "6am local" is what almost everyone
+  // actually wants. We flip the toggle on if there is no saved
+  // schedule yet OR if the saved schedule explicitly has timezone set.
+  // A saved schedule with timezone:null is respected (the user picked
+  // UTC deliberately).
+  const [useLocalTz, setUseLocalTz] = useState(true)
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
   const [model, setModel] = useState(DEFAULT_MODEL)
   const [verbosity, setVerbosity] = useState(DEFAULT_VERBOSITY)
@@ -824,8 +831,12 @@ function SettingsTab({ appId, token, storage, streak }) {
       if (sched) {
         setHour(sched.hour ?? 6)
         setMinute(sched.minute ?? 0)
+        // Saved schedule: respect whatever the user picked. timezone
+        // set => local-time mode; timezone null => deliberate UTC.
         setUseLocalTz(!!sched.timezone)
       }
+      // No `sched`: first open, leave the local-time default from
+      // useState — see the comment by the useState call above.
       if (verb && typeof verb.level === 'string') {
         const known = VERBOSITY_OPTIONS.find((v) => v.id === verb.level)
         setVerbosity(known ? known.id : DEFAULT_VERBOSITY)
@@ -909,8 +920,16 @@ function SettingsTab({ appId, token, storage, streak }) {
   }, [storage])
 
   const onTimeChange = useCallback((e) => {
-    const [h, m] = e.target.value.split(':').map(Number)
-    setHour(h); setMinute(m)
+    // Clearing the <input type="time"> yields "" which splits to [""].
+    // Number("") is NaN, which would corrupt schedule.json and break
+    // the cron-sync downstream. Drop NaN values silently — the input
+    // will repaint with the last good value.
+    const [hStr, mStr] = e.target.value.split(':')
+    const h = Number(hStr)
+    const m = Number(mStr)
+    if (Number.isFinite(h) && Number.isFinite(m)) {
+      setHour(h); setMinute(m)
+    }
   }, [])
 
   const handleRunNow = useCallback(async () => {
@@ -1080,9 +1099,10 @@ function SettingsTab({ appId, token, storage, streak }) {
       <div style={S.settingsSection}>
         <label style={S.label}>Dream time</label>
         <p style={S.note}>
-          When the dreamer runs each night. Default is 06:00 local-ish
-          (UTC) so the report is waiting when you wake up. Schedule
-          changes apply within 10 minutes.
+          When the dreamer runs each night. Default is 06:00 in your
+          local time so the report is waiting when you wake up. Uncheck
+          “use my local time” to pin to UTC instead. Schedule changes
+          apply within 10 minutes.
         </p>
         <div style={S.timeRow}>
           <input
