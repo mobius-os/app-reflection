@@ -27,7 +27,7 @@ Everything is editable from the **Settings** tab inside the app:
 - **Editorial brief** — what the dreamer should notice, what to weight, what to skip. This is the highest-leverage knob. Write it in your own voice.
 - **Verbosity** — terse, standard, or chatty. Standard is a few paragraphs with 2–4 suggestions and a closing observation.
 - **Agent / Model** — Claude or Codex; pick any model from a connected provider.
-- **Dream time** — when the cron fires. Defaults to 06:00 UTC (with your local equivalent shown). Tick "use my local time" if you'd rather pin to your wall clock and let DST handle itself.
+- **Dream time** — when the cron fires. Defaults to 06:00 in your local time (with DST handled automatically). Untick "use my local time" to pin to UTC instead.
 
 Schedule changes take effect within 10 minutes (the cron sync runs every 10).
 
