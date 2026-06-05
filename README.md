@@ -40,7 +40,6 @@ The dreamer runs with **full tools and a real token** — it is the agent, trust
 
 From the app's **Settings** tab:
 
-- **Verbosity** — terse, standard, or chatty.
 - **Agent / Model** — Claude or Codex; any model from a connected provider.
 - **Dream time** — when the cron fires. Defaults to 06:00 local (DST handled); untick "use my local time" to pin to UTC.
 
