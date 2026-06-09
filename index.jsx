@@ -36,7 +36,6 @@ const VERBOSITY_OPTIONS = [
   { id: 'chatty', label: 'Chatty', hint: 'A longer narrative with more pattern-spotting.' },
 ]
 const DEFAULT_VERBOSITY = 'standard'
-const DEFAULT_AGENT_ID = 'builder'
 const PROVIDER_LABELS = {
   claude: 'Claude Code',
   codex: 'OpenAI Codex',
@@ -121,15 +120,6 @@ function hourClockLabel(hour) {
   const d = new Date()
   d.setHours(hour, 0, 0, 0)
   return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-}
-
-async function fetchAgents(token) {
-  const r = await fetch('/api/agents', {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!r.ok) throw new Error(`agents ${r.status}`)
-  const data = await r.json()
-  return Array.isArray(data.agents) ? data.agents : []
 }
 
 function buildModelGroups(payload) {
@@ -568,13 +558,13 @@ button.dr-card { cursor: pointer; }
   background: var(--bg); border: 1px solid var(--border); margin-top: 2px;
 }
 .dr-custom-cron-note .dr-time-row { margin-top: 10px; }
-.dr-agent-select {
+.dr-select {
   width: 100%; min-height: 42px; padding: 9px 12px;
   border: 1px solid var(--border); border-radius: 10px;
   background: var(--bg); color: var(--text); font-size: 14px;
   font-family: var(--font); font-weight: 650; outline: none;
 }
-.dr-agent-meta {
+.dr-meta {
   font-size: 12px; color: var(--muted); line-height: 1.5;
   padding: 10px 12px; border-radius: 11px;
   background: var(--bg); border: 1px solid var(--border);
@@ -1211,9 +1201,6 @@ function SettingsTab({ appId, storage, online, token }) {
   const [hour, setHour] = useState(DEFAULT_HOUR)
   const [excludeApps, setExcludeApps] = useState([])
   const [settingsExtra, setSettingsExtra] = useState({})
-  const [agents, setAgents] = useState([])
-  const [agentId, setAgentId] = useState(DEFAULT_AGENT_ID)
-  const [agentsPhase, setAgentsPhase] = useState('loading')
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
   const [model, setModel] = useState(DEFAULT_MODEL)
   const [modelGroups, setModelGroups] = useState(null)
@@ -1251,9 +1238,6 @@ function SettingsTab({ appId, storage, online, token }) {
           setCronIsCustom(false)
         }
         if (Array.isArray(s.exclude_apps)) setExcludeApps(s.exclude_apps)
-        if (typeof s.agent_id === 'string' && s.agent_id.trim()) {
-          setAgentId(s.agent_id.trim())
-        }
         if (typeof s.provider === 'string' && s.provider.trim()) {
           setProvider(s.provider.trim())
         }
@@ -1266,27 +1250,6 @@ function SettingsTab({ appId, storage, online, token }) {
     })()
     return () => { cancelled = true }
   }, [storage])
-
-  useEffect(() => {
-    let cancelled = false
-    setAgentsPhase('loading')
-    fetchAgents(token)
-      .then((rows) => {
-        if (cancelled) return
-        setAgents(rows)
-        setAgentsPhase('ready')
-        setAgentId((current) => {
-          if (!rows.length || rows.some((agent) => agent.id === current)) return current
-          const fallback = rows.find((agent) => agent.id === DEFAULT_AGENT_ID) || rows[0]
-          return fallback.id
-        })
-      })
-      .catch(() => {
-        if (cancelled) return
-        setAgentsPhase('error')
-      })
-    return () => { cancelled = true }
-  }, [token])
 
   useEffect(() => {
     let cancelled = false
@@ -1322,7 +1285,6 @@ function SettingsTab({ appId, storage, online, token }) {
     // Preserve a custom cron verbatim if the user never touched the hour;
     // otherwise write the standard "0 <h> * * *".
     const cron = cronIsCustom ? rawCron : buildCron(hour)
-    const selectedAgent = agents.find((agent) => agent.id === agentId) || null
     try {
       await storage.putJSON('settings.json', {
         ...settingsExtra,
@@ -1331,10 +1293,9 @@ function SettingsTab({ appId, storage, online, token }) {
         minute: 0,
         timezone: settingsExtra.timezone ?? null,
         exclude_apps: excludeApps,
-        agent_id: selectedAgent?.id || agentId || null,
-        provider: provider || selectedAgent?.provider || settingsExtra.provider || DEFAULT_PROVIDER,
-        model: model || selectedAgent?.model || settingsExtra.model || null,
-        effort: selectedAgent ? (selectedAgent.effort ?? null) : (settingsExtra.effort ?? null),
+        provider: provider || settingsExtra.provider || DEFAULT_PROVIDER,
+        model: model || settingsExtra.model || null,
+        effort: settingsExtra.effort ?? null,
       })
       setToast('Saved ✓')
       setTimeout(() => setToast(''), 2600)
@@ -1343,7 +1304,7 @@ function SettingsTab({ appId, storage, online, token }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, agentId, agents, provider, model, settingsExtra, storage, online])
+  }, [saving, cronIsCustom, rawCron, hour, excludeApps, provider, model, settingsExtra, storage, online])
 
   if (loading) {
     return (
@@ -1409,50 +1370,18 @@ function SettingsTab({ appId, storage, online, token }) {
       <div className="dr-settings-card">
         <div className="dr-section-head">
           <span className="dr-section-icon" aria-hidden="true">🤖</span>
-          <h2 className="dr-section-label">Who dreams</h2>
+          <h2 className="dr-section-label">Nightly model</h2>
         </div>
         <p className="dr-note">
-          Pick the named agent for the overnight pass. Dreaming keeps its own
-          procedure; the agent supplies provider, model, and effort.
+          The model Dreaming uses for the overnight pass. It runs its own
+          procedure with the default skill.
         </p>
-        <select
-          className="dr-agent-select"
-          value={agentId}
-          onChange={(e) => setAgentId(e.target.value)}
-          disabled={agentsPhase === 'loading' || agents.length === 0}
-          aria-label="Dreaming agent"
-        >
-          {agents.length === 0 ? (
-            <option value={agentId}>
-              {agentsPhase === 'loading' ? 'Loading agents...' : 'Builder'}
-            </option>
-          ) : agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.icon ? `${agent.icon} ` : ''}{agent.label || agent.id}
-            </option>
-          ))}
-        </select>
-        {agentsPhase === 'error' ? (
-          <div className="dr-agent-meta">Could not load agents. The saved agent will stay unchanged.</div>
-        ) : (
-          <div className="dr-agent-meta">
-            {(() => {
-              const selected = agents.find((agent) => agent.id === agentId)
-              if (!selected) return 'Builder uses the default Dreaming model settings.'
-              const provider = PROVIDER_LABELS[selected.provider] || selected.provider || 'default provider'
-              const model = selected.model || 'default model'
-              const effort = selected.effort ? `, ${selected.effort} effort` : ''
-              return `${provider}, ${model}${effort}`
-            })()}
-          </div>
-        )}
-        <div className="dr-model-label">Nightly model</div>
         {modelGroups === null ? (
           <div className="dr-note">Loading models…</div>
         ) : (
           <>
             <select
-              className="dr-agent-select"
+              className="dr-select"
               value={`${provider}\t${model}`}
               onChange={(e) => {
                 const [nextProvider, nextModel] = e.target.value.split('\t')
@@ -1493,7 +1422,7 @@ function SettingsTab({ appId, storage, online, token }) {
                 )
               })}
             </select>
-            <div className="dr-agent-meta">
+            <div className="dr-meta">
               {(modelGroups.find((group) => group.key === provider)?.label || provider)}
               {' · '}
               {model}

@@ -1,8 +1,8 @@
 {
   "id": "dreaming",
   "name": "Dreaming",
-  "version": "2.0.8",
-  "description": "While you sleep, M\u00f6bius reviews the day's work and leaves you a one-page morning brief.",
+  "version": "2.0.9",
+  "description": "While you sleep, M\u00f6bius reviews the day's work and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
   "homepage": "https://github.com/mobius-os/app-dreaming",
@@ -21,7 +21,6 @@
       "timezone": null,
       "cron": "0 6 * * *",
       "exclude_apps": [],
-      "agent_id": "builder",
       "provider": "claude",
       "model": null
     }
