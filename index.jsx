@@ -2,9 +2,9 @@
  *
  * Lists the dated reports the dreaming agent leaves overnight, tracks a
  * streak, and lets the owner set the run hour and model. Opening a brief
- * shows TWO things stacked: the brief HTML up top (a sandboxed, script-free
- * iframe — the agent's static page) and, beneath it, the MORNING CHAT the
- * nightly run opened — the conversation about that brief, live, with a real
+ * shows TWO things stacked: the brief HTML up top (a sandboxed iframe —
+ * the agent's static page) and, beneath it, the MORNING CHAT the nightly
+ * run opened — the conversation about that brief, live, with a real
  * composer and tappable AskUserQuestion cards. The brief is the read; the
  * chat is where the partner steers the next night.
  *
@@ -12,7 +12,11 @@
  *  - List reports:  GET /api/storage/apps-list/{appId}/reports/   (cursor-paged)
  *  - Read a brief:  GET /api/storage/apps/{appId}/reports/<date>.html  (TEXT)
  *  - settings.json / state.json: JSON via the same storage base.
- *  - Reports render in a SANDBOXED srcDoc iframe with NO allow-scripts.
+ *  - Reports render in a sandboxed srcDoc iframe. Sandbox: allow-scripts but
+ *    NOT allow-same-origin, so the iframe has a null origin and its scripts
+ *    can NOT access the parent's DOM, localStorage, or owner JWT. Scripts
+ *    run for the sole purpose of reporting content height via postMessage.
+ *    hardenReportHtml injects a CSP + a minimal height-reporter snippet.
  *
  * Brief↔chat link: the cron creates the morning chat (`POST /api/chats`,
  * title "Morning brief — <date>") and SHOULD write a sibling
@@ -44,24 +48,12 @@ const PROVIDER_ORDER = [
   { key: 'claude', label: PROVIDER_LABELS.claude },
   { key: 'codex', label: PROVIDER_LABELS.codex },
 ]
-const FALLBACK_MODEL_GROUPS = [
-  {
-    key: 'claude',
-    label: PROVIDER_LABELS.claude,
-    models: [
-      { id: 'claude-opus-4-8', name: 'Opus 4.8' },
-      { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6' },
-      { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5' },
-    ],
-  },
-  {
-    key: 'codex',
-    label: PROVIDER_LABELS.codex,
-    models: [{ id: 'gpt-5.5', name: 'gpt-5.5' }],
-  },
-]
-const DEFAULT_PROVIDER = FALLBACK_MODEL_GROUPS[0].key
-const DEFAULT_MODEL = FALLBACK_MODEL_GROUPS[0].models[0].id
+// When /api/auth/providers/models is unreachable we use an empty fallback
+// rather than guessing model IDs. Stale hardcoded IDs would 400 the nightly
+// run; letting the CLI use its own account default is always safe.
+const FALLBACK_MODEL_GROUPS = []
+const DEFAULT_PROVIDER = 'claude'
+const DEFAULT_MODEL = null
 
 // The default schedule: 06:00 local -> "0 6 * * *". We only ever let the
 // user pick an hour (minute pinned to 0), so the cron field is always
@@ -94,6 +86,7 @@ function buildCron(hour) {
 
 const REPORT_CSP = [
   "default-src 'none'",
+  "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
   'img-src data: blob:',
   'font-src data:',
@@ -101,12 +94,38 @@ const REPORT_CSP = [
   "form-action 'none'",
 ].join('; ')
 
+// Injected into every brief's <head>. Reports scrollHeight to the parent
+// via postMessage so the parent can size the iframe without needing
+// allow-same-origin (which would give the iframe the shell origin and its
+// owner JWT). The script is intentionally tiny — no external deps, no
+// network calls. The CSP above allows 'unsafe-inline' scripts precisely
+// for this snippet; together with the absence of allow-same-origin the
+// iframe's origin is null and it cannot reach the parent's DOM or storage.
+const REPORT_HEIGHT_SCRIPT = `<script>
+(function(){
+  function emit(){
+    var h=Math.max(document.body?document.body.scrollHeight:0,
+                   document.documentElement.scrollHeight);
+    if(h>0)parent.postMessage({type:'dreaming:brief-height',height:h},'*');
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',emit);
+  } else { emit(); }
+  if(typeof ResizeObserver!=='undefined'){
+    var ro=new ResizeObserver(emit);
+    ro.observe(document.documentElement);
+  } else {
+    window.addEventListener('resize',emit);
+  }
+})();
+</script>`
+
 export function hardenReportHtml(html) {
   const body = typeof html === 'string' ? html : ''
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">`
-  if (/<head[\s>]/i.test(body)) return body.replace(/<head([^>]*)>/i, `<head$1>${meta}`)
-  if (/<html[\s>]/i.test(body)) return body.replace(/<html([^>]*)>/i, `<html$1><head>${meta}</head>`)
-  return `<!doctype html><html><head>${meta}</head><body>${body}</body></html>`
+  const inject = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">${REPORT_HEIGHT_SCRIPT}`
+  if (/<head[\s>]/i.test(body)) return body.replace(/<head([^>]*)>/i, `<head$1>${inject}`)
+  if (/<html[\s>]/i.test(body)) return body.replace(/<html([^>]*)>/i, `<html$1><head>${inject}</head>`)
+  return `<!doctype html><html><head>${inject}</head><body>${body}</body></html>`
 }
 
 // "0 6 * * *" -> "06:00" for the <input type="time"> value.
@@ -262,6 +281,7 @@ const CSS = `
   overflow-x: hidden;
   background: var(--bg); color: var(--text); font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 .dr-scroll {
   flex: 1; min-height: 0;
@@ -269,6 +289,7 @@ const CSS = `
   padding: 16px 20px 40px;
   word-break: break-word; overflow-wrap: anywhere;
   position: relative; z-index: 1;
+  overscroll-behavior: contain;
 }
 /* /mobius-ui:Root */
 
@@ -290,7 +311,7 @@ const CSS = `
 .dr-mark-glyph { font-size: 18px; line-height: 1; animation: dr-drift 6s ease-in-out infinite; }
 .dr-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .dr-title { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: -0.5px; }
-.dr-subtitle { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-top: 1px; }
+.dr-subtitle { font-size: 12px; color: var(--muted); font-weight: 500; margin-top: 1px; }
 .dr-header-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex: 0 0 auto; position: relative; z-index: 1; }
 /* /mobius-ui:Header */
 
@@ -318,10 +339,11 @@ const CSS = `
   border: 1px solid var(--border); border-radius: 16px;
   position: relative; overflow: hidden; cursor: pointer;
   transition: border-color .16s ease, transform .12s ease, box-shadow .16s ease, background .16s ease;
+  touch-action: manipulation; user-select: none;
 }
 button.dr-card { cursor: pointer; }
-.dr-card:hover { border-color: ${ACCENT}; box-shadow: 0 6px 22px -12px ${ACCENT}; }
-.dr-card:active { transform: scale(.992); }
+@media (hover:hover) { .dr-card:hover { border-color: ${ACCENT}; box-shadow: 0 6px 22px -12px ${ACCENT}; } }
+.dr-card:active { transform: scale(.992); background: var(--surface-active, var(--surface)); }
 .dr-card:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: 2px; }
 .dr-card.is-latest { border-left: 3px solid ${ACCENT}; }
 /* /mobius-ui:Card */
@@ -333,8 +355,9 @@ button.dr-card { cursor: pointer; }
   border: 1px solid var(--border); background: var(--surface); color: var(--text);
   font-family: var(--font); font-size: 13px; font-weight: 650; cursor: pointer; white-space: nowrap;
   transition: background .14s ease, border-color .14s ease, transform .1s ease, color .14s ease;
+  touch-action: manipulation; user-select: none;
 }
-.dr-btn:active { transform: scale(.97); }
+.dr-btn:active { transform: scale(.97); opacity: 0.85; }
 .dr-btn:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: 2px; }
 .dr-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
 /* /mobius-ui:Button */
@@ -348,8 +371,9 @@ button.dr-card { cursor: pointer; }
   min-height: 44px; padding: 6px 15px; border: none; border-radius: 7px;
   background: transparent; color: var(--muted); font-family: var(--font);
   font-size: 13px; font-weight: 650; cursor: pointer; transition: background .15s, color .15s;
+  touch-action: manipulation; user-select: none;
 }
-.dr-seg-btn:hover { color: var(--text); }
+@media (hover:hover) { .dr-seg-btn:hover { color: var(--text); } }
 .dr-seg-btn.is-active { background: ${ACCENT}; color: #fff; }
 /* /mobius-ui:Segmented */
 
@@ -384,8 +408,8 @@ button.dr-card { cursor: pointer; }
    rise-in on mount; pressable controls get the same active/focus feel as the
    shared card without being one. */
 .dr-rise { animation: dr-rise .32s cubic-bezier(.22,.61,.36,1) both; }
-.dr-pressable { transition: background .14s ease, border-color .14s ease, transform .1s ease, color .14s ease; }
-.dr-pressable:active { transform: scale(.97); }
+.dr-pressable { transition: background .14s ease, border-color .14s ease, transform .1s ease, color .14s ease; touch-action: manipulation; user-select: none; }
+.dr-pressable:active { transform: scale(.97); opacity: 0.85; }
 .dr-pressable:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: 2px; }
 
 /* A faint aurora wash behind the header — pure decoration, pointer-none, so
@@ -458,6 +482,7 @@ button.dr-card { cursor: pointer; }
   align-self: flex-start; padding: 7px 14px; border-radius: 9px;
   border: 1px solid ${ACCENT}; background: transparent; color: ${ACCENT};
   font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: var(--font);
+  touch-action: manipulation; user-select: none;
 }
 .dr-offline-banner {
   max-width: 660px; margin: 0 auto 14px; padding: 10px 14px;
@@ -482,14 +507,16 @@ button.dr-card { cursor: pointer; }
   border: 1px solid var(--border); background: var(--bg);
   color: var(--text); font-size: 13px; font-weight: 650;
   cursor: pointer; font-family: var(--font); flex-shrink: 0;
+  touch-action: manipulation; user-select: none;
 }
 .dr-back-glyph { font-size: 16px; }
 .dr-detail-title { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; flex: 1; }
 .dr-detail-title-main { font-size: 15px; font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dr-detail-title-sub { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.dr-detail-title-sub { font-size: 12px; color: var(--muted); font-weight: 500; }
 .dr-split-body {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column;
+  overscroll-behavior: contain;
 }
 .dr-brief-panel {
   flex-shrink: 0; display: flex; flex-direction: column;
@@ -509,7 +536,7 @@ button.dr-card { cursor: pointer; }
   box-shadow: 0 0 0 4px ${ACCENT_DIM}; flex-shrink: 0;
 }
 .dr-chat-header-text { font-size: 13px; font-weight: 700; letter-spacing: -0.1px; }
-.dr-chat-header-hint { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-left: auto; }
+.dr-chat-header-hint { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: auto; }
 .dr-chat-resolving {
   padding: 20px 16px 28px; display: flex; align-items: center; gap: 10px;
   color: var(--muted); font-size: 12.5px;
@@ -528,6 +555,7 @@ button.dr-card { cursor: pointer; }
   border: 1px solid ${ACCENT}; background: ${ACCENT_DIM};
   color: ${ACCENT}; font-size: 13px; font-weight: 700;
   cursor: pointer; font-family: var(--font);
+  touch-action: manipulation; user-select: none;
 }
 
 /* Settings */
@@ -559,10 +587,11 @@ button.dr-card { cursor: pointer; }
 }
 .dr-custom-cron-note .dr-time-row { margin-top: 10px; }
 .dr-select {
-  width: 100%; min-height: 42px; padding: 9px 12px;
+  width: 100%; min-height: 44px; padding: 9px 12px;
   border: 1px solid var(--border); border-radius: 10px;
-  background: var(--bg); color: var(--text); font-size: 14px;
+  background: var(--bg); color: var(--text); font-size: 16px;
   font-family: var(--font); font-weight: 650; outline: none;
+  touch-action: manipulation; user-select: none;
 }
 .dr-meta {
   font-size: 12px; color: var(--muted); line-height: 1.5;
@@ -570,7 +599,7 @@ button.dr-card { cursor: pointer; }
   background: var(--bg); border: 1px solid var(--border);
 }
 .dr-model-label {
-  font-size: 11px; color: var(--muted); font-weight: 750;
+  font-size: 12px; color: var(--muted); font-weight: 750;
   text-transform: uppercase; letter-spacing: 0.4px; margin-top: 4px;
 }
 .dr-save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
@@ -580,6 +609,7 @@ button.dr-card { cursor: pointer; }
   font-size: 13.5px; font-weight: 700; cursor: pointer;
   font-family: var(--font); transition: background 0.15s, opacity .15s;
   box-shadow: 0 6px 18px -8px ${ACCENT};
+  touch-action: manipulation; user-select: none;
 }
 .dr-save-btn:disabled {
   background: var(--surface); color: var(--muted); cursor: default; box-shadow: none;
@@ -874,18 +904,14 @@ function FeedbackLauncher({ dateStr, chatId }) {
 // ---------------------------------------------------------------------------
 // Report detail — the brief + chat split view.
 //
-// The brief is the static, script-free HTML the agent authored: rendered in a
-// SANDBOXED srcDoc iframe with NO allow-scripts (containment). Beneath it, the
-// morning chat. We resolve the chat_id from `reports/<date>.meta.json` (the
-// cron's sibling), then mount the embed. Back is wired through the shell
-// nav helper so the phone's back gesture returns to the list with a real
-// previous-screen preview.
-//
-// The brief iframe auto-sizes to its content (the document is short — a
-// morning read), measured via the iframe's own scrollHeight after load, so
-// the page scrolls as one column (brief, then chat) instead of nesting two
-// scroll regions. Same-origin sandbox lets us read contentDocument for that
-// measurement; no scripts run inside.
+// The brief is the static HTML the agent authored: rendered in a sandboxed
+// srcDoc iframe. Sandbox: allow-scripts WITHOUT allow-same-origin — the
+// iframe has a null origin so its scripts cannot access the parent's DOM,
+// localStorage, or owner JWT (the security risk of allow-same-origin+scripts).
+// hardenReportHtml injects a tiny height-reporter script that postMessages
+// scrollHeight to the parent. The parent sizes the iframe from those messages
+// so the page scrolls as one column (brief, then chat) without nesting two
+// scroll regions. Beneath it, the morning chat embed.
 // ---------------------------------------------------------------------------
 
 function ReportDetail({ dateStr, storage, online, onBack }) {
@@ -914,39 +940,27 @@ function ReportDetail({ dateStr, storage, online, onBack }) {
     return () => { cancelled = true }
   }, [dateStr, storage])
 
-  // Size the brief iframe to its content so the column scrolls as one. The
-  // sandbox is same-origin (no scripts), so contentDocument is readable. We
-  // re-measure on a ResizeObserver of the inner body for late layout (web
-  // fonts, images) and clamp to a sane range.
-  const measure = useCallback(() => {
-    const el = iframeRef.current
-    if (!el) return
-    try {
-      const doc = el.contentDocument
-      if (!doc || !doc.body) return
-      const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight)
-      if (h > 0) setBriefHeight(Math.min(Math.max(h, 200), 100000))
-    } catch {
-      // Cross-origin guard (shouldn't happen with allow-same-origin) — leave
-      // the default height; the inner doc keeps its own scroll as a fallback.
+  // Size the brief iframe from postMessage events sent by the injected
+  // height-reporter script (see hardenReportHtml + REPORT_HEIGHT_SCRIPT).
+  // The iframe runs with allow-scripts but WITHOUT allow-same-origin, so
+  // contentDocument is NOT readable from the parent — we receive height
+  // passively via postMessage instead.
+  useEffect(() => {
+    const onMessage = (ev) => {
+      if (!ev.data || ev.data.type !== 'dreaming:brief-height') return
+      const h = Number(ev.data.height)
+      if (Number.isFinite(h) && h > 0) {
+        setBriefHeight(Math.min(Math.max(h, 200), 100000))
+      }
     }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
   }, [])
 
   const onIframeLoad = useCallback(() => {
-    measure()
-    try {
-      const doc = iframeRef.current?.contentDocument
-      if (doc && doc.body && typeof ResizeObserver !== 'undefined') {
-        const ro = new ResizeObserver(() => measure())
-        ro.observe(doc.body)
-        // Stash so we can disconnect on unmount via the iframe element.
-        iframeRef.current.__ro = ro
-      }
-    } catch {}
-  }, [measure])
-
-  useEffect(() => () => {
-    try { iframeRef.current?.__ro?.disconnect() } catch {}
+    // The height reporter inside the iframe fires on DOMContentLoaded and
+    // on ResizeObserver changes. Nothing to do here from the parent side,
+    // but we keep the onLoad prop in case subclasses need it later.
   }, [])
 
   return (
@@ -995,11 +1009,13 @@ function ReportDetail({ dateStr, storage, online, onBack }) {
               title={`Morning brief for ${dateStr}`}
               srcDoc={state.html}
               onLoad={onIframeLoad}
-              // The report is static HTML/CSS authored by the agent. sandbox
-              // WITHOUT allow-scripts is the containment: same-origin so its
-              // own <style> + relative anchors resolve (and we can measure its
-              // height), but no script execution.
-              sandbox="allow-same-origin"
+              // allow-scripts lets the injected height-reporter run.
+              // allow-same-origin is intentionally absent: without it the
+              // iframe gets a null origin, so its scripts cannot reach the
+              // parent's DOM, localStorage, or owner JWT regardless of what
+              // the brief HTML contains. allow-popups lets the agent include
+              // external links that open in a new tab.
+              sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
             />
           </div>
 
@@ -1378,27 +1394,29 @@ function SettingsTab({ appId, storage, online, token }) {
         </p>
         {modelGroups === null ? (
           <div className="dr-note">Loading models…</div>
+        ) : modelGroups.length === 0 ? (
+          // Models API unavailable — fall back to letting the CLI choose.
+          <div className="dr-note">
+            Model list unavailable. Dreaming will use the CLI's default model
+            for your account.
+          </div>
         ) : (
           <>
             <select
               className="dr-select"
-              value={`${provider}\t${model}`}
+              value={model ? `${provider}\t${model}` : `${provider}\t`}
               onChange={(e) => {
-                const [nextProvider, nextModel] = e.target.value.split('\t')
-                if (nextProvider && nextModel) {
+                const idx = e.target.value.indexOf('\t')
+                const nextProvider = e.target.value.slice(0, idx)
+                const nextModel = e.target.value.slice(idx + 1) || null
+                if (nextProvider) {
                   setProvider(nextProvider)
                   setModel(nextModel)
                 }
               }}
               aria-label="Dreaming model"
             >
-              {!modelGroups.some((group) =>
-                group.key === provider && group.models.some((m) => m.id === model)
-              ) && (
-                <option value={`${provider}\t${model}`}>
-                  Current: {model || DEFAULT_MODEL}
-                </option>
-              )}
+              <option value={`${provider}\t`}>Provider default</option>
               {modelGroups.map((group) => {
                 const isConnected = !connectedProviders || connectedProviders.has(group.key)
                 return (
@@ -1425,7 +1443,7 @@ function SettingsTab({ appId, storage, online, token }) {
             <div className="dr-meta">
               {(modelGroups.find((group) => group.key === provider)?.label || provider)}
               {' · '}
-              {model}
+              {model || 'provider default'}
             </div>
           </>
         )}
