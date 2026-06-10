@@ -659,7 +659,13 @@ function makeStorage(appId, token) {
 
   async function putJSON(path, obj) {
     if (ms && typeof ms.set === 'function') {
-      await ms.set(path, obj)
+      // set() resolves to {synced} on a real server write and {queued} when
+      // the write only landed in the offline outbox. A queued write is NOT a
+      // saved setting yet — the cron reads settings.json from the server, so a
+      // queued-only write would let the picker claim "Saved ✓" while the
+      // nightly run keeps the old schedule. Surface it so the caller can warn.
+      const res = await ms.set(path, obj)
+      if (res && res.queued) throw new Error(`PUT ${path} queued offline`)
       return true
     }
     const r = await fetch(`${base}/${path}`, {
@@ -673,8 +679,12 @@ function makeStorage(appId, token) {
 
   async function getReportHtml(name) {
     // Report bodies are raw HTML documents — read as text, not JSON.
+    // `cache: 'no-store'` is load-bearing: the nightly cron can RE-AUTHOR a
+    // brief for the same date (a corrected or expanded morning note), so a
+    // browser/SW cached copy keyed on the unchanged URL would serve the stale
+    // body. Force a fresh read each open so a re-authored brief shows.
     try {
-      const r = await fetch(`${base}/reports/${name}`, { headers })
+      const r = await fetch(`${base}/reports/${name}`, { headers, cache: 'no-store' })
       if (r.status === 404) return { notFound: true }
       if (!r.ok) return { error: r.status }
       return { data: await r.text() }
@@ -735,7 +745,19 @@ function makeStorage(appId, token) {
     return { dates: out }
   }
 
-  return { getJSON, putJSON, getReportHtml, getReportChatId, listReportDates }
+  // Subscribe to a JSON path so the list refreshes live when the cron writes a
+  // new brief. The nightly run updates state.json (last_run + streak) on every
+  // pass, so a change there is the reliable "a new brief just landed" signal —
+  // the reports listing has no subscribe of its own. Returns an unsubscribe
+  // fn, or a no-op when the runtime bridge is absent (standalone).
+  function subscribeJSON(path, cb) {
+    if (ms && typeof ms.subscribe === 'function') {
+      try { return ms.subscribe(path, cb) } catch { return () => {} }
+    }
+    return () => {}
+  }
+
+  return { getJSON, putJSON, getReportHtml, getReportChatId, listReportDates, subscribeJSON }
 }
 
 // ---------------------------------------------------------------------------
@@ -918,7 +940,19 @@ function ReportDetail({ dateStr, storage, online, onBack }) {
   const [state, setState] = useState({ phase: 'loading', html: '' })
   const [chatId, setChatId] = useState(undefined) // undefined=resolving, null=none, string=id
   const [briefHeight, setBriefHeight] = useState(360)
+  const [reloadKey, setReloadKey] = useState(0)
   const iframeRef = useRef(null)
+
+  // Coming back online after a failed (offline) brief load should retry the
+  // body rather than stranding the reader on the offline error until they
+  // navigate away and back. We bump reloadKey on the false→true transition;
+  // the load effect below depends on it. (A successful brief is unaffected —
+  // re-running the fetch with cache:'no-store' just re-reads the same body.)
+  const wasOnline = useRef(online)
+  useEffect(() => {
+    if (online && !wasOnline.current) setReloadKey((k) => k + 1)
+    wasOnline.current = online
+  }, [online])
 
   // Load the brief body + resolve its chat in parallel.
   useEffect(() => {
@@ -938,7 +972,7 @@ function ReportDetail({ dateStr, storage, online, onBack }) {
       if (!cancelled) setChatId(id)
     })()
     return () => { cancelled = true }
-  }, [dateStr, storage])
+  }, [dateStr, storage, reloadKey])
 
   // Size the brief iframe from postMessage events sent by the injected
   // height-reporter script (see hardenReportHtml + REPORT_HEIGHT_SCRIPT).
@@ -950,7 +984,12 @@ function ReportDetail({ dateStr, storage, online, onBack }) {
       if (!ev.data || ev.data.type !== 'dreaming:brief-height') return
       const h = Number(ev.data.height)
       if (Number.isFinite(h) && h > 0) {
-        setBriefHeight(Math.min(Math.max(h, 200), 100000))
+        // Clamp to a sane ceiling: a malformed/runaway report (broken layout,
+        // a script in an infinite-growth loop) could report an enormous
+        // scrollHeight and grow the outer column unboundedly. 16000px is well
+        // past any real one-page brief; beyond it the iframe scrolls its own
+        // overflow rather than the parent column stretching forever.
+        setBriefHeight(Math.min(Math.max(h, 200), 16000))
       }
     }
     window.addEventListener('message', onMessage)
@@ -1110,6 +1149,30 @@ function ReportsList({ appId, storage, online, onOpen }) {
     // state update inside the effect doesn't re-trigger it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, storage, reloadKey])
+
+  // Live refresh: a new brief written while the app is open should appear
+  // without a manual "Try again" or a full iframe reload. The cron updates
+  // state.json (last_run/streak) on every overnight pass, so a change there is
+  // the signal that a new brief just landed — re-list when it fires. subscribe
+  // delivers the current value immediately on register; we skip that first
+  // synchronous fire so we don't double-load right after the mount effect.
+  useEffect(() => {
+    let primed = false
+    const unsub = storage.subscribeJSON('state.json', () => {
+      if (!primed) { primed = true; return }
+      setReloadKey((k) => k + 1)
+    })
+    return () => { try { unsub && unsub() } catch {} }
+  }, [storage])
+
+  // Reconnecting after an offline stretch should re-list (the offline view is
+  // a frozen cached snapshot; tonight's dream only appears after a fresh
+  // listing). Bump reloadKey on the false→true transition.
+  const wasOnline = useRef(online)
+  useEffect(() => {
+    if (online && !wasOnline.current) setReloadKey((k) => k + 1)
+    wasOnline.current = online
+  }, [online])
 
   if (phase === 'loading' && dates.length === 0) {
     return (
