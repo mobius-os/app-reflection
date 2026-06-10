@@ -273,12 +273,21 @@ const CSS = `
   to { transform: rotate(360deg); }
 }
 
+/* mobius-ui:Focus v1 -- shared keyboard focus ring (WCAG 2.4.7); never bare outline:none */
+:where(button,a,input,textarea,select,summary,[role="button"],[tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* /mobius-ui:Focus */
+
 /* mobius-ui:Root v1 — keep in sync; library candidate. Diverge below the marker only. */
 .dr-root {
   position: relative;
   display: flex; flex-direction: column;
   height: 100%; width: 100%; max-width: 100%;
   overflow-x: hidden;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
   background: var(--bg); color: var(--text); font-family: var(--font);
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
@@ -298,7 +307,7 @@ const CSS = `
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
-  padding: 22px 20px 0;
+  padding: max(22px, env(safe-area-inset-top)) 20px 0;
   position: relative; z-index: 1;
 }
 .dr-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
@@ -378,7 +387,11 @@ button.dr-card { cursor: pointer; }
 /* /mobius-ui:Segmented */
 
 /* mobius-ui:ChatEmbed v1 — keep in sync; library candidate. Diverge below the marker only. */
-.dr-chat-embed { width: 100%; flex: 1; min-height: 420px; }
+.dr-chat-embed { width: 100%; flex: 1; }
+/* Reserve the tall mount height only once the live chat is shown (the mount
+   node is display:none while mounting); reserving it during the spinner phase
+   left a blank gap below "Opening the conversation…". */
+.dr-chat-embed[style*="block"] { min-height: 420px; }
 .dr-chat-embed iframe { display: block; width: 100%; height: 100%; border: 0; }
 /* /mobius-ui:ChatEmbed */
 
@@ -464,7 +477,7 @@ button.dr-card { cursor: pointer; }
 }
 .dr-card-chevron { align-self: center; font-size: 20px; color: var(--muted); flex-shrink: 0; line-height: 1; opacity: 0.7; }
 .dr-latest-pill {
-  font-size: 10px; font-weight: 750; letter-spacing: 0.7px;
+  font-size: 11px; font-weight: 750; letter-spacing: 0.7px;
   text-transform: uppercase; color: #fff;
   background: ${ACCENT}; padding: 2px 8px; border-radius: 999px;
 }
@@ -498,7 +511,8 @@ button.dr-card { cursor: pointer; }
 }
 .dr-detail-bar {
   display: flex; align-items: center; gap: 12px;
-  padding: 11px 14px; border-bottom: 1px solid var(--border);
+  padding: max(11px, env(safe-area-inset-top)) 14px 11px;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0; background: var(--surface);
 }
 .dr-back-btn {
@@ -578,8 +592,9 @@ button.dr-card { cursor: pointer; }
   padding: 9px 12px; font-size: 16px; font-family: var(--font); font-weight: 600;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px;
-  outline: none; width: 132px;
+  width: 132px;
 }
+.dr-time-input:focus:not(:focus-visible) { outline: none; }
 .dr-custom-cron-note {
   font-size: 12px; color: var(--muted); line-height: 1.5;
   padding: 10px 12px; border-radius: 11px;
@@ -590,11 +605,13 @@ button.dr-card { cursor: pointer; }
   width: 100%; min-height: 44px; padding: 9px 12px;
   border: 1px solid var(--border); border-radius: 10px;
   background: var(--bg); color: var(--text); font-size: 16px;
-  font-family: var(--font); font-weight: 650; outline: none;
+  font-family: var(--font); font-weight: 650;
   touch-action: manipulation; user-select: none;
 }
+.dr-select:focus:not(:focus-visible) { outline: none; }
 .dr-meta {
   font-size: 12px; color: var(--muted); line-height: 1.5;
+  font-family: var(--mono, var(--font));
   padding: 10px 12px; border-radius: 11px;
   background: var(--bg); border: 1px solid var(--border);
 }
@@ -626,6 +643,17 @@ button.dr-card { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .dr-rise, .dr-mark-glyph, .dr-empty-mark-glyph, .dr-streak-flame { animation: none !important; }
 }
+
+/* mobius-ui:ReducedMotion v1 -- honor the OS reduce-motion setting */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+/* /mobius-ui:ReducedMotion */
 `
 
 
@@ -1495,7 +1523,7 @@ function SettingsTab({ appId, storage, online, token }) {
                           value={`${group.key}\t${m.id}`}
                           disabled={!isConnected && !on}
                         >
-                          {m.name} ({m.id})
+                          {m.name}
                         </option>
                       )
                     })}
