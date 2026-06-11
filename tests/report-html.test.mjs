@@ -66,3 +66,43 @@ test('hardenReportHtml injects height-reporter script that postMessages dreaming
     'height reporter should appear before existing head content',
   )
 })
+
+test('hardenReportHtml injects overflow guards so a brief never scrolls horizontally', async () => {
+  const { hardenReportHtml } = await bundle()
+
+  const html = '<!doctype html><html><head><title>Brief</title></head><body><h1>Morning</h1></body></html>'
+  const hardened = hardenReportHtml(html)
+
+  // html/body boxed to the viewport, no sideways scroll
+  assert.match(hardened, /html,\s*body\s*\{[^}]*overflow-x:\s*hidden/)
+  assert.match(hardened, /html,\s*body\s*\{[^}]*max-width:\s*100%/)
+  // box-sizing reset + media/table capped to 100%
+  assert.match(hardened, /box-sizing:\s*border-box/)
+  assert.match(hardened, /img,\s*svg,\s*video,\s*canvas\s*\{[^}]*max-width:\s*100%/)
+  // wide tables become their own scroller instead of pushing the page wide
+  assert.match(hardened, /table\s*\{[^}]*display:\s*block[^}]*overflow-x:\s*auto/)
+  // long code/pre wraps rather than overflowing
+  assert.match(hardened, /white-space:\s*pre-wrap/)
+  assert.match(hardened, /word-break:\s*break-word/)
+
+  // Base style must come before the brief's own head content so the template's
+  // richer rules win on the cascade.
+  assert.ok(
+    hardened.indexOf('overflow-x: hidden') < hardened.indexOf('<title>Brief</title>'),
+    'base overflow style should appear before existing head content',
+  )
+})
+
+test('hardenReportHtml styles details/summary drill-down and the questions card', async () => {
+  const { hardenReportHtml } = await bundle()
+
+  const hardened = hardenReportHtml('<main>hi</main>')
+
+  // <details>/<summary> get native-feeling chrome (so the brief can stay
+  // high-level by default and reveal detail on tap)
+  assert.match(hardened, /details\s*\{/)
+  assert.match(hardened, /details\s*>\s*summary\s*\{/)
+  assert.match(hardened, /details\[open\]\s*>\s*summary::before/)
+  // the end-of-brief "questions for you" card has a styled block
+  assert.match(hardened, /\.brief-questions\s*\{/)
+})

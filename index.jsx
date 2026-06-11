@@ -125,6 +125,105 @@ const REPORT_CSP = [
   "form-action 'none'",
 ].join('; ')
 
+// Base CSS injected into every brief's <head>, BEFORE the brief's own
+// <style>. Two jobs:
+//
+//  1. Never let a brief overflow the phone horizontally. The owner reported
+//     having to scroll sideways: an agent-authored wide table, a long
+//     unbroken code line, or an oversized image can blow past the viewport.
+//     These rules box everything to 100% width, wrap long text, and turn a
+//     wide <table>/<pre> into its OWN horizontal scroller instead of pushing
+//     the page sideways. The brief's template sets `box-sizing: border-box`
+//     and a centred max-width already; this is the safety net for whatever
+//     content the agent writes inside it.
+//  2. Style the drill-down + questions affordances the brief now uses so they
+//     look native even when the agent hand-writes a minimal fallback brief
+//     (no template <style>): <details>/<summary> for "stay high-level by
+//     default, detail on tap", and a `.brief-questions` card for the
+//     end-of-brief "A few questions for you" block. The template's own richer
+//     styles win where present (these are element/low-specificity defaults
+//     that the cascade lets a later .item/.decision rule override).
+//
+// Theme tokens (--accent, --surface, --border, --muted) come from the brief's
+// own :root; we fall back to sensible literals so a token-less fallback brief
+// still reads well.
+const REPORT_BASE_STYLE = `<style>
+  html, body { max-width: 100%; overflow-x: hidden; margin: 0; }
+  * { box-sizing: border-box; }
+  *:not(html):not(body) { max-width: 100%; }
+  img, svg, video, canvas { max-width: 100%; height: auto; }
+  pre, code {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  pre { overflow-x: auto; }
+  table { display: block; overflow-x: auto; max-width: 100%; }
+
+  /* Drill-down: terse by default, detail on tap. */
+  details {
+    margin: 12px 0;
+    border: 1px solid var(--border, #e4e1dc);
+    border-radius: 12px;
+    background: var(--surface, #fff);
+    overflow: hidden;
+  }
+  details > summary {
+    cursor: pointer;
+    padding: 12px 14px;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text, #1c1b19);
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "›";
+    display: inline-block;
+    transition: transform .15s ease;
+    color: var(--accent, #6d5ef0);
+    font-weight: 700;
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary:focus-visible {
+    outline: 2px solid var(--accent, #6d5ef0);
+    outline-offset: 2px;
+  }
+  details > *:not(summary) {
+    padding: 0 14px 12px;
+    margin-top: 0;
+  }
+
+  /* End-of-brief questions card — "A few questions for you". */
+  .brief-questions {
+    margin: 28px 0 8px;
+    padding: 16px 18px;
+    border: 1px solid var(--accent, #6d5ef0);
+    border-left-width: 3px;
+    border-radius: 14px;
+    background: var(--accent-tint, #ece9fd);
+  }
+  .brief-questions > h2,
+  .brief-questions > h3 {
+    margin: 0 0 10px;
+    font-size: 1.1rem;
+    color: var(--text, #1c1b19);
+  }
+  .brief-questions ol,
+  .brief-questions ul {
+    margin: 0;
+    padding-left: 1.2em;
+  }
+  .brief-questions li { margin: 8px 0; line-height: 1.5; }
+  .brief-questions .q-note {
+    margin-top: 12px;
+    font-size: 0.9rem;
+    color: var(--muted, #6b6862);
+  }
+</style>`
+
 // Injected into every brief's <head>. Reports scrollHeight to the parent
 // via postMessage so the parent can size the iframe without needing
 // allow-same-origin (which would give the iframe the shell origin and its
@@ -153,7 +252,11 @@ const REPORT_HEIGHT_SCRIPT = `<script>
 
 export function hardenReportHtml(html) {
   const body = typeof html === 'string' ? html : ''
-  const inject = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">${REPORT_HEIGHT_SCRIPT}`
+  // Order: CSP first, then the base style (overflow guards + details/questions
+  // defaults), then the height reporter. The base style sits before the
+  // brief's own <style> so the template's richer rules win on the cascade,
+  // while the html/body overflow guards (which the template never sets) hold.
+  const inject = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">${REPORT_BASE_STYLE}${REPORT_HEIGHT_SCRIPT}`
   if (/<head[\s>]/i.test(body)) return body.replace(/<head([^>]*)>/i, `<head$1>${inject}`)
   if (/<html[\s>]/i.test(body)) return body.replace(/<html([^>]*)>/i, `<html$1><head>${inject}</head>`)
   return `<!doctype html><html><head>${inject}</head><body>${body}</body></html>`
@@ -593,12 +696,12 @@ button.dr-card { cursor: pointer; }
   display: flex; align-items: flex-start; gap: 10px;
 }
 .dr-no-chat-glyph { font-size: 15px; line-height: 1.2; }
-.dr-feedback-row { margin: 12px 16px 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.dr-feedback-row { margin: 16px 16px 22px; padding-top: 14px; border-top: 1px solid var(--border); }
 .dr-feedback-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-height: 40px; padding: 8px 14px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%; min-height: 46px; padding: 11px 16px; border-radius: 12px;
   border: 1px solid ${ACCENT}; background: ${ACCENT_DIM};
-  color: ${ACCENT}; font-size: 13px; font-weight: 700;
+  color: ${ACCENT}; font-size: 13.5px; font-weight: 700;
   cursor: pointer; font-family: var(--font);
   touch-action: manipulation; user-select: none;
 }
@@ -1001,13 +1104,19 @@ function MorningChat({ chatId }) {
   )
 }
 
+// The "Discuss this brief with the agent" affordance — placed at the BOTTOM of
+// the scrollable content (after the brief and the morning chat), never floating
+// or sticky, so it reads as the natural next step once you've finished reading.
+// Mirrors the News app's feedback launcher: open the brief's own morning chat
+// when one exists, else start a fresh chat seeded with a draft referencing the
+// brief's date so the agent has context.
 function FeedbackLauncher({ dateStr, chatId, appId, token }) {
-  const openFeedbackChat = () => {
+  const openDiscussionChat = () => {
     emitSignal(appId, token, 'feedback_given', { date: dateStr })
     const draft = [
-      `Feedback on the Dreaming brief for ${dateStr}:`,
+      `About the Dreaming brief for ${dateStr}:`,
       '',
-      'My feedback:',
+      '',
     ].join('\n')
     window.parent.postMessage(
       chatId
@@ -1018,8 +1127,8 @@ function FeedbackLauncher({ dateStr, chatId, appId, token }) {
   }
   return (
     <div className="dr-feedback-row">
-      <button className="dr-feedback-btn dr-pressable" onClick={openFeedbackChat}>
-        Give feedback on this brief
+      <button className="dr-feedback-btn dr-pressable" onClick={openDiscussionChat}>
+        💬 Discuss this brief with the agent
       </button>
     </div>
   )
