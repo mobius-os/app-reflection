@@ -224,18 +224,25 @@ const REPORT_BASE_STYLE = `<style>
   }
 </style>`
 
-// Injected into every brief's <head>. Reports scrollHeight to the parent
-// via postMessage so the parent can size the iframe without needing
+// Injected into every brief's <head>. Reports the content height to the
+// parent via postMessage so the parent can size the iframe without needing
 // allow-same-origin (which would give the iframe the shell origin and its
 // owner JWT). The script is intentionally tiny — no external deps, no
 // network calls. The CSP above allows 'unsafe-inline' scripts precisely
 // for this snippet; together with the absence of allow-same-origin the
 // iframe's origin is null and it cannot reach the parent's DOM or storage.
+//
+// Measurement: documentElement.getBoundingClientRect().height is the html
+// element's border-box height, which tracks content (REPORT_BASE_STYLE sets
+// html/body margin to 0). Unlike scrollHeight it is NOT floored at the
+// iframe's own viewport height, so a transient over-measurement taken
+// mid-reflow (classic scrollbars appearing shrink the layout width and
+// re-wrap text taller for a frame) shrinks back on the next emit instead
+// of ratcheting the iframe height up forever.
 const REPORT_HEIGHT_SCRIPT = `<script>
 (function(){
   function emit(){
-    var h=Math.max(document.body?document.body.scrollHeight:0,
-                   document.documentElement.scrollHeight);
+    var h=Math.ceil(document.documentElement.getBoundingClientRect().height);
     if(h>0)parent.postMessage({type:'dreaming:brief-height',height:h},'*');
   }
   if(document.readyState==='loading'){
@@ -665,6 +672,10 @@ button.dr-card { cursor: pointer; }
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column;
   overscroll-behavior: contain;
+  /* Reserve the classic-scrollbar gutter even while content fits, so the
+     height-bridge growing the brief iframe never changes the content width
+     (width change → text re-wrap → new height → feedback loop). */
+  scrollbar-gutter: stable;
 }
 .dr-brief-panel {
   flex-shrink: 0; display: flex; flex-direction: column;
@@ -1142,7 +1153,7 @@ function FeedbackLauncher({ dateStr, chatId, appId, token }) {
 // iframe has a null origin so its scripts cannot access the parent's DOM,
 // localStorage, or owner JWT (the security risk of allow-same-origin+scripts).
 // hardenReportHtml injects a tiny height-reporter script that postMessages
-// scrollHeight to the parent. The parent sizes the iframe from those messages
+// the content height to the parent. The parent sizes the iframe from those messages
 // so the page scrolls as one column (brief, then chat) without nesting two
 // scroll regions. Beneath it, the morning chat embed.
 // ---------------------------------------------------------------------------
@@ -1196,13 +1207,21 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
   useEffect(() => {
     const onMessage = (ev) => {
       if (!ev.data || ev.data.type !== 'dreaming:brief-height') return
+      // Only trust OUR brief iframe: the sandboxed frame has a null origin,
+      // so ev.origin can't identify it — ev.source against the iframe's
+      // contentWindow is the only way to reject spoofed height messages
+      // from other windows.
+      if (ev.source !== iframeRef.current?.contentWindow) return
       const h = Number(ev.data.height)
       if (Number.isFinite(h) && h > 0) {
-        // Clamp to a sane ceiling: a malformed/runaway report (broken layout,
-        // a script in an infinite-growth loop) could report an enormous
-        // scrollHeight and grow the outer column unboundedly. 16000px is well
-        // past any real one-page brief; beyond it the iframe scrolls its own
-        // overflow rather than the parent column stretching forever.
+        // The reported height is applied as-is (no buffer): the reporter
+        // sends Math.ceil of an exact content metric, and re-applying a
+        // buffer per emit would creep the height upward. Clamp to a sane
+        // ceiling: a malformed/runaway report (broken layout, a script in
+        // an infinite-growth loop) could report an enormous height and
+        // grow the outer column unboundedly. 16000px is well past any real
+        // one-page brief; beyond it the iframe scrolls its own overflow
+        // rather than the parent column stretching forever.
         setBriefHeight(Math.min(Math.max(h, 200), 16000))
       }
     }

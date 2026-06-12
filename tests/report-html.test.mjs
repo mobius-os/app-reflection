@@ -59,7 +59,14 @@ test('hardenReportHtml injects height-reporter script that postMessages dreaming
   // The height reporter script must be present
   assert.match(hardened, /dreaming:brief-height/)
   assert.match(hardened, /postMessage/)
-  assert.match(hardened, /scrollHeight/)
+  // The reporter must measure the documentElement border-box height —
+  // viewport-independent, so a transient over-measurement can shrink back.
+  assert.match(hardened, /document\.documentElement\.getBoundingClientRect\(\)\.height/)
+  // scrollHeight is floored at the iframe's own viewport height, so a
+  // transient over-measurement mid-reflow (classic scrollbars re-wrapping
+  // text) would ratchet the iframe taller forever. The reporter must not
+  // use it.
+  assert.doesNotMatch(hardened, /scrollHeight/)
   // Script injected before existing head content
   assert.ok(
     hardened.indexOf('dreaming:brief-height') < hardened.indexOf('<title>Brief</title>'),
