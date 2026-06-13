@@ -452,16 +452,16 @@ const CSS = `
   position: relative; z-index: 1;
 }
 .dr-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.dr-mark {
-  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 11px;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, ${ACCENT} 0%, ${ACCENT_2} 100%);
-  box-shadow: 0 4px 16px -6px ${ACCENT};
+.dr-brand-icon {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 6px;
+  object-fit: cover; display: block;
 }
-.dr-mark-glyph { font-size: 18px; line-height: 1; animation: dr-drift 6s ease-in-out infinite; }
-.dr-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
-.dr-title { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: -0.5px; }
-.dr-subtitle { font-size: 12px; color: var(--muted); font-weight: 500; margin-top: 1px; }
+.dr-brand-fallback {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 6px;
+  align-items: center; justify-content: center;
+  background: ${ACCENT}; color: var(--bg, #0c0c0c);
+  font-weight: 700; line-height: 1;
+}
 .dr-header-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex: 0 0 auto; position: relative; z-index: 1; }
 /* /mobius-ui:Header */
 
@@ -852,7 +852,7 @@ button.dr-card { cursor: pointer; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dr-rise, .dr-mark-glyph, .dr-empty-mark-glyph, .dr-streak-flame { animation: none !important; }
+  .dr-rise, .dr-empty-mark-glyph, .dr-streak-flame { animation: none !important; }
 }
 
 /* mobius-ui:ReducedMotion v1 -- honor the OS reduce-motion setting */
@@ -2012,13 +2012,22 @@ export default function App({ appId, token }) {
       <div className="dr-aurora" aria-hidden="true" />
       <div className="dr-header">
         <div className="dr-brand">
-          <span className="dr-mark" aria-hidden="true">
-            <span className="dr-mark-glyph">🌙</span>
-          </span>
-          <div className="dr-brand-text">
-            <h1 className="dr-title">Dreaming</h1>
-            <span className="dr-subtitle">your overnight brief</span>
-          </div>
+          {/* Brand mark: the app's real glossy icon (downscaled + cached),
+              no name text. Falls back to an accent dot when this install
+              has no custom icon and the route 404s. */}
+          <img
+            src={`/api/apps/${appId}/icon?size=64`}
+            alt=""
+            width={26}
+            height={26}
+            className="dr-brand-icon"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none'
+              const f = e.currentTarget.nextElementSibling
+              if (f) f.style.display = 'flex'
+            }}
+          />
+          <span className="dr-brand-fallback" style={{ display: 'none' }} aria-hidden="true">·</span>
         </div>
         <div className="dr-header-right">
           {headerStreak >= 1 && (
