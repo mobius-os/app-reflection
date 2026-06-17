@@ -233,3 +233,97 @@ test('extractReportQuestions never throws on non-string input', async () => {
   assert.deepEqual(extractReportQuestions(undefined), { html: '', questions: [] })
   assert.deepEqual(sanitizeQuestions('nope'), [])
 })
+
+// ---------------------------------------------------------------------------
+// Robustness: the carrier strip must survive adversarial JSON content and a
+// whitespace-tolerant type attribute, must remove EVERY carrier, and the
+// question set must carry unique texts (Codex review).
+// ---------------------------------------------------------------------------
+
+test('a literal </section> inside an option label does not leak the carrier', async () => {
+  const { extractReportQuestions } = await bundle()
+  // An option label that contains the literal string "</section>" — a naive
+  // non-greedy <section>…</section> strip would stop here and leak the rest.
+  const tricky = [
+    '<!doctype html><html><head><title>Brief</title></head><body>',
+    '<main><h1>Good morning</h1></main>',
+    '<section class="report-questions" data-report-questions>',
+    '<h2>Questions</h2>',
+    '<script type="application/mobius-questions+json">',
+    '{"questions":[{"question":"Pick a tag","options":[',
+    '{"label":"close </section> early"},{"label":"normal"}]}]}',
+    '</script></section>',
+    '</body></html>',
+  ].join('\n')
+  const { html, questions } = extractReportQuestions(tricky)
+
+  // The carrier is fully gone — no marker, no MIME, no script, no leaked label.
+  assert.doesNotMatch(html, /data-report-questions/i)
+  assert.doesNotMatch(html, /application\/mobius-questions\+json/i)
+  assert.doesNotMatch(html, /<script/i)
+  assert.doesNotMatch(html, /close <\/section> early/)
+  // The brief body itself survives.
+  assert.match(html, /Good morning/)
+  // And the questions still parse correctly through the carrier.
+  assert.equal(questions.length, 1)
+  assert.equal(questions[0].question, 'Pick a tag')
+  assert.deepEqual(questions[0].options, [
+    { label: 'close </section> early' },
+    { label: 'normal' },
+  ])
+})
+
+test('a whitespace-padded type attribute (type = "…") is still extracted and stripped', async () => {
+  const { extractReportQuestions } = await bundle()
+  const padded = [
+    '<main><h1>Hi</h1></main>',
+    '<section data-report-questions>',
+    '<script type = "application/mobius-questions+json">',
+    '{"questions":[{"question":"Q?","options":[{"label":"A"}]}]}',
+    '</script></section>',
+  ].join('\n')
+  const { html, questions } = extractReportQuestions(padded)
+
+  assert.equal(questions.length, 1)
+  assert.equal(questions[0].question, 'Q?')
+  assert.doesNotMatch(html, /data-report-questions/i)
+  assert.doesNotMatch(html, /application\/mobius-questions\+json/i)
+  assert.doesNotMatch(html, /<script/i)
+  assert.match(html, /Hi/)
+})
+
+test('two carriers in one html are BOTH fully stripped', async () => {
+  const { extractReportQuestions } = await bundle()
+  const two = [
+    '<main><h1>Hi</h1></main>',
+    '<section data-report-questions>',
+    '<script type="application/mobius-questions+json">',
+    '{"questions":[{"question":"First?","options":[{"label":"A"}]}]}',
+    '</script></section>',
+    '<section data-report-questions>',
+    '<script type="application/mobius-questions+json">',
+    '{"questions":[{"question":"Second?","options":[{"label":"B"}]}]}',
+    '</script></section>',
+  ].join('\n')
+  const { html, questions } = extractReportQuestions(two)
+
+  // First carrier's JSON is what gets extracted.
+  assert.equal(questions.length, 1)
+  assert.equal(questions[0].question, 'First?')
+  // Neither carrier survives.
+  assert.doesNotMatch(html, /data-report-questions/i)
+  assert.doesNotMatch(html, /application\/mobius-questions\+json/i)
+  assert.doesNotMatch(html, /<script/i)
+  assert.match(html, /Hi/)
+})
+
+test('sanitizeQuestions dedupes questions with identical text', async () => {
+  const { sanitizeQuestions } = await bundle()
+  const out = sanitizeQuestions([
+    { question: 'Same text', options: [{ label: 'A' }] },
+    { question: 'Same text', options: [{ label: 'B' }] },
+  ])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].question, 'Same text')
+  assert.deepEqual(out[0].options, [{ label: 'A' }])
+})

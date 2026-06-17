@@ -283,6 +283,9 @@ export function sanitizeQuestions(arr) {
     if (!raw || typeof raw !== 'object') continue
     const question = typeof raw.question === 'string' ? raw.question.trim() : ''
     if (!question) continue
+    // Dedupe by exact question text so answers can be keyed by text downstream
+    // without collisions (the persisted answers object is keyed by question).
+    if (out.some((q) => q.question === question)) continue
     const opts = Array.isArray(raw.options) ? raw.options : []
     const options = []
     for (const o of opts.slice(0, 6)) {
@@ -328,7 +331,9 @@ export function sanitizeQuestions(arr) {
 export function extractReportQuestions(html) {
   const empty = { html: typeof html === 'string' ? html : '', questions: [] }
   if (typeof html !== 'string') return empty
-  const scriptRe = /<script\b[^>]*type=["']application\/mobius-questions\+json["'][^>]*>([\s\S]*?)<\/script>/i
+  // Whitespace-tolerant type attribute (type = "…") so a stray space can't
+  // smuggle the carrier past the matcher into srcDoc.
+  const scriptRe = /<script\b[^>]*type\s*=\s*["']application\/mobius-questions\+json["'][^>]*>([\s\S]*?)<\/script>/i
   const m = html.match(scriptRe)
   let questions = []
   if (m) {
@@ -339,13 +344,15 @@ export function extractReportQuestions(html) {
       questions = []
     }
   }
-  // Strip the carrier so it never reaches srcDoc. Prefer removing the whole
-  // wrapping <section data-report-questions> (or <div>); fall back to just the
-  // <script> if the agent emitted it bare.
+  // Strip ORDER matters. Remove ALL carrier scripts FIRST (global) — that
+  // deletes any literal </section> hiding inside the JSON, so the section's
+  // remaining inner text can no longer terminate the non-greedy wrapper match
+  // early. THEN remove ALL now-script-free wrappers (global) so the visible
+  // shell never reaches the sandboxed iframe. Both passes are global so a
+  // second carrier can't survive.
   let out = html
-  const sectionRe = /<(section|div)\b[^>]*\bdata-report-questions\b[^>]*>[\s\S]*?<\/\1>/i
-  if (sectionRe.test(out)) out = out.replace(sectionRe, '')
-  else if (m) out = out.replace(scriptRe, '')
+  out = out.replace(/<script\b[^>]*type\s*=\s*["']application\/mobius-questions\+json["'][^>]*>[\s\S]*?<\/script>/gi, '')
+  out = out.replace(/<(section|div)\b[^>]*\bdata-report-questions\b[^>]*>[\s\S]*?<\/\1>/gi, '')
   return { html: out, questions }
 }
 
@@ -1284,37 +1291,41 @@ function MorningChat({ chatId, onPhase }) {
 // NEXT run (not a live agent) — the note copy says so. Mirrors the News app's
 // ReportQuestions (app-news/index.jsx) so the two apps read the same.
 function ReportQuestions({ questions, onAnswer }) {
-  const [picks, setPicks] = useState({})        // question -> label | [labels]
+  const [picks, setPicks] = useState({})        // question INDEX -> label | [labels]
   const [answered, setAnswered] = useState(false)
 
   if (!Array.isArray(questions) || questions.length === 0) return null
 
-  const allAnswered = questions.every((q) => {
-    const p = picks[q.question]
+  // Key selection state by question INDEX, not text, so two cards that happen
+  // to share question text never share selection state. (The PERSISTED answers
+  // object below is still keyed by text — readable for the next-run agent —
+  // which dedupe in sanitizeQuestions keeps collision-free.)
+  const allAnswered = questions.every((q, qi) => {
+    const p = picks[qi]
     return q.multiSelect ? Array.isArray(p) && p.length > 0 : !!p
   })
 
-  const choose = (q, label) => {
+  const choose = (qi, q, label) => {
     if (answered) return
     setPicks((prev) => {
       if (q.multiSelect) {
-        const cur = Array.isArray(prev[q.question]) ? prev[q.question] : []
+        const cur = Array.isArray(prev[qi]) ? prev[qi] : []
         const next = cur.includes(label)
           ? cur.filter((l) => l !== label)
           : [...cur, label]
-        return { ...prev, [q.question]: next }
+        return { ...prev, [qi]: next }
       }
-      return { ...prev, [q.question]: label }
+      return { ...prev, [qi]: label }
     })
   }
 
   const submit = () => {
     if (!allAnswered || answered) return
     const answers = {}
-    for (const q of questions) {
-      const p = picks[q.question]
+    questions.forEach((q, qi) => {
+      const p = picks[qi]
       answers[q.question] = Array.isArray(p) ? p.join(', ') : (p || '')
-    }
+    })
     setAnswered(true)
     onAnswer?.(answers)
   }
@@ -1327,7 +1338,7 @@ function ReportQuestions({ questions, onAnswer }) {
       </p>
       {questions.map((q, qi) => {
         const isMulti = q.multiSelect
-        const cur = picks[q.question]
+        const cur = picks[qi]
         const selected = (label) =>
           isMulti ? (Array.isArray(cur) && cur.includes(label)) : cur === label
         return (
@@ -1354,7 +1365,7 @@ function ReportQuestions({ questions, onAnswer }) {
                     role={isMulti ? 'checkbox' : 'radio'}
                     aria-checked={on}
                     className={`dr-rq__opt dr-pressable${on ? ' dr-rq__opt--on' : ''}${dim ? ' dr-rq__opt--dim' : ''}`}
-                    onClick={answered ? undefined : () => choose(q, opt.label)}
+                    onClick={answered ? undefined : () => choose(qi, q, opt.label)}
                     disabled={answered}
                     title={opt.description || ''}
                   >
