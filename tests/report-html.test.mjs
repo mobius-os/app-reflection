@@ -113,3 +113,123 @@ test('hardenReportHtml styles details/summary drill-down and the questions card'
   // the end-of-brief "questions for you" card has a styled block
   assert.match(hardened, /\.brief-questions\s*\{/)
 })
+
+// ---------------------------------------------------------------------------
+// In-report question carrier: the agent appends an inert JSON carrier as a
+// sibling after the brief root. The React layer must EXTRACT the questions,
+// STRIP the carrier before the iframe srcDoc, and silently ignore a malformed
+// or absent carrier. (Native tap-card rendering + answer persistence are
+// exercised in the app; here we lock the pure extract/strip contract that
+// hardenReportHtml depends on running first.)
+// ---------------------------------------------------------------------------
+
+const CARRIER_BRIEF = [
+  '<!doctype html><html><head><title>Brief</title></head><body>',
+  '<main><h1>Good morning</h1><p>Here is your brief.</p></main>',
+  '<section class="report-questions" data-report-questions>',
+  '<h2>A few questions</h2><p class="rq-note">Tap to answer.</p>',
+  '<script type="application/mobius-questions+json">',
+  '{"version":1,"questions":[',
+  '{"question":"Which apps should I prioritise?","header":"Focus","multiSelect":true,',
+  '"options":[{"label":"Notes","description":"the notes app"},{"label":"Habits"}]},',
+  '{"question":"How long should the brief be?","header":"Length","multiSelect":false,',
+  '"options":[{"label":"Short"},{"label":"Detailed"}]}',
+  ']}',
+  '</script></section>',
+  '</body></html>',
+].join('\n')
+
+test('extractReportQuestions parses the carrier into the exact QuestionCard shape', async () => {
+  const { extractReportQuestions } = await bundle()
+  const { questions } = extractReportQuestions(CARRIER_BRIEF)
+
+  assert.equal(questions.length, 2)
+  assert.equal(questions[0].question, 'Which apps should I prioritise?')
+  assert.equal(questions[0].header, 'Focus')
+  assert.equal(questions[0].multiSelect, true)
+  assert.deepEqual(questions[0].options, [
+    { label: 'Notes', description: 'the notes app' },
+    { label: 'Habits' },
+  ])
+  assert.equal(questions[1].multiSelect, false)
+  assert.deepEqual(questions[1].options, [{ label: 'Short' }, { label: 'Detailed' }])
+})
+
+test('extractReportQuestions strips the carrier BEFORE srcDoc (no data-report-questions left)', async () => {
+  const { extractReportQuestions, hardenReportHtml } = await bundle()
+  const { html } = extractReportQuestions(CARRIER_BRIEF)
+
+  // The visible section shell AND the inert carrier script must be gone so
+  // they never reach the sandboxed iframe.
+  assert.doesNotMatch(html, /data-report-questions/i)
+  assert.doesNotMatch(html, /report-questions/i)
+  assert.doesNotMatch(html, /mobius-questions\+json/i)
+  // The brief body itself survives the strip.
+  assert.match(html, /Good morning/)
+  assert.match(html, /<title>Brief<\/title>/)
+  // And hardening the stripped HTML never re-introduces the carrier.
+  assert.doesNotMatch(hardenReportHtml(html), /data-report-questions/i)
+})
+
+test('extractReportQuestions strips a bare carrier script with no wrapping section', async () => {
+  const { extractReportQuestions } = await bundle()
+  const bare = '<main><h1>Hi</h1></main>\n'
+    + '<script type="application/mobius-questions+json">'
+    + '{"questions":[{"question":"Q?","options":[{"label":"A"}]}]}</script>'
+  const { html, questions } = extractReportQuestions(bare)
+
+  assert.equal(questions.length, 1)
+  assert.doesNotMatch(html, /mobius-questions\+json/i)
+  assert.match(html, /Hi/)
+})
+
+test('a malformed carrier yields no cards and leaves the brief intact', async () => {
+  const { extractReportQuestions } = await bundle()
+  const bad = '<!doctype html><body><main><h1>Morning</h1></main>'
+    + '<section data-report-questions>'
+    + '<script type="application/mobius-questions+json">{ this is not json }</script>'
+    + '</section></body>'
+  const { html, questions } = extractReportQuestions(bad)
+
+  assert.deepEqual(questions, [])
+  // Even with bad JSON the section is removed so no empty heading renders,
+  // and the brief content is untouched.
+  assert.doesNotMatch(html, /data-report-questions/i)
+  assert.match(html, /Morning/)
+})
+
+test('an absent carrier returns no questions and the HTML unchanged', async () => {
+  const { extractReportQuestions } = await bundle()
+  const plain = '<!doctype html><body><main><h1>Just a brief</h1></main></body>'
+  const { html, questions } = extractReportQuestions(plain)
+
+  assert.deepEqual(questions, [])
+  assert.equal(html, plain)
+})
+
+test('sanitizeQuestions drops half-formed entries and caps at 3 questions / 6 options', async () => {
+  const { sanitizeQuestions } = await bundle()
+  const out = sanitizeQuestions([
+    { question: '', options: [{ label: 'x' }] },     // empty question -> drop
+    { question: 'no opts', options: [] },            // no options -> drop
+    { question: 'ok1', options: [{ label: 'a' }] },
+    { question: 'ok2', options: [{ label: 'b' }] },
+    { question: 'ok3', options: [{ label: 'c' }] },
+    { question: 'ok4', options: [{ label: 'd' }] },  // 4th valid -> capped out
+  ])
+  assert.equal(out.length, 3)
+  assert.deepEqual(out.map((q) => q.question), ['ok1', 'ok2', 'ok3'])
+
+  const capped = sanitizeQuestions([{
+    question: 'many',
+    options: Array.from({ length: 9 }, (_, i) => ({ label: 'o' + i })),
+  }])
+  assert.equal(capped[0].options.length, 6)
+})
+
+test('extractReportQuestions never throws on non-string input', async () => {
+  const { extractReportQuestions, sanitizeQuestions } = await bundle()
+  assert.deepEqual(extractReportQuestions(null), { html: '', questions: [] })
+  assert.deepEqual(extractReportQuestions(undefined), { html: '', questions: [] })
+  assert.deepEqual(sanitizeQuestions('nope'), [])
+})

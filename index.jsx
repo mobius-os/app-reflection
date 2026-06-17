@@ -269,6 +269,86 @@ export function hardenReportHtml(html) {
   return `<!doctype html><html><head>${inject}</head><body>${body}</body></html>`
 }
 
+// Validate + coerce the in-report question carrier's questions array into the
+// exact shape the native card consumes: [{ question, header, multiSelect,
+// options:[{label, description}] }]. Anything malformed is dropped, not
+// repaired — a half-formed question is worse than a missing one. Caps at 3
+// questions and 6 options each so a runaway carrier can't flood the read.
+// Mirrors the News app's copy (app-news/index.jsx) so the two stay in step.
+export function sanitizeQuestions(arr) {
+  if (!Array.isArray(arr)) return []
+  const out = []
+  for (const raw of arr) {
+    if (out.length >= 3) break        // cap at 3 VALID questions, not 3 inputs
+    if (!raw || typeof raw !== 'object') continue
+    const question = typeof raw.question === 'string' ? raw.question.trim() : ''
+    if (!question) continue
+    const opts = Array.isArray(raw.options) ? raw.options : []
+    const options = []
+    for (const o of opts.slice(0, 6)) {
+      const label = o && typeof o.label === 'string' ? o.label.trim() : ''
+      if (!label) continue
+      const description = o && typeof o.description === 'string' ? o.description.trim() : ''
+      options.push(description ? { label, description } : { label })
+    }
+    if (options.length === 0) continue
+    out.push({
+      question,
+      header: typeof raw.header === 'string' ? raw.header.trim() : '',
+      multiSelect: raw.multiSelect === true,
+      options,
+    })
+  }
+  return out
+}
+
+// Pull the agent's declarative in-report questions out of the RAW brief HTML,
+// returning the HTML with the carrier removed so it never reaches the sandboxed
+// iframe. The brief agent emits ONE inert JSON carrier as a sibling after the
+// brief's root element:
+//
+//   <section class="report-questions" data-report-questions>
+//     <h2>…</h2><p class="rq-note">…</p>
+//     <script type="application/mobius-questions+json">{ … }</script>
+//   </section>
+//
+// The <script> is inert inside the sandboxed iframe (null origin -> never
+// executes), but if it reached srcDoc the visible <section>/<h2> shell would
+// render as an empty "questions" heading in the brief. So we extract the JSON
+// here and STRIP the carrier before hardenReportHtml, then render native tap
+// cards below the brief (see ReportQuestions).
+//
+// Regex-based on purpose (no DOMParser) so it's identical to the News app's
+// copy and safe to run before hardenReportHtml. The matcher is deliberately
+// narrow — one carrier, the platform-specific MIME type — so it can't
+// swallow an ordinary <section> the brief happens to use. Returns { html,
+// questions }: html with the carrier stripped; questions = a validated array
+// (the EXACT shell QuestionCard shape) or [] when absent/malformed. Never
+// throws — the brief is the floor, a bad carrier just means no cards.
+export function extractReportQuestions(html) {
+  const empty = { html: typeof html === 'string' ? html : '', questions: [] }
+  if (typeof html !== 'string') return empty
+  const scriptRe = /<script\b[^>]*type=["']application\/mobius-questions\+json["'][^>]*>([\s\S]*?)<\/script>/i
+  const m = html.match(scriptRe)
+  let questions = []
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[1].trim())
+      questions = sanitizeQuestions(parsed && parsed.questions)
+    } catch {
+      questions = []
+    }
+  }
+  // Strip the carrier so it never reaches srcDoc. Prefer removing the whole
+  // wrapping <section data-report-questions> (or <div>); fall back to just the
+  // <script> if the agent emitted it bare.
+  let out = html
+  const sectionRe = /<(section|div)\b[^>]*\bdata-report-questions\b[^>]*>[\s\S]*?<\/\1>/i
+  if (sectionRe.test(out)) out = out.replace(sectionRe, '')
+  else if (m) out = out.replace(scriptRe, '')
+  return { html: out, questions }
+}
+
 // "0 6 * * *" -> "06:00" for the <input type="time"> value.
 function hourToTimeValue(hour) {
   return `${String(hour).padStart(2, '0')}:00`
@@ -851,6 +931,58 @@ button.dr-card { cursor: pointer; }
   display: flex; align-items: flex-start; gap: 8px;
 }
 
+/* In-brief question cards. The agent embeds these declaratively in the brief
+   HTML (a JSON carrier inside an inert <script>); the app renders them natively
+   here so the partner taps an answer that's saved for the NEXT run — never a
+   live agent the way a background AskUserQuestion would park a server-orphaned
+   future. Shape mirrors the shell's QuestionCard; styling mirrors the News
+   app's nw-rq, recoloured to Dreaming's violet accent. */
+.dr-rq {
+  margin: 18px 16px 22px;
+  padding: 16px 16px 18px;
+  border-radius: 14px;
+  border: 1px solid ${ACCENT};
+  background: ${ACCENT_DIM};
+}
+.dr-rq__title { font-size: 15px; font-weight: 750; color: var(--text); margin: 0 0 4px; letter-spacing: -0.1px; }
+.dr-rq__note { font-size: 12px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.dr-rq__q + .dr-rq__q {
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.dr-rq__header {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .5px; color: ${ACCENT}; margin-bottom: 4px;
+}
+.dr-rq__text { font-size: 14px; margin-bottom: 6px; color: var(--text); line-height: 1.45; }
+.dr-rq__hint { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.dr-rq__opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.dr-rq__opt {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 13px; min-height: 38px;
+  border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  font-size: 13px; cursor: pointer; box-sizing: border-box;
+  font-family: var(--font); touch-action: manipulation; user-select: none;
+}
+@media (hover: hover) {
+  .dr-rq__opt:not(.dr-rq__opt--on):hover { border-color: ${ACCENT}; }
+}
+.dr-rq__opt--on { background: ${ACCENT}; color: #fff; border-color: ${ACCENT}; }
+.dr-rq__opt--dim { opacity: 0.4; border-color: transparent; }
+.dr-rq__opt:disabled { cursor: default; }
+.dr-rq__submit {
+  display: block; width: 100%; margin-top: 14px; min-height: 44px;
+  padding: 11px; border-radius: 11px; border: none;
+  background: ${ACCENT}; color: #fff;
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  font-family: var(--font); touch-action: manipulation; user-select: none;
+  box-shadow: 0 6px 18px -8px ${ACCENT};
+}
+.dr-rq__submit:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.dr-rq--answered .dr-rq__done {
+  margin-top: 14px; font-size: 12.5px; color: var(--muted); line-height: 1.5;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dr-rise, .dr-empty-mark-glyph, .dr-streak-flame { animation: none !important; }
 }
@@ -1143,6 +1275,113 @@ function MorningChat({ chatId, onPhase }) {
   )
 }
 
+// Native tap-card UI for the brief's in-report questions. Mirrors the shell
+// QuestionCard's shape ({question, header, multiSelect, options:[{label,
+// description}]}) but is a single-file, install-safe copy — no sibling
+// imports, no streaming/answeredMap plumbing. Collects an answer per question;
+// on submit calls onAnswer({ "<question text>": "<chosen label(s)>" }) and
+// flips to a local "answered" state. The caller persists the answers for the
+// NEXT run (not a live agent) — the note copy says so. Mirrors the News app's
+// ReportQuestions (app-news/index.jsx) so the two apps read the same.
+function ReportQuestions({ questions, onAnswer }) {
+  const [picks, setPicks] = useState({})        // question -> label | [labels]
+  const [answered, setAnswered] = useState(false)
+
+  if (!Array.isArray(questions) || questions.length === 0) return null
+
+  const allAnswered = questions.every((q) => {
+    const p = picks[q.question]
+    return q.multiSelect ? Array.isArray(p) && p.length > 0 : !!p
+  })
+
+  const choose = (q, label) => {
+    if (answered) return
+    setPicks((prev) => {
+      if (q.multiSelect) {
+        const cur = Array.isArray(prev[q.question]) ? prev[q.question] : []
+        const next = cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        return { ...prev, [q.question]: next }
+      }
+      return { ...prev, [q.question]: label }
+    })
+  }
+
+  const submit = () => {
+    if (!allAnswered || answered) return
+    const answers = {}
+    for (const q of questions) {
+      const p = picks[q.question]
+      answers[q.question] = Array.isArray(p) ? p.join(', ') : (p || '')
+    }
+    setAnswered(true)
+    onAnswer?.(answers)
+  }
+
+  return (
+    <div className={`dr-rq${answered ? ' dr-rq--answered' : ''}`}>
+      <p className="dr-rq__title">A few questions for tomorrow night</p>
+      <p className="dr-rq__note">
+        Your answers guide my next run — they won’t change this brief.
+      </p>
+      {questions.map((q, qi) => {
+        const isMulti = q.multiSelect
+        const cur = picks[q.question]
+        const selected = (label) =>
+          isMulti ? (Array.isArray(cur) && cur.includes(label)) : cur === label
+        return (
+          <div key={qi} className="dr-rq__q">
+            {q.header && <div className="dr-rq__header">{q.header}</div>}
+            <div className="dr-rq__text">{q.question}</div>
+            {!answered && (
+              <div className="dr-rq__hint">
+                {isMulti ? 'Select all that apply' : 'Choose one'}
+              </div>
+            )}
+            <div
+              className="dr-rq__opts"
+              role={isMulti ? 'group' : 'radiogroup'}
+              aria-label={q.question}
+            >
+              {q.options.map((opt, oi) => {
+                const on = selected(opt.label)
+                const dim = answered && !on
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    role={isMulti ? 'checkbox' : 'radio'}
+                    aria-checked={on}
+                    className={`dr-rq__opt dr-pressable${on ? ' dr-rq__opt--on' : ''}${dim ? ' dr-rq__opt--dim' : ''}`}
+                    onClick={answered ? undefined : () => choose(q, opt.label)}
+                    disabled={answered}
+                    title={opt.description || ''}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+      {answered ? (
+        <div className="dr-rq__done">Saved — I’ll use this for tomorrow night’s dream.</div>
+      ) : (
+        <button
+          type="button"
+          className="dr-rq__submit dr-pressable"
+          onClick={submit}
+          disabled={!allAnswered}
+        >
+          Save for next time
+        </button>
+      )}
+    </div>
+  )
+}
+
 // The "Discuss this brief with the agent" affordance — placed at the BOTTOM of
 // the scrollable content (after the brief and the morning chat), never floating
 // or sticky, so it reads as the natural next step once you've finished reading.
@@ -1190,6 +1429,10 @@ function FeedbackLauncher({ dateStr, chatId, appId, token }) {
 
 function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
   const [state, setState] = useState({ phase: 'loading', html: '' })
+  // The agent's in-report questions, extracted from the RAW brief HTML and
+  // rendered as native tap cards below the iframe. The carrier is stripped
+  // from the HTML before hardenReportHtml so it never reaches the iframe.
+  const [questions, setQuestions] = useState([])
   const [chatId, setChatId] = useState(undefined) // undefined=resolving, null=none, string=id
   const [chatPhase, setChatPhase] = useState('mounting') // mirrors MorningChat's phase
   const [briefHeight, setBriefHeight] = useState(360)
@@ -1211,13 +1454,23 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
   useEffect(() => {
     let cancelled = false
     setState({ phase: 'loading', html: '' })
+    setQuestions([])
     setChatId(undefined)
     setChatPhase('mounting')
     setBriefHeight(360)
     ;(async () => {
       const res = await storage.getReportHtml(`${dateStr}.html`)
       if (cancelled) return
-      if (res.data != null) setState({ phase: 'ready', html: hardenReportHtml(res.data) })
+      if (res.data != null) {
+        // Extract the question carrier from the RAW HTML BEFORE hardening: the
+        // inert carrier <script> would otherwise ride into the sandboxed iframe
+        // and the visible <section>/<h2> shell would render as raw text in the
+        // brief (and the partner can't answer there). Strip it, harden the
+        // remainder, render the questions natively below.
+        const { html: cleaned, questions: qs } = extractReportQuestions(res.data)
+        setQuestions(qs)
+        setState({ phase: 'ready', html: hardenReportHtml(cleaned) })
+      }
       else if (res.notFound) setState({ phase: 'missing', html: '' })
       else {
         setState({ phase: 'error', html: '' })
@@ -1322,6 +1575,32 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
               sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
             />
           </div>
+
+          {/* In-brief question cards render BETWEEN the read and the morning
+              chat. The carrier was extracted from the raw HTML and stripped
+              before srcDoc, so these taps are the interactive surface. Answers
+              persist to question-answers/<date>.json for the NEXT run — no live
+              agent waits (a background AskUserQuestion would park a future a
+              server reset orphans). */}
+          {questions.length > 0 && (
+            <ReportQuestions
+              questions={questions}
+              onAnswer={(answers) => {
+                const body = {
+                  report_date: dateStr,
+                  answered_at: new Date().toISOString(),
+                  answers,
+                  questions,
+                }
+                // Bare object on a .json path -> stored as-is (no envelope).
+                // putJSON routes through the offline runtime, so a tap made
+                // offline queues and drains on reconnect. Keyed by the REPORT
+                // date so a re-open overwrites rather than piling duplicates.
+                Promise.resolve(storage.putJSON(`question-answers/${dateStr}.json`, body)).catch(() => {})
+                emitSignal(appId, token, 'feedback_given', { date: dateStr, signal: 'questions' })
+              }}
+            />
+          )}
 
           <div className={`dr-chat-panel${chatId && chatPhase === 'live' ? ' is-live' : ''}`}>
             <div className="dr-chat-header">
