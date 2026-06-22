@@ -1684,7 +1684,7 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
               persist to question-answers/<date>.json for the NEXT run — no live
               agent waits (a background AskUserQuestion would park a future a
               server reset orphans). The card owns its own durable write so it
-              can await the result, flip to "Saved" only on a synced write, and
+              can await the result, flip to "Saved" on a durable outcome (synced or queued), and
               re-seed the answered state from storage when the brief reopens. */}
           {questions.length > 0 && (
             <ReportQuestions
