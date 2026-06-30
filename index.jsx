@@ -1,6 +1,6 @@
-/* Dreaming — the nightly morning-brief viewer.
+/* Reflection — the nightly morning-brief viewer.
  *
- * Lists the dated reports the dreaming agent leaves overnight, tracks a
+ * Lists the dated reports the reflection agent leaves overnight, tracks a
  * streak, and lets the owner set the run hour and model. Opening a brief
  * shows TWO things stacked: the brief HTML up top (a sandboxed iframe —
  * the agent's static page) and, beneath it, the MORNING CHAT the nightly
@@ -60,7 +60,7 @@ function cronExitLabel(code) {
   return 'failed (exit ' + n + ')'
 }
 
-// Guarded signal emitter for dreaming.
+// Guarded signal emitter for reflection.
 function emitSignal(appId, token, name, data = {}) {
   try {
     const payload = { name, ts: new Date().toISOString(), ...data }
@@ -243,7 +243,7 @@ const REPORT_HEIGHT_SCRIPT = `<script>
 (function(){
   function emit(){
     var h=Math.ceil(document.documentElement.getBoundingClientRect().height);
-    if(h>0)parent.postMessage({type:'dreaming:brief-height',height:h},'*');
+    if(h>0)parent.postMessage({type:'reflection:brief-height',height:h},'*');
   }
   if(document.readyState==='loading'){
     document.addEventListener('DOMContentLoaded',emit);
@@ -467,7 +467,7 @@ function dayOfMonth(dateStr) {
 
 // ---------------------------------------------------------------------------
 // Theme + motion. Structural colors are CSS variables so light + dark both
-// work; the dream-violet accent is the one committed hardcode. A handful of
+// work; the violet accent is the one committed hardcode. A handful of
 // keyframes (drift, shimmer, rise) feed loading + entrance states so they feel
 // alive rather than static.
 //
@@ -477,12 +477,12 @@ function dayOfMonth(dateStr) {
 // ChatEmbed / SyncPill) is fenced with `/* mobius-ui:<Block> v1 … */` markers
 // so a future extraction is mechanical; app-specific blocks (aurora, moon
 // tile, date tile, streak badge, brief↔chat split, settings) stay below as
-// unfenced `dr-` rules and keep their exact current values. The dream-violet
+// unfenced `dr-` rules and keep their exact current values. The violet
 // accent (#7c6cf0 / #a78bfa) is the one committed hardcode the theme can't
 // express. Structural colors are theme tokens.
 // ---------------------------------------------------------------------------
 
-const ACCENT = '#7c6cf0'        // dreaming's own violet
+const ACCENT = '#7c6cf0'        // reflection's own violet
 const ACCENT_2 = '#a78bfa'      // lighter companion for gradients/glows
 const ACCENT_DIM = 'rgba(124,108,240,0.13)'
 const ACCENT_DIM_2 = 'rgba(167,139,250,0.10)'
@@ -641,13 +641,13 @@ button.dr-card { cursor: pointer; }
 .dr-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 /* /mobius-ui:Scrollskin */
 
-/* ---- App-specific (dreaming) — keep exact current values ---- */
+/* ---- App-specific (reflection) — keep exact current values ---- */
 
 /* The detail view reuses the shared empty shape for its missing/error notes,
    but with a tighter top inset than the list's first-run empty. */
 .dr-empty.is-compact { padding-top: 56px; }
 
-/* Entrance + press affordances. A handful of dreaming surfaces ride a small
+/* Entrance + press affordances. A handful of reflection surfaces ride a small
    rise-in on mount; pressable controls get the same active/focus feel as the
    shared card without being one. */
 .dr-rise { animation: dr-rise .32s cubic-bezier(.22,.61,.36,1) both; }
@@ -959,7 +959,7 @@ button.dr-card { cursor: pointer; }
    here so the partner taps an answer that's saved for the NEXT run — never a
    live agent the way a background AskUserQuestion would park a server-orphaned
    future. Shape mirrors the shell's QuestionCard; styling mirrors the News
-   app's nw-rq, recoloured to Dreaming's violet accent. */
+   app's nw-rq, recoloured to Reflection's violet accent. */
 .dr-rq {
   margin: 18px 16px 22px;
   padding: 16px 16px 18px;
@@ -1163,7 +1163,7 @@ export function makeStorage(appId, token) {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny offline snapshot. Dreaming reads via direct fetch (text bodies +
+// Tiny offline snapshot. Reflection reads via direct fetch (text bodies +
 // apps-list), neither of which the platform read-cache covers, so we keep our
 // own localStorage snapshot: the dates list, the streak, and the latest
 // summary. This is read-only mirror state — only the cron writes reports, so
@@ -1173,7 +1173,7 @@ export function makeStorage(appId, token) {
 // ---------------------------------------------------------------------------
 
 const CACHE_VERSION = 1
-function cacheKey(appId) { return `dreaming:${appId}:list:v${CACHE_VERSION}` }
+function cacheKey(appId) { return `reflection:${appId}:list:v${CACHE_VERSION}` }
 
 function readCache(appId) {
   try {
@@ -1466,7 +1466,7 @@ function ReportQuestions({ questions, storage, dateStr, appId, token }) {
         )
       })}
       {answered ? (
-        <div className="dr-rq__done">Saved — I’ll use this for tomorrow night’s dream.</div>
+        <div className="dr-rq__done">Saved — I’ll use this for tomorrow night’s run.</div>
       ) : (
         <>
           <button
@@ -1593,7 +1593,7 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
   // passively via postMessage instead.
   useEffect(() => {
     const onMessage = (ev) => {
-      if (!ev.data || ev.data.type !== 'dreaming:brief-height') return
+      if (!ev.data || ev.data.type !== 'reflection:brief-height') return
       // Only trust OUR brief iframe: the sandboxed frame has a null origin,
       // so ev.origin can't identify it — ev.source against the iframe's
       // contentWindow is the only way to reject spoofed height messages
@@ -1804,7 +1804,7 @@ function ReportsList({ appId, storage, online, onOpen }) {
   }, [storage])
 
   // Reconnecting after an offline stretch should re-list (the offline view is
-  // a frozen cached snapshot; tonight's dream only appears after a fresh
+  // a frozen cached snapshot; tonight's run only appears after a fresh
   // listing). Bump reloadKey on the false→true transition.
   const wasOnline = useRef(online)
   useEffect(() => {
@@ -1816,7 +1816,7 @@ function ReportsList({ appId, storage, online, onOpen }) {
     return (
       <div className="dr-loading-wrap">
         <span className="dr-spinner" aria-hidden="true" />
-        <div>Gathering last night’s dream…</div>
+        <div>Gathering last night’s brief…</div>
       </div>
     )
   }
@@ -1858,7 +1858,7 @@ function ReportsList({ appId, storage, online, onOpen }) {
       {!online && (
         <div className="dr-offline-banner">
           <span aria-hidden="true">🌙</span>
-          Offline — showing your last cached briefs. Tonight’s dream appears
+          Offline — showing your last cached briefs. Tonight’s brief appears
           once you’re back online.
         </div>
       )}
@@ -1915,10 +1915,10 @@ function StreakBar({ streak }) {
 // ---------------------------------------------------------------------------
 //
 // Reads GET /api/admin/activity?since=<48h> (same auth pattern as other owner
-// calls in this app), filters to cron_outcome events with job=dreaming, takes
+// calls in this app), filters to cron_outcome events with job=reflection, takes
 // the most-recent one, and renders a compact status line.
 // A failure outcome shows an "Investigate" button that posts moebius:new-chat
-// with a draft asking the agent to read /data/cron-logs/dreaming.log.
+// with a draft asking the agent to read /data/cron-logs/reflection.log.
 
 function LastNightStatus({ token }) {
   const [state, setState] = React.useState({ phase: 'loading', exitCode: null, ts: null })
@@ -1945,14 +1945,14 @@ function LastNightStatus({ token }) {
             events.push(obj)
           } catch { continue }
         }
-        // Find the most-recent cron_outcome for dreaming.
-        const dreaming = events
-          .filter((e) => e.ev === 'cron_outcome' && e.job === 'dreaming')
+        // Find the most-recent cron_outcome for reflection.
+        const reflection = events
+          .filter((e) => e.ev === 'cron_outcome' && e.job === 'reflection')
           .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
-        if (dreaming.length === 0) {
+        if (reflection.length === 0) {
           setState({ phase: 'none' })
         } else {
-          const latest = dreaming[0]
+          const latest = reflection[0]
           setState({ phase: 'ready', exitCode: latest.exit_code, ts: latest.ts })
         }
       } catch {
@@ -1966,7 +1966,7 @@ function LastNightStatus({ token }) {
     const draft = [
       'Something went wrong with the Reflection cron job. Please investigate:',
       '',
-      '1. Check /data/cron-logs/dreaming.log for the most recent error',
+      '1. Check /data/cron-logs/reflection.log for the most recent error',
       '2. Identify the root cause (lock, timeout, config, or agent error)',
       '3. Propose a fix or next steps',
     ].join('\n')
@@ -2147,7 +2147,7 @@ function SettingsTab({ appId, storage, token }) {
       <div className="dr-settings-card">
         <div className="dr-section-head">
           <span className="dr-section-icon" aria-hidden="true">⏰</span>
-          <h2 className="dr-section-label">When to dream</h2>
+          <h2 className="dr-section-label">When it runs</h2>
         </div>
         <p className="dr-note">
           Pick the hour your morning brief should be ready. Reflection writes it
@@ -2187,7 +2187,7 @@ function SettingsTab({ appId, storage, token }) {
         <div className="dr-schedule-hint">
           <span aria-hidden="true">💡</span>
           <span>
-            Schedule changes take effect after the dreaming agent re-installs
+            Schedule changes take effect after the reflection agent re-installs
             its overnight job — usually by the next run. The app saves your
             preference; the agent picks it up from there.
           </span>
@@ -2266,7 +2266,7 @@ function SettingsTab({ appId, storage, token }) {
           <h2 className="dr-section-label">Brief style</h2>
         </div>
         <p className="dr-note">
-          How long and how detailed you'd like the morning brief. The dreaming
+          How long and how detailed you'd like the morning brief. The reflection
           skill honors this when writing tonight's report.
         </p>
         <div className="dr-verbosity-row">
@@ -2292,7 +2292,7 @@ function SettingsTab({ appId, storage, token }) {
           <h2 className="dr-section-label">Tonight's steering</h2>
         </div>
         <p className="dr-note">
-          Optional nudges the dreaming agent reads before deciding what to cover.
+          Optional nudges the reflection agent reads before deciding what to cover.
           Leave blank to let it choose freely.
         </p>
         <label className="dr-note" style={{ display: 'block', marginBottom: 4 }}>
@@ -2388,7 +2388,7 @@ export default function App({ appId, token }) {
     try { detailNavRef.current?.close?.() } catch {}
     detailNavRef.current = null
     if (window.mobius?.nav?.open) {
-      const handle = window.mobius.nav.open('dreaming-report', () => {
+      const handle = window.mobius.nav.open('reflection-report', () => {
         detailNavRef.current = null
         setOpenDate(null)
       })
@@ -2471,7 +2471,7 @@ export default function App({ appId, token }) {
         )}
         {tab === 'reports' ? (
           <>
-            {/* Last-night status row — shows most recent cron_outcome for dreaming */}
+            {/* Last-night status row — shows most recent cron_outcome for reflection */}
             <LastNightStatus token={token} />
             <ReportsList
               appId={appId}

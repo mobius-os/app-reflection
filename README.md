@@ -1,53 +1,53 @@
-# Dreaming
+# Reflection
 
-The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, Möbius *dreams*: a real agent wakes up with the whole night ahead of it and does the slow, deferred work the daytime agent never has time for. In the morning it hands you a one-page brief and a short conversation with a few decisions to tap through over coffee.
+The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, Möbius reflects on the day: a real agent wakes up with the whole night ahead of it and does the slow, deferred work the daytime agent never has time for. In the morning it hands you a one-page brief and a short conversation with a few decisions to tap through over coffee.
 
-The dreamer always ships a brief, even on quiet nights — Möbius's dreaming skill mandates a brief every run.
+It always ships a brief, even on quiet nights — Möbius's reflection skill mandates a brief every run.
 
 ## Install
 
 ### Via the App Store (recommended)
 
-Open the **App Store** mini-app in Möbius, find **Dreaming**, tap **Install**.
+Open the **App Store** mini-app in Möbius, find **Reflection**, tap **Install**.
 
 ### Via paste-a-URL
 
 In the App Store, choose **Install from URL** and paste:
 
 ```
-https://raw.githubusercontent.com/mobius-os/app-dreaming/main/mobius.json
+https://raw.githubusercontent.com/mobius-os/app-reflection/main/mobius.json
 ```
 
 Möbius fetches the manifest, shows you the requested permissions and schedule, and installs with one tap.
 
-## What a dream does
+## What a run does
 
-The run is one multi-turn goal, not a single prompt. Working from the day's activity and chats, the dreamer:
+The run is one multi-turn goal, not a single prompt. Working from the day's activity and chats, the agent:
 
 1. **Interviews the agents that worked during the day.** It forks each chat (and each app sub-agent run) into a throwaway copy — reusing the same provider that did the original work — and asks what was hard, what it learned, what you'd want flagged. Your real chats are never touched.
-2. **Sharpens its own skills and memory.** What it learns from the interviews gets folded back into the agent's skills (including the dreaming skill itself) and into **Mind**, the knowledge graph. Each night's dream is meant to make the next one better.
+2. **Sharpens its own skills and memory.** What it learns from the interviews gets folded back into the agent's skills (including the reflection skill itself) and into **Memory**, the knowledge graph. Each night's run is meant to make the next one better.
 3. **Hardens your apps.** It opens each app, exercises the paths you actually use, and fixes the small, obviously-correct breakages so you wake to working apps. Anything with a judgment call is left as a proposal, not applied.
 4. **Researches what you care about and proposes features**, each tied to something it observed you doing.
-5. **Writes the brief and links feedback to chat.** A standalone HTML brief lands in `reports/<date>.html`; when the run records a related chat, Dreaming opens feedback into that thread with a ready-to-edit draft.
+5. **Writes the brief and links feedback to chat.** A standalone HTML brief lands in `reports/<date>.html`; when the run records a related chat, Reflection opens feedback into that thread with a ready-to-edit draft.
 
-When you leave feedback in the morning, that closes the loop: the dreamer can act on your notes and records what your answers taught it, so tomorrow night's dream wastes fewer of your taps.
+When you leave feedback in the morning, that closes the loop: the agent can act on your notes and records what your answers taught it, so the next night's run wastes fewer of your taps.
 
 ## No sandbox, by design
 
-The dreamer runs with **full tools and a real token** — it is the agent, trusted, not a locked-down script. That is deliberate: Möbius's philosophy is *code empowers the agent; it does not police it*. Safety comes from instruction, not tool-denial — every change it makes is in `/data`'s git history and reversible, it never auto-applies anything risky (security changes with behavior impact, destructive data ops, dependency major-bumps, anything that hits paid APIs or notifies other people), and it surfaces those as proposals in the brief instead.
+The agent runs with **full tools and a real token** — it is the agent, trusted, not a locked-down script. That is deliberate: Möbius's philosophy is *code empowers the agent; it does not police it*. Safety comes from instruction, not tool-denial — every change it makes is in `/data`'s git history and reversible, it never auto-applies anything risky (security changes with behavior impact, destructive data ops, dependency major-bumps, anything that hits paid APIs or notifies other people), and it surfaces those as proposals in the brief instead.
 
 ## Customize
 
 From the app's **Settings** tab:
 
 - **Agent / Model** — Claude or Codex; any model from a connected provider.
-- **Dream time** — when the cron fires. Defaults to 06:00 local (DST handled); untick "use my local time" to pin to UTC.
+- **Run time** — when the cron fires. Defaults to 06:00 local (DST handled); untick "use my local time" to pin to UTC.
 
-Schedule changes take effect within 10 minutes (the cron sync runs every 10). How the dreamer *dreams* — what it prioritizes, how it interviews, how long the brief runs — lives in the editable dreaming skill, which the dreamer revises itself as it learns what's worth doing.
+Schedule changes take effect within 10 minutes (the cron sync runs every 10). What it prioritizes, how it interviews, and how long the brief runs live in the editable reflection skill, which the agent revises itself as it learns what's worth doing.
 
 ## Streak
 
-The streak counts consecutive days a brief was produced. The dreaming skill mandates a brief every run, so the streak grows each night Dreaming ran and is never reset by a "quiet" night — only by a run that actually failed or was skipped (lock-held or config error).
+The streak counts consecutive days a brief was produced. The reflection skill mandates a brief every run, so the streak grows each night the run completes and is never reset by a "quiet" night — only by a run that actually failed or was skipped (lock-held or config error).
 
 ## License
 

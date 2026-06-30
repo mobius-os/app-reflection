@@ -48,7 +48,7 @@ test('hardenReportHtml wraps fragments in a complete document', async () => {
   assert.match(hardened, /<body><main>hello<\/main><\/body>/)
 })
 
-test('hardenReportHtml injects height-reporter script that postMessages dreaming:brief-height', async () => {
+test('hardenReportHtml injects height-reporter script that postMessages reflection:brief-height', async () => {
   const { hardenReportHtml } = await bundle()
 
   const html = '<!doctype html><html><head><title>Brief</title></head><body><p>hi</p></body></html>'
@@ -57,7 +57,7 @@ test('hardenReportHtml injects height-reporter script that postMessages dreaming
   // script-src 'unsafe-inline' must be present (required for injected script)
   assert.match(hardened, /script-src 'unsafe-inline'/)
   // The height reporter script must be present
-  assert.match(hardened, /dreaming:brief-height/)
+  assert.match(hardened, /reflection:brief-height/)
   assert.match(hardened, /postMessage/)
   // The reporter must measure the documentElement border-box height —
   // viewport-independent, so a transient over-measurement can shrink back.
@@ -69,7 +69,7 @@ test('hardenReportHtml injects height-reporter script that postMessages dreaming
   assert.doesNotMatch(hardened, /scrollHeight/)
   // Script injected before existing head content
   assert.ok(
-    hardened.indexOf('dreaming:brief-height') < hardened.indexOf('<title>Brief</title>'),
+    hardened.indexOf('reflection:brief-height') < hardened.indexOf('<title>Brief</title>'),
     'height reporter should appear before existing head content',
   )
 })

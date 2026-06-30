@@ -72,7 +72,7 @@ test('putJSON rejects when durableWrite fatally refuses (413) - the call site sh
   installMobius(() => {
     throw new FakeDurableWriteError('refused (413)', { code: 'dead_letter', status: 413, path: 'x', retryable: false })
   })
-  const storage = makeStorage('dreaming', 'tok')
+  const storage = makeStorage('reflection', 'tok')
 
   // The app wraps putJSON in try/catch and only flips to "Saved" on a non-throw.
   // A rejecting putJSON therefore lands in catch -> error UI. We assert the
@@ -86,7 +86,7 @@ test('putJSON rejects when durableWrite fatally refuses (413) - the call site sh
 test('putJSON resolves on a synced write - the call site shows "Saved"', async () => {
   const { makeStorage } = await bundle()
   const calls = installMobius(() => ({ durability: 'synced', path: 'p', writeId: 'w1' }))
-  const storage = makeStorage('dreaming', 'tok')
+  const storage = makeStorage('reflection', 'tok')
 
   const res = await storage.putJSON('settings.json', { cron: '0 6 * * *' })
   assert.equal(res.durability, 'synced')
@@ -98,7 +98,7 @@ test('putJSON resolves on a synced write - the call site shows "Saved"', async (
 test('putJSON treats a queued (offline) write as durable success - it does NOT throw', async () => {
   const { makeStorage } = await bundle()
   installMobius(() => ({ durability: 'queued', path: 'p', writeId: 'w2' }))
-  const storage = makeStorage('dreaming', 'tok')
+  const storage = makeStorage('reflection', 'tok')
 
   // The old putJSON threw on queued (forcing an "offline" error); the migrated
   // one must resolve, because a queued write is durably outboxed with a
@@ -113,7 +113,7 @@ test('a "superseded"/"conflict" DurableWriteError also rejects putJSON (any fata
   installMobius(() => {
     throw new FakeDurableWriteError('superseded', { code: 'superseded', path: 'p', retryable: false })
   })
-  const storage = makeStorage('dreaming', 'tok')
+  const storage = makeStorage('reflection', 'tok')
   // The app never passes opts.ifMatch (so 412/conflict can't occur in practice),
   // but if durableWrite rejects for ANY reason, the call site must not claim
   // "Saved" - it catches the throw and surfaces an error. Lock that putJSON

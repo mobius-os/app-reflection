@@ -1,25 +1,25 @@
 #!/bin/bash
-# fetch.sh — the nightly "dreaming" wrapper. Thin by design: it owns
+# fetch.sh — the nightly "reflection" wrapper. Thin by design: it owns
 # only the OPERATIONAL concerns of an unattended cron run — no overlap,
 # a wall-clock timeout, liveness heartbeats, an outcome event — and then
 # hands the night to the agent.
 #
-# Unlike v1, this wrapper is NOT a security boundary. The Dreaming agent
+# Unlike v1, this wrapper is NOT a security boundary. The Reflection agent
 # runs with FULL tools and a REAL token (no staging tree, no
 # Bash-less/token-less envelope, no graph validation gate). It forks
 # chats, consolidates the Mind graph, edits skills, fixes apps, writes
 # the brief to reports/<date>.html via the storage API, opens the
 # morning chat, and commits — all itself, instructed by its skill
-# (/data/shared/skills/dreaming.md), per Möbius's "code empowers the
+# (/data/shared/skills/reflection.md), per Möbius's "code empowers the
 # agent; it does not police it." Reversibility comes from git, not from
 # walls. So this file gathers a little read-only context for the agent,
 # exports the few env vars its shell needs, runs the runner under a lock
 # + timeout, and records how the night finished.
 #
-# Invoked by cron as: /data/apps/dreaming/fetch.sh <app_id>
+# Invoked by cron as: /data/apps/reflection/fetch.sh <app_id>
 # (the app id arrives as $1, per the cron-scaffold convention).
 #
-# DREAMING_DRY=1 skips the real agent run (records a dry outcome) so the
+# REFLECTION_DRY=1 skips the real agent run (records a dry outcome) so the
 # plumbing — lock, inputs, env, heartbeat, cron_outcome — can be smoke-
 # tested without spending a nightly run.
 set -uo pipefail
@@ -27,17 +27,17 @@ set -uo pipefail
 APP_ID="${1:-}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8000}"
 DATA_DIR="${DATA_DIR:-/data}"
-LOG="$DATA_DIR/cron-logs/dreaming.log"
-LOCK="$DATA_DIR/cron-logs/dreaming.lock"
-HEARTBEAT="$DATA_DIR/cron-logs/dreaming.heartbeat"
+LOG="$DATA_DIR/cron-logs/reflection.log"
+LOCK="$DATA_DIR/cron-logs/reflection.lock"
+HEARTBEAT="$DATA_DIR/cron-logs/reflection.heartbeat"
 TOKEN_FILE="$DATA_DIR/service-token.txt"
 DATE="$(date +%F)"
-INPUTS="$DATA_DIR/apps/dreaming/inputs"
-RUNNER="${DREAMING_RUNNER:-/app/scripts/dreaming_runner.py}"
+INPUTS="$DATA_DIR/apps/reflection/inputs"
+RUNNER="${REFLECTION_RUNNER:-/app/scripts/reflection_runner.py}"
 # Wall-clock cap for the whole night. Generous (the agent does real,
 # multi-phase work) but bounded so a wedged run can't hold the lock past
 # the next night's schedule. Overridable for tests.
-RUN_TIMEOUT="${DREAMING_TIMEOUT:-7200}"
+RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
 
 # CLI credentials the spawned claude/codex binary reads. Exported (not
 # just set) so the runner and any subprocess it forks inherit them.
@@ -46,10 +46,10 @@ export CODEX_HOME="${CODEX_HOME:-$DATA_DIR/cli-auth/codex}"
 export API_BASE_URL DATA_DIR
 
 mkdir -p "$DATA_DIR/cron-logs" "$INPUTS"
-log() { echo "[$(date -Iseconds)] dreaming: $*" >>"$LOG"; }
+log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
 
 # emit_outcome <exit_code> — one cron_outcome activity event recording
-# how the night finished, so the next night's agent (and the Dreaming
+# how the night finished, so the next night's agent (and the Reflection
 # app) can see the run history. Routed through the API so one process
 # owns the activity-log file handle. Defined early because the token
 # guard below emits a failure outcome before the main run.
@@ -59,7 +59,7 @@ emit_outcome() {
   local token ts payload
   token="$(cat "$TOKEN_FILE")"
   ts="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
-  payload="$(printf '{"ev":"cron_outcome","ts":"%s","app_id":%s,"job":"dreaming","exit_code":%s}' \
+  payload="$(printf '{"ev":"cron_outcome","ts":"%s","app_id":%s,"job":"reflection","exit_code":%s}' \
     "$ts" "${APP_ID:-0}" "$exit_code")"
   # The activity log is the PRIMARY liveness signal the next night's run
   # reads, so a dropped emit is invisible there (only this .log file keeps
@@ -85,13 +85,13 @@ emit_outcome() {
 # fd 9 holds the lock for the life of this process; flock -n fails fast
 # if a prior night is still running (a long run that overran its window).
 # Exit-code legend (recorded as the cron_outcome exit_code, so the next
-# run + the Dreaming app can tell a real success from a no-op):
+# run + the Reflection app can tell a real success from a no-op):
 #   0  success           3  service token missing
 #   2  app id missing    5  skipped (a prior run still holds the lock)
 #   124 wall-clock timeout    other  agent run error
 exec 9>"$LOCK"
 if ! flock -n 9; then
-  log "another dreaming run holds the lock; skipping this night (exit 5)"
+  log "another reflection run holds the lock; skipping this night (exit 5)"
   emit_outcome 5
   exit 5
 fi
@@ -122,7 +122,7 @@ if [[ -z "$APP_ID" ]]; then
   exit 2
 fi
 
-log "start (app_id=$APP_ID date=$DATE dry=${DREAMING_DRY:-0} timeout=${RUN_TIMEOUT}s)"
+log "start (app_id=$APP_ID date=$DATE dry=${REFLECTION_DRY:-0} timeout=${RUN_TIMEOUT}s)"
 
 # --- gather read-only inputs for the agent ----------------------------
 # The agent reads these from inputs/ as its starting context. It can (and
@@ -169,7 +169,7 @@ except Exception as e:
 PY
 
 # app-feedback.md — cross-app feedback forms written under
-# shared/app-feedback/<app-slug>/. Dreaming can use these as durable
+# shared/app-feedback/<app-slug>/. Reflection can use these as durable
 # product/editorial signals without needing to know each app's numeric id.
 python3 - "$API_BASE_URL" "$SERVICE_TOKEN" >"$INPUTS/app-feedback.md" 2>>"$LOG" <<'PY' || true
 import json, sys, urllib.parse, urllib.request
@@ -322,7 +322,7 @@ if [[ -n "$PREV_QA" ]]; then
     >"$INPUTS/prev-question-answers.json" 2>>"$LOG" || true
 fi
 
-# per-app-digest.json — compact per-app analytics summary the Dreaming
+# per-app-digest.json — compact per-app analytics summary the Reflection
 # agent uses to triage which apps need attention tonight. Produced from
 # two sources:
 #   - activity.jsonl ON DISK (already staged above) for opens_24h counts
@@ -465,7 +465,7 @@ log "gathered inputs (activity, chats, app-feedback, prev-report, per-app-digest
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a
-# morning glance) can `stat` it to tell "still dreaming" from "wedged".
+# morning glance) can `stat` it to tell "still reflection" from "wedged".
 # Killed in the cleanup trap below.
 #
 # fd 9 (the flock handle) is CLOSED in the child (`9>&-`) so the lock is
@@ -491,12 +491,12 @@ cleanup() {
 trap cleanup EXIT
 
 # --- run the agent: full tools, real token, no sandbox ----------------
-# The runner loads the dreaming skill as the system prompt, sends the
+# The runner loads the reflection skill as the system prompt, sends the
 # goal as the first user message, and drives the multi-turn loop. `timeout`
 # bounds wall-clock; --signal=TERM gives the run a chance to flush before
 # SIGKILL (--kill-after). The runner streams its own trace into $LOG.
 RC=0
-if [[ "${DREAMING_DRY:-0}" == "1" ]]; then
+if [[ "${REFLECTION_DRY:-0}" == "1" ]]; then
   log "DRY run: skipping agent; recording dry outcome"
   RC=0
 elif [[ ! -r "$RUNNER" ]]; then
@@ -520,7 +520,7 @@ fi
 # 50-file guard keep this honest; --allow-broad because a full night can
 # legitimately touch many files (skills, memory notes, app sources).
 if command -v pm-commit >/dev/null 2>&1; then
-  ( cd "$DATA_DIR" && pm-commit --allow-broad "dreaming: nightly safety-net commit $DATE" \
+  ( cd "$DATA_DIR" && pm-commit --allow-broad "reflection: nightly safety-net commit $DATE" \
       >>"$LOG" 2>&1 ) || true
 fi
 
