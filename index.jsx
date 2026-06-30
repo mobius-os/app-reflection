@@ -257,13 +257,60 @@ const REPORT_HEIGHT_SCRIPT = `<script>
 })();
 </script>`
 
-export function hardenReportHtml(html) {
+// Rough luminance test so the brief iframe's color-scheme (UA scrollbars, form
+// chrome) matches a dark or light theme. Parses #rgb/#rrggbb and rgb()/rgba();
+// anything unparseable is treated as light.
+export function isDarkColor(c) {
+  if (!c) return false
+  let r, g, b
+  const hex = c.trim().replace(/^#/, '')
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    r = parseInt(hex[0] + hex[0], 16); g = parseInt(hex[1] + hex[1], 16); b = parseInt(hex[2] + hex[2], 16)
+  } else if (/^[0-9a-f]{6}$/i.test(hex)) {
+    r = parseInt(hex.slice(0, 2), 16); g = parseInt(hex.slice(2, 4), 16); b = parseInt(hex.slice(4, 6), 16)
+  } else {
+    const m = c.match(/rgba?\(([^)]+)\)/i)
+    if (!m) return false
+    ;[r, g, b] = m[1].split(',').map((x) => parseFloat(x))
+  }
+  if ([r, g, b].some((x) => Number.isNaN(x))) return false
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+}
+
+// The brief renders in a NULL-ORIGIN sandboxed iframe (allow-scripts WITHOUT
+// allow-same-origin, so its scripts can't reach the shell's owner JWT). A null
+// origin also means the iframe does NOT inherit the app document's CSS custom
+// properties — so without this, every var(--surface)/var(--text) in
+// REPORT_BASE_STYLE falls back to its light literal and the brief renders
+// black-on-white regardless of the active theme. Read the resolved tokens off
+// the app's own :root and re-declare them inside the iframe, plus set html/body
+// background+color and a luminance-matched color-scheme so the brief honors the
+// theme. `rootStyle` (a CSSStyleDeclaration) is injectable for tests; in the
+// app it defaults to the live document root.
+export function reportThemeStyle(rootStyle) {
+  const cs = rootStyle || (typeof getComputedStyle === 'function' && typeof document !== 'undefined'
+    ? getComputedStyle(document.documentElement) : null)
+  if (!cs) return ''
+  const tokens = ['--bg', '--text', '--surface', '--surface-active', '--border',
+    '--muted', '--accent', '--accent-tint', '--font']
+  const decls = tokens
+    .map((t) => { const v = (cs.getPropertyValue(t) || '').trim(); return v ? `${t}: ${v};` : '' })
+    .filter(Boolean).join(' ')
+  if (!decls) return ''
+  const scheme = isDarkColor(cs.getPropertyValue('--bg')) ? 'dark' : 'light'
+  return `<style>:root { ${decls} color-scheme: ${scheme}; } html, body { background: var(--bg); color: var(--text); }</style>`
+}
+
+export function hardenReportHtml(html, themeStyle = '') {
   const body = typeof html === 'string' ? html : ''
-  // Order: CSP first, then the base style (overflow guards + details/questions
-  // defaults), then the height reporter. The base style sits before the
-  // brief's own <style> so the template's richer rules win on the cascade,
-  // while the html/body overflow guards (which the template never sets) hold.
-  const inject = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">${REPORT_BASE_STYLE}${REPORT_HEIGHT_SCRIPT}`
+  // Order: CSP first, then the resolved theme tokens (so the null-origin iframe
+  // renders in-theme instead of falling back to REPORT_BASE_STYLE's light
+  // literals — see reportThemeStyle), then the base style (overflow guards +
+  // details/questions defaults), then the height reporter. The base style sits
+  // before the brief's own <style> so the template's richer rules win on the
+  // cascade, while the html/body overflow guards (which the template never
+  // sets) hold.
+  const inject = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">${themeStyle}${REPORT_BASE_STYLE}${REPORT_HEIGHT_SCRIPT}`
   if (/<head[\s>]/i.test(body)) return body.replace(/<head([^>]*)>/i, `<head$1>${inject}`)
   if (/<html[\s>]/i.test(body)) return body.replace(/<html([^>]*)>/i, `<html$1><head>${inject}</head>`)
   return `<!doctype html><html><head>${inject}</head><body>${body}</body></html>`
@@ -1585,7 +1632,7 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
         // remainder, render the questions natively below.
         const { html: cleaned, questions: qs } = extractReportQuestions(res.data)
         setQuestions(qs)
-        setState({ phase: 'ready', html: hardenReportHtml(cleaned) })
+        setState({ phase: 'ready', html: hardenReportHtml(cleaned, reportThemeStyle()) })
       }
       else if (res.notFound) setState({ phase: 'missing', html: '' })
       else {

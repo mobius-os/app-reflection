@@ -327,3 +327,33 @@ test('sanitizeQuestions dedupes questions with identical text', async () => {
   assert.equal(out[0].question, 'Same text')
   assert.deepEqual(out[0].options, [{ label: 'A' }])
 })
+
+test('reportThemeStyle re-declares resolved theme tokens for the null-origin iframe', async () => {
+  const { reportThemeStyle } = await bundle()
+  const map = { '--bg': '#0c0c0c', '--text': '#f0f0f0', '--surface': '#1a1a1a', '--accent': '#7c6cf0' }
+  const style = reportThemeStyle({ getPropertyValue: (t) => map[t] || '' })
+  assert.match(style, /--bg: #0c0c0c;/)
+  assert.match(style, /--text: #f0f0f0;/)
+  assert.match(style, /color-scheme: dark;/) // #0c0c0c is dark
+  assert.match(style, /html, body \{ background: var\(--bg\); color: var\(--text\); \}/)
+})
+
+test('reportThemeStyle picks a light color-scheme for a light --bg', async () => {
+  const { reportThemeStyle } = await bundle()
+  const root = { getPropertyValue: (t) => (t === '--bg' ? '#ffffff' : t === '--text' ? '#111' : '') }
+  assert.match(reportThemeStyle(root), /color-scheme: light;/)
+})
+
+test('reportThemeStyle returns empty when no tokens resolve', async () => {
+  const { reportThemeStyle } = await bundle()
+  assert.equal(reportThemeStyle({ getPropertyValue: () => '' }), '')
+})
+
+test('hardenReportHtml places the theme style before the base style so var() lookups resolve', async () => {
+  const { hardenReportHtml } = await bundle()
+  const themed = hardenReportHtml('<article>hi</article>', '<style>:root{--bg:#0c0c0c;}</style>')
+  assert.ok(themed.indexOf('--bg:#0c0c0c') < themed.indexOf('var(--surface'),
+    'theme block must precede REPORT_BASE_STYLE so its var() lookups resolve')
+  // theme-less call still works via the default param (backward compatible)
+  assert.doesNotMatch(hardenReportHtml('<article>hi</article>'), /color-scheme:/)
+})
