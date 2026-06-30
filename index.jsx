@@ -1080,12 +1080,22 @@ export function makeStorage(appId, token) {
   }
 
   async function getReportHtml(name) {
-    // Report bodies are raw HTML documents — read as text, not JSON.
-    // `cache: 'no-store'` is load-bearing: the nightly cron can RE-AUTHOR a
-    // brief for the same date (a corrected or expanded morning note), so a
-    // browser/SW cached copy keyed on the unchanged URL would serve the stale
-    // body. Force a fresh read each open so a re-authored brief shows.
+    // Report bodies are raw HTML documents — read as TEXT through the runtime's
+    // typed, read-through store (getText). That mirror is what lets a brief
+    // OPEN OFFLINE: an online read caches the body, and a later offline read
+    // serves the last-known copy (overlaid with any pending write). It also
+    // makes the body appear in the offline reports listing — list() derives its
+    // offline entries from exactly the paths this app has read into the cache.
+    // The cron can RE-AUTHOR a brief for the same date; the runtime revisions
+    // the cache on every online read, so reopening online always reconciles to
+    // the freshly-authored body (no stale-cache pin). Standalone (no bridge)
+    // falls back to a raw text fetch with `no-store` so a re-authored brief
+    // never serves stale there either.
     try {
+      if (ms && typeof ms.getText === 'function') {
+        const data = await ms.getText(`reports/${name}`)
+        return data == null ? { notFound: true } : { data }
+      }
       const r = await fetch(`${base}/reports/${name}`, { headers, cache: 'no-store' })
       if (r.status === 404) return { notFound: true }
       if (!r.ok) return { error: r.status }
@@ -1103,9 +1113,14 @@ export function makeStorage(appId, token) {
   // brief is still readable; the chat just doesn't mount this open.
   async function getReportChatId(dateStr) {
     try {
-      const r = await fetch(`${base}/reports/${dateStr}.meta.json`, { headers })
-      if (!r.ok) return null
-      const data = await r.json()
+      // Typed JSON read through the runtime store (offline-capable, SWR) so the
+      // morning chat still resolves from cache when the brief is opened offline.
+      const data = ms && typeof ms.get === 'function'
+        ? await ms.get(`reports/${dateStr}.meta.json`)
+        : await (async () => {
+            const r = await fetch(`${base}/reports/${dateStr}.meta.json`, { headers })
+            return r.ok ? r.json() : null
+          })()
       const id = data && (data.chat_id ?? data.chatId ?? data.morning_chat)
       return typeof id === 'string' && id.trim() ? id.trim() : null
     } catch {
@@ -1113,12 +1128,36 @@ export function makeStorage(appId, token) {
     }
   }
 
-  // Enumerate reports via the listing endpoint (newest-first), walking the
-  // cursor. A non-advancing cursor is treated as a server fault rather than
-  // spinning forever. Returns { dates: [...] } on success, or { error } /
-  // { notFound } so the caller can distinguish "no reports yet" from "the
-  // listing call failed" and keep its cached snapshot in the latter case.
+  // Enumerate reports through the runtime's typed listing (offline-capable).
+  // storage.list(prefix) pages the server when reachable and ELSE derives the
+  // listing from the read-through cache (the paths this app has read) overlaid
+  // with the outbox — so the date list survives a network outage instead of
+  // collapsing to empty. It returns the entries ARRAY directly ([] for an
+  // empty/unknown dir), so a bridge present means we never special-case the
+  // cursor. Standalone (no bridge) keeps the raw cursor walk.
+  function datesFromEntries(entries) {
+    const out = []
+    for (const e of entries || []) {
+      if (e.type === 'file' && typeof e.name === 'string' && e.name.endsWith('.html')) {
+        out.push(e.name.slice(0, -'.html'.length))
+      }
+    }
+    // ISO date names sort lexicographically = chronologically; newest first.
+    out.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+    return out
+  }
+
   async function listReportDates() {
+    if (ms && typeof ms.list === 'function') {
+      try {
+        const entries = await ms.list('reports/')
+        return { dates: datesFromEntries(entries) }
+      } catch {
+        return { error: 0 }
+      }
+    }
+    // Standalone fallback: walk the listing endpoint's cursor by hand. A
+    // non-advancing cursor is treated as a server fault rather than spinning.
     const out = []
     let cursor = null
     try {
@@ -1142,16 +1181,17 @@ export function makeStorage(appId, token) {
     } catch {
       return { error: 0 }
     }
-    // ISO date names sort lexicographically = chronologically; newest first.
     out.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
     return { dates: out }
   }
 
-  // Subscribe to a JSON path so the list refreshes live when the cron writes a
-  // new brief. The nightly run updates state.json (last_run + streak) on every
-  // pass, so a change there is the reliable "a new brief just landed" signal —
-  // the reports listing has no subscribe of its own. Returns an unsubscribe
-  // fn, or a no-op when the runtime bridge is absent (standalone).
+  // Subscribe to a JSON path through window.mobius.storage.subscribe so the
+  // report LIST repaints live when an agent/cron writes a new reflection. The
+  // runtime exposes per-path subscription (no directory watch), and the nightly
+  // run rewrites state.json (last_run + streak) on every pass it lands a brief
+  // — so a change there is the reliable "a new brief just landed" signal the
+  // list re-lists on. Returns an unsubscribe fn, or a no-op when the runtime
+  // bridge is absent (standalone).
   function subscribeJSON(path, cb) {
     if (ms && typeof ms.subscribe === 'function') {
       try { return ms.subscribe(path, cb) } catch { return () => {} }
@@ -1163,42 +1203,16 @@ export function makeStorage(appId, token) {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny offline snapshot. Reflection reads via direct fetch (text bodies +
-// apps-list), neither of which the platform read-cache covers, so we keep our
-// own localStorage snapshot: the dates list, the streak, and the latest
-// summary. This is read-only mirror state — only the cron writes reports, so
-// the snapshot just paints the same thing the user saw before they lost
-// connectivity. Bodies aren't cached here (the report iframe re-fetches; if
-// offline it shows a graceful error), only the cheap list metadata.
+// Offline reads are now served by the RUNTIME's read-through cache, not a
+// hand-rolled localStorage snapshot. Every read goes through window.mobius.
+// storage (get/getText/list), which mirrors values into IndexedDB on the
+// online read and replays them when offline — so the dates list, the streak
+// (state.json), and each opened brief body all survive a network outage from
+// one source of truth. The old `reflection:<appId>:list` localStorage mirror
+// was removed: it duplicated the runtime cache, could only ever hold list
+// metadata (never the bodies, which is why briefs couldn't open offline), and
+// drifted from the authoritative cache. No app-owned offline mirror remains.
 // ---------------------------------------------------------------------------
-
-const CACHE_VERSION = 1
-function cacheKey(appId) { return `reflection:${appId}:list:v${CACHE_VERSION}` }
-
-function readCache(appId) {
-  try {
-    const raw = localStorage.getItem(cacheKey(appId))
-    if (!raw) return null
-    const p = JSON.parse(raw)
-    if (!p || typeof p !== 'object') return null
-    return {
-      dates: Array.isArray(p.dates) ? p.dates.filter((d) => typeof d === 'string') : [],
-      streak: Number.isFinite(p.streak) ? p.streak : 0,
-      lastSummary: typeof p.lastSummary === 'string' ? p.lastSummary : '',
-      lastRun: typeof p.lastRun === 'string' ? p.lastRun : '',
-    }
-  } catch {
-    return null
-  }
-}
-
-function writeCache(appId, snap) {
-  try {
-    localStorage.setItem(cacheKey(appId), JSON.stringify(snap))
-  } catch {
-    // Quota / private-mode Safari: skip silently. In-memory state still works.
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Online/offline hook — runtime signal if present, else navigator.onLine.
@@ -1732,10 +1746,9 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
 // ---------------------------------------------------------------------------
 
 function ReportsList({ appId, storage, online, onOpen }) {
-  const cached = useMemo(() => readCache(appId), [appId])
-  const [dates, setDates] = useState(cached?.dates || [])
-  const [streak, setStreak] = useState(cached?.streak || 0)
-  const [lastSummary, setLastSummary] = useState(cached?.lastSummary || '')
+  const [dates, setDates] = useState([])
+  const [streak, setStreak] = useState(0)
+  const [lastSummary, setLastSummary] = useState('')
   const [phase, setPhase] = useState('loading') // loading | ready | error
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -1743,42 +1756,38 @@ function ReportsList({ appId, storage, online, onOpen }) {
     let cancelled = false
     ;(async () => {
       setPhase((p) => (dates.length ? p : 'loading'))
+      // Both reads are served by the runtime read-through cache, so offline
+      // returns the last-known listing + state automatically — no separate
+      // app-owned snapshot to consult or keep in sync.
       const [listRes, stateRes] = await Promise.all([
         storage.listReportDates(),
         storage.getJSON('state.json'),
       ])
       if (cancelled) return
 
-      // state.json: 404 is normal (cron hasn't written it) -> streak 0.
+      // state.json: notFound is normal (cron hasn't written it) -> streak 0.
+      // Offline with a prior read, getJSON resolves the cached value; a true
+      // error (standalone fetch failure) leaves the header at zero.
       let nextStreak = 0
       let nextSummary = ''
-      let nextLastRun = ''
       if (stateRes.data && typeof stateRes.data === 'object') {
         nextStreak = Number.isFinite(stateRes.data.streak) ? stateRes.data.streak : 0
         nextSummary = typeof stateRes.data.last_summary === 'string' ? stateRes.data.last_summary : ''
-        nextLastRun = typeof stateRes.data.last_run === 'string' ? stateRes.data.last_run : ''
-      } else if (stateRes.error != null && cached) {
-        // Couldn't reach state.json (offline) — keep the cached header.
-        nextStreak = cached.streak
-        nextSummary = cached.lastSummary
       }
       setStreak(nextStreak)
       setLastSummary(nextSummary)
 
       if (listRes.dates) {
-        // Listing succeeded (even if empty []): trust the server.
+        // list() returns an array whether online (server-authoritative) or
+        // offline (derived from the read-through cache) — trust it either way.
         setDates(listRes.dates)
         setPhase('ready')
-        writeCache(appId, {
-          dates: listRes.dates, streak: nextStreak,
-          lastSummary: nextSummary, lastRun: nextLastRun,
-        })
-      } else if (cached && cached.dates.length) {
-        // Listing failed but we have a cached snapshot — show it.
-        setDates(cached.dates)
+      } else if (dates.length) {
+        // Standalone listing failed but we already have rows on screen — keep
+        // them rather than blanking to an error.
         setPhase('ready')
       } else {
-        // Listing failed and nothing cached — surface a retryable error.
+        // Listing failed and nothing to show — surface a retryable error.
         setPhase('error')
       }
     })()
@@ -2357,10 +2366,11 @@ export default function App({ appId, token }) {
     })
   }, [])
 
-  // Surface the streak in the header on the reports tab. We read it once
-  // here (cheap, cached) so the badge is present even before the list
-  // finishes its own load. The list keeps its own authoritative copy.
-  const [headerStreak, setHeaderStreak] = useState(() => readCache(appId)?.streak || 0)
+  // Surface the streak in the header on the reports tab. The read below goes
+  // through the runtime read-through cache (offline-capable), so the badge
+  // fills from the last-known state.json even before the list finishes its own
+  // load — and offline too. The list keeps its own authoritative copy.
+  const [headerStreak, setHeaderStreak] = useState(0)
   useEffect(() => {
     let cancelled = false
     ;(async () => {
