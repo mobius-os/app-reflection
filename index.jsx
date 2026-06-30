@@ -781,7 +781,9 @@ button.rf-card { cursor: pointer; }
   display: flex; align-items: center; gap: 8px;
 }
 
-/* Report detail — brief + chat split view */
+/* Report detail — the brief read + a slide-up chat sheet. position:absolute
+   makes this the containing block for the absolutely-positioned .rf-sheet-scrim
+   and .rf-chat-sheet, so the sheet overlays the detail view (not the page). */
 .rf-detail {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   background: var(--bg); z-index: 5;
@@ -823,31 +825,6 @@ button.rf-card { cursor: pointer; }
   align-items: center; justify-content: center; gap: 12px;
   color: var(--muted); font-size: 13px;
 }
-.rf-chat-mount-wrap {
-  position: relative;
-  flex: 1 1 auto; min-height: 0;
-  display: flex; flex-direction: column;
-}
-.rf-chat-panel { flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg); }
-/* With a live conversation the panel takes a real share of the viewport
-   (the house bottom-chat-pane model; cf. app-latex's 50/50 split). The chain
-   must keep every height DEFINITE: panel 60dvh → mount-wrap flex:1 → embed
-   flex:1 → iframe height:100%. If no ancestor has a definite height, the
-   iframe's height:100% resolves to auto and the chat collapses to the ~150px
-   iframe intrinsic default, leaving a dead band of empty wrapper below the
-   composer. Viewport units, not a percentage: a % height here resolves
-   against the scroll column and Chrome treats it as auto (content-sized),
-   silently re-creating the collapsed chat. While resolving / chatless the
-   panel stays content-sized so the spinner and the no-chat note don't
-   reserve blank space. */
-.rf-chat-panel.is-live { height: 60vh; height: 60dvh; min-height: 340px; }
-.rf-chat-header { display: flex; align-items: center; gap: 8px; padding: 13px 16px 9px; flex-shrink: 0; }
-.rf-chat-header-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: ${ACCENT};
-  box-shadow: 0 0 0 4px ${ACCENT_DIM}; flex-shrink: 0;
-}
-.rf-chat-header-text { font-size: 13px; font-weight: 700; letter-spacing: -0.1px; }
-.rf-chat-header-hint { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: auto; }
 .rf-chat-resolving {
   padding: 20px 16px 28px; display: flex; align-items: center; gap: 10px;
   color: var(--muted); font-size: 12.5px;
@@ -859,20 +836,58 @@ button.rf-card { cursor: pointer; }
   display: flex; align-items: flex-start; gap: 10px;
 }
 .rf-no-chat-glyph { font-size: 15px; line-height: 1.2; }
-/* Sits flush under the embedded chat's composer — the border is the only
-   separation, so there is no dead band between the chat and the button. */
-.rf-feedback-row {
-  flex-shrink: 0; margin: 0 16px;
-  padding: 12px 0 max(14px, env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
+
+/* The chat icon in the detail bar — sits to the right of the report title. */
+.rf-chat-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 38px; min-height: 38px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--accent); cursor: pointer; flex-shrink: 0;
 }
-.rf-feedback-btn {
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  width: 100%; min-height: 46px; padding: 11px 16px; border-radius: 12px;
-  border: 1px solid ${ACCENT}; background: ${ACCENT_DIM};
-  color: ${ACCENT}; font-size: 13.5px; font-weight: 700;
-  cursor: pointer; font-family: var(--font);
-  touch-action: manipulation; user-select: none;
+.rf-chat-toggle[aria-pressed="true"] {
+  background: ${ACCENT_DIM};
+  border-color: ${ACCENT};
+}
+
+/* Bottom-sheet chat. The scrim dims the detail view; the sheet itself slides
+   up from the bottom edge. Both are absolutely positioned within .rf-detail
+   (which is position:absolute, so it is the containing block). The sheet's
+   height is a DEFINITE dvh value so the embedded ChatView's height chain
+   (sheet 72dvh → .rf-chat-embed flex:1 → iframe height:100%) resolves — a %
+   here would resolve to auto and collapse the iframe to its ~150px intrinsic
+   default. dvh (not vh) keeps the composer above the mobile URL bar. */
+.rf-sheet-scrim {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  opacity: 0; pointer-events: none;
+  transition: opacity .22s ease;
+  z-index: 40;
+}
+.rf-sheet-scrim.is-open { opacity: 1; pointer-events: auto; }
+.rf-chat-sheet {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 72dvh; max-height: 72dvh;
+  background: var(--bg);
+  border-top-left-radius: 18px; border-top-right-radius: 18px;
+  border: 1px solid var(--border); border-bottom: none;
+  box-shadow: 0 -8px 32px -12px rgba(0, 0, 0, 0.45);
+  transform: translateY(100%);
+  transition: transform .26s cubic-bezier(.32, .72, 0, 1);
+  display: flex; flex-direction: column;
+  z-index: 41;
+}
+.rf-chat-sheet.is-open { transform: translateY(0); }
+.rf-sheet-handle-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.rf-sheet-title { font-weight: 700; font-size: 14px; }
+.rf-sheet-close {
+  margin-left: auto; min-width: 36px; min-height: 36px;
+  border: none; background: transparent; color: var(--muted);
+  font-size: 18px; cursor: pointer; border-radius: 8px;
 }
 
 /* Last-night status row */
@@ -1293,76 +1308,126 @@ function useOnline() {
   return online
 }
 
+function ChatBubbleIcon({ size = 20 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
 // ---------------------------------------------------------------------------
-// Morning chat embed. `window.mobius.chat({ mount, chatId })` mounts the real
-// ChatView (composer + live SSE + tappable AskUserQuestion cards) inside a
-// nested same-origin iframe that runs in the SHELL origin — so it carries the
-// owner JWT and can read/post the owner-created morning chat the cron opened.
-// (The app token alone is 403'd on /api/chats; this is the supported path.)
+// App-scoped chat, presented as a slide-up bottom sheet. `window.mobius.chat`
+// mounts the real ChatView (composer + live SSE + tappable AskUserQuestion
+// cards) inside a nested same-origin iframe that runs in the SHELL origin — so
+// it carries the owner JWT and can read/post chats (the app token alone is
+// 403'd on /api/chats; this is the supported path). The runtime creates the
+// chat once and persists its id under `chat_id.json`, reusing it on later
+// mounts — so the conversation about your briefs is durable and app-scoped.
 //
-// We MUST pass an existing chatId. The runtime can lazy-create a chat when
-// none is given, but that would make a brand-new empty chat, not find the
-// morning one — so a null chatId here renders nothing (the caller shows its
-// own "no chat" note). The handle is torn down on unmount / date change so we
-// never leak the nested iframe.
+// Mount-once: the embed mounts a single time (the effect is keyed on a
+// `mounted` flag that flips true on first open and never flips back), and the
+// sheet shows/hides purely via CSS. Toggling open/close therefore never tears
+// down or reloads the chat — a streaming turn survives a close-and-reopen.
+// `getContext` is read through a ref updated by its own effect, so the mount
+// effect's deps stay stable and the iframe never remounts. (The same ref
+// pattern app-latex uses for the identical reason.)
 // ---------------------------------------------------------------------------
 
-function MorningChat({ chatId, onPhase }) {
+function ChatSheet({ open, onClose, getContext }) {
   const mountRef = useRef(null)
-  const [phase, setPhaseState] = useState('mounting') // mounting | live | unavailable
-  // The parent sizes the chat panel from the phase — a live chat gets a real
-  // viewport share; the spinner and fallback states stay content-sized — so
-  // every transition is mirrored upward.
-  const setPhase = (p) => { setPhaseState(p); if (onPhase) onPhase(p) }
+  // Mount the embed once, on first open, and keep it alive thereafter. Closing
+  // the sheet hides it via CSS rather than unmounting, so a streaming turn is
+  // never destroyed mid-flight.
+  const [mounted, setMounted] = useState(false)
+  const [phase, setPhase] = useState('mounting') // mounting | live | unavailable
+  // getContext is read through a ref so its identity changing (it closes over
+  // the report date) never re-fires the mount effect and remounts the iframe.
+  const getContextRef = useRef(getContext)
+
+  useEffect(() => { if (open) setMounted(true) }, [open])
+  useEffect(() => { getContextRef.current = getContext }, [getContext])
 
   useEffect(() => {
+    if (!mounted) return undefined
     const mount = mountRef.current
-    if (!mount || !chatId) { setPhase('unavailable'); return undefined }
+    if (!mount) return undefined
     if (!window.mobius || typeof window.mobius.chat !== 'function') {
       // Running outside the shell embed (e.g. standalone) — no chat bridge.
       setPhase('unavailable')
       return undefined
     }
     let handle = null
-    let cancelled = false
+    let disposed = false
     setPhase('mounting')
-    Promise.resolve(window.mobius.chat({ mount, chatId }))
+    Promise.resolve(window.mobius.chat({
+      mount,
+      persist: 'chat_id.json',
+      title: 'Reflection',
+      picker: true,
+      getContext: () => {
+        const fn = getContextRef.current
+        return fn ? fn() : null
+      },
+    }))
       .then((h) => {
-        if (cancelled) { try { h && h.destroy && h.destroy() } catch {} return }
+        if (disposed) { try { h && h.destroy && h.destroy() } catch {} return }
         handle = h
         setPhase('live')
       })
-      .catch(() => { if (!cancelled) setPhase('unavailable') })
+      .catch(() => { if (!disposed) setPhase('unavailable') })
     return () => {
-      cancelled = true
+      disposed = true
       try { handle && handle.destroy && handle.destroy() } catch {}
       // Belt-and-suspenders: the runtime appends one iframe to `mount`; clear
-      // any leftover node so a fast date switch can't stack two embeds.
+      // any leftover node so we never leak or stack the nested embed.
       if (mount) { try { mount.replaceChildren() } catch {} }
     }
-  }, [chatId])
+  }, [mounted])
 
-  if (phase === 'unavailable') {
-    return (
-      <div className="rf-no-chat-note">
-        <span aria-hidden="true" className="rf-no-chat-glyph">💬</span>
-        <span>
-          The conversation about this brief isn’t available here. Open it from
-          your chat list to reply.
-        </span>
-      </div>
-    )
-  }
+  // Nothing in the DOM until the sheet has been opened once — the .is-open
+  // class then drives the slide-up.
+  if (!mounted) return null
 
   return (
-    <div className="rf-chat-mount-wrap">
-      {phase === 'mounting' && (
-        <div className="rf-chat-resolving">
-          <span className="rf-spinner rf-spinner-sm" aria-hidden="true" />
-          Opening the conversation…
+    <div className={`rf-sheet-scrim${open ? ' is-open' : ''}`} onClick={onClose}>
+      <div
+        className={`rf-chat-sheet${open ? ' is-open' : ''}`}
+        role="dialog"
+        aria-label="Chat about your briefs"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="rf-sheet-handle-row">
+          <span className="rf-sheet-title">Chat about your briefs</span>
+          <button
+            type="button"
+            className="rf-sheet-close rf-pressable"
+            aria-label="Close chat"
+            onClick={onClose}
+          >
+            ✕
+          </button>
         </div>
-      )}
-      <div ref={mountRef} className="rf-chat-embed" style={{ display: phase === 'live' ? 'block' : 'none' }} />
+        {phase === 'unavailable' ? (
+          <div className="rf-no-chat-note">
+            <span aria-hidden="true" className="rf-no-chat-glyph">💬</span>
+            <span>
+              The chat about your briefs isn’t available here. Open it from your
+              chat list to reply.
+            </span>
+          </div>
+        ) : (
+          <>
+            {phase === 'mounting' && (
+              <div className="rf-chat-resolving">
+                <span className="rf-spinner rf-spinner-sm" aria-hidden="true" />
+                Opening the conversation…
+              </div>
+            )}
+            <div ref={mountRef} className="rf-chat-embed" style={{ display: phase === 'live' ? 'block' : 'none' }} />
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -1545,38 +1610,8 @@ function ReportQuestions({ questions, storage, dateStr, appId, token }) {
   )
 }
 
-// The "Discuss this brief with the agent" affordance — placed at the BOTTOM of
-// the scrollable content (after the brief and the morning chat), never floating
-// or sticky, so it reads as the natural next step once you've finished reading.
-// Mirrors the News app's feedback launcher: open the brief's own morning chat
-// when one exists, else start a fresh chat seeded with a draft referencing the
-// brief's date so the agent has context.
-function FeedbackLauncher({ dateStr, chatId, appId, token }) {
-  const openDiscussionChat = () => {
-    emitSignal(appId, token, 'feedback_given', { date: dateStr })
-    const draft = [
-      `About the Reflection brief for ${dateStr}:`,
-      '',
-      '',
-    ].join('\n')
-    window.parent.postMessage(
-      chatId
-        ? { type: 'moebius:open-chat', chatId, draft }
-        : { type: 'moebius:new-chat', draft },
-      window.location.origin,
-    )
-  }
-  return (
-    <div className="rf-feedback-row">
-      <button className="rf-feedback-btn rf-pressable" onClick={openDiscussionChat}>
-        💬 Discuss this brief with the agent
-      </button>
-    </div>
-  )
-}
-
 // ---------------------------------------------------------------------------
-// Report detail — the brief + chat split view.
+// Report detail — the brief read, with an app-scoped chat one tap away.
 //
 // The brief is the static HTML the agent authored: rendered in a sandboxed
 // srcDoc iframe. Sandbox: allow-scripts WITHOUT allow-same-origin — the
@@ -1584,10 +1619,9 @@ function FeedbackLauncher({ dateStr, chatId, appId, token }) {
 // localStorage, or owner JWT (the security risk of allow-same-origin+scripts).
 // hardenReportHtml injects a tiny height-reporter script that postMessages
 // the content height to the parent. The parent sizes the iframe from those
-// messages so the brief reads as one scrolled column. Beneath it, the morning
-// chat panel: once live it takes a fixed share of the viewport and the
-// embedded ChatView scrolls internally with its composer pinned at the
-// panel's bottom (see the .rf-chat-panel.is-live CSS for the height chain).
+// messages so the brief reads as one scrolled column. The chat icon next to
+// the report name opens a slide-up bottom sheet hosting the embedded ChatView
+// (see ChatSheet) — app-scoped and durable, not tied to any one brief.
 // ---------------------------------------------------------------------------
 
 function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
@@ -1596,8 +1630,7 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
   // rendered as native tap cards below the iframe. The carrier is stripped
   // from the HTML before hardenReportHtml so it never reaches the iframe.
   const [questions, setQuestions] = useState([])
-  const [chatId, setChatId] = useState(undefined) // undefined=resolving, null=none, string=id
-  const [chatPhase, setChatPhase] = useState('mounting') // mirrors MorningChat's phase
+  const [chatOpen, setChatOpen] = useState(false)
   const [briefHeight, setBriefHeight] = useState(360)
   const [reloadKey, setReloadKey] = useState(0)
   const iframeRef = useRef(null)
@@ -1613,13 +1646,11 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
     wasOnline.current = online
   }, [online])
 
-  // Load the brief body + resolve its chat in parallel.
+  // Load the brief body.
   useEffect(() => {
     let cancelled = false
     setState({ phase: 'loading', html: '' })
     setQuestions([])
-    setChatId(undefined)
-    setChatPhase('mounting')
     setBriefHeight(360)
     ;(async () => {
       const res = await storage.getReportHtml(`${dateStr}.html`)
@@ -1639,10 +1670,6 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
         setState({ phase: 'error', html: '' })
         emitSignal(appId, token, 'error', { message: 'brief load failed for ' + dateStr + ' (HTTP ' + res.error + ')' })
       }
-    })()
-    ;(async () => {
-      const id = await storage.getReportChatId(dateStr)
-      if (!cancelled) setChatId(id)
     })()
     return () => { cancelled = true }
   }, [dateStr, storage, reloadKey])
@@ -1696,6 +1723,16 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
           <span className="rf-detail-title-main">{relativeLabel(dateStr)}’s brief</span>
           <span className="rf-detail-title-sub">{subLabel(dateStr)}</span>
         </div>
+        <button
+          type="button"
+          className="rf-chat-toggle rf-pressable"
+          aria-label="Chat about your briefs"
+          aria-pressed={chatOpen}
+          title="Chat"
+          onClick={() => setChatOpen((o) => !o)}
+        >
+          <ChatBubbleIcon size={20} />
+        </button>
       </div>
 
       {state.phase === 'loading' && (
@@ -1756,34 +1793,14 @@ function ReportDetail({ dateStr, storage, online, onBack, appId, token }) {
               token={token}
             />
           )}
-
-          <div className={`rf-chat-panel${chatId && chatPhase === 'live' ? ' is-live' : ''}`}>
-            <div className="rf-chat-header">
-              <span className="rf-chat-header-dot" aria-hidden="true" />
-              <span className="rf-chat-header-text">Morning conversation</span>
-              {chatId && <span className="rf-chat-header-hint">tap a card or reply below</span>}
-            </div>
-            {chatId === undefined ? (
-              <div className="rf-chat-resolving">
-                <span className="rf-spinner rf-spinner-sm" aria-hidden="true" />
-                Finding the conversation…
-              </div>
-            ) : chatId === null ? (
-              <div className="rf-no-chat-note">
-                <span aria-hidden="true" className="rf-no-chat-glyph">🌙</span>
-                <span>
-                  No conversation was opened for this brief — it’s a read-only
-                  morning note. When a brief has questions for you, the chat
-                  appears here so you can answer with a tap.
-                </span>
-              </div>
-            ) : (
-              <MorningChat chatId={chatId} onPhase={setChatPhase} />
-            )}
-            <FeedbackLauncher dateStr={dateStr} chatId={chatId} appId={appId} token={token} />
-          </div>
         </div>
       )}
+
+      <ChatSheet
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        getContext={() => ({ app: 'reflection', report_date: dateStr })}
+      />
     </div>
   )
 }
