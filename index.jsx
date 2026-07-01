@@ -914,16 +914,27 @@ button.rf-card { cursor: pointer; }
 }
 .rf-no-chat-glyph { font-size: 15px; line-height: 1.2; }
 
-/* The chat icon in the detail bar — sits to the right of the report title. */
+/* A one-line prompt at the top of the chat, nudging the owner to leave feedback
+   on the day's brief (that's what this app-scoped chat is FOR). */
+.rf-chat-hint {
+  flex: 0 0 auto; padding: 9px 14px;
+  font-size: 12px; line-height: 1.45; color: var(--muted);
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+
+/* The chat icon in the detail bar — sits to the right of the report title.
+   Subdued when CLOSED (reads as an affordance, not an active state); accent-
+   tinted only when OPEN, matching app-latex / app-webstudio. */
 .rf-chat-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 44px; min-height: 44px; border-radius: 10px;
-  border: 1px solid var(--border); background: var(--surface);
-  color: var(--accent); cursor: pointer; flex-shrink: 0;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); cursor: pointer; flex-shrink: 0;
 }
 .rf-chat-toggle[aria-pressed="true"] {
-  background: ${ACCENT_DIM};
-  border-color: ${ACCENT};
+  background: color-mix(in srgb, ${ACCENT} 18%, var(--surface));
+  border-color: color-mix(in srgb, ${ACCENT} 40%, var(--border));
+  color: ${ACCENT};
 }
 
 /* mobius-ui:ChatSplit v1 — the bottom half of the 50/50 chat split. Mirrors
@@ -1502,6 +1513,9 @@ function ChatPanel({ getContext }) {
         </div>
       ) : (
         <>
+          <div className="rf-chat-hint">
+            Share feedback on today’s brief — what landed, what didn’t. Your notes steer tomorrow’s run.
+          </div>
           {phase === 'mounting' && (
             <div className="rf-chat-resolving">
               <span className="rf-spinner rf-spinner-sm" aria-hidden="true" />
