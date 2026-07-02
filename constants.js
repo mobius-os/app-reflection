@@ -222,9 +222,6 @@ export const REPORT_BASE_STYLE = `<style>
   .brief .badge.hold, .brief .badge.review { color: var(--amber, #d29a3a); }
   .brief .badge.risk { color: var(--danger, #e26a63); }
 
-  /* Belt-and-suspenders: the app extracts + strips the questions carrier before
-     render, but hide it if any path skips that. */
-  [data-report-questions] { display: none; }
   /* /mobius-ui:BriefStyle */
 </style>`
 
