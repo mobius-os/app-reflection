@@ -7,3 +7,10 @@ node_modules/
 .idea/
 .vscode/
 tests/.build*/
+
+# Runtime scratch the nightly run (fetch.sh) writes into the app dir. The real
+# report data lives in the storage tree, not here; these are regenerated every
+# run. Keep them untracked so a run never dirties the repo or turns a routine
+# update into a phantom "local changes" conflict.
+inputs/
+last-run.json
