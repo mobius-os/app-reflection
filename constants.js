@@ -8,11 +8,18 @@ export const VERBOSITY_OPTIONS = [
 export const DEFAULT_VERBOSITY = 'standard'
 
 // Exit-code meanings for cron_outcome events (from the fetch.sh legend).
+// 2/3 are the WRAPPER's config errors only; the runner's own failures use a
+// separate >=64 band so a model/usage/auth failure is never labeled a config
+// error (the old shared codes showed a weekly usage cap as "config error").
 export const CRON_EXIT_LABELS = {
   0:   'ran ok',
   2:   'config error (no app id)',
   3:   'config error (missing service token)',
   5:   'skipped — a prior run still held the lock',
+  64:  'model error',
+  65:  'usage limit reached',
+  66:  'provider auth expired — reconnect in Settings',
+  70:  'died before completing (external interruption)',
   124: 'timed out',
   127: 'runner not found',
 }
