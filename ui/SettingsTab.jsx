@@ -62,10 +62,20 @@ export function SettingsTab({ appId, storage, token }) {
           setCronIsCustom(false)
         }
         if (Array.isArray(s.exclude_apps)) setExcludeApps(s.exclude_apps)
-        const hasPrimaryOverride = (
-          (typeof s.provider === 'string' && s.provider.trim()) ||
-          (typeof s.model === 'string' && s.model.trim()) ||
-          (typeof s.effort === 'string' && s.effort.trim())
+        const primaryMode = s.primary_agent_mode
+        const providerValue = typeof s.provider === 'string' ? s.provider.trim() : ''
+        const modelValue = typeof s.model === 'string' ? s.model.trim() : ''
+        const effortValue = typeof s.effort === 'string' ? s.effort.trim() : ''
+        const legacyDefaultPrimary = (
+          !primaryMode &&
+          providerValue === DEFAULT_PROVIDER &&
+          !modelValue &&
+          !effortValue
+        )
+        const hasPrimaryOverride = primaryMode === 'app' || (
+          primaryMode !== 'system' &&
+          !legacyDefaultPrimary &&
+          Boolean(providerValue || modelValue || effortValue)
         )
         setUseSystemPrimary(!hasPrimaryOverride)
         if (typeof s.provider === 'string' && s.provider.trim()) {
@@ -145,6 +155,7 @@ export function SettingsTab({ appId, storage, token }) {
         fallback_provider: fallbackProvider || null,
         fallback_model: fallbackProvider ? (fallbackModel || null) : null,
         fallback_effort: fallbackProvider ? (settingsExtra.fallback_effort ?? null) : null,
+        primary_agent_mode: useSystemPrimary ? 'system' : 'app',
         verbosity,
         focus: focus.trim() || null,
         avoid: avoid.trim() || null,
