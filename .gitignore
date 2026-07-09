@@ -7,6 +7,7 @@ node_modules/
 .idea/
 .vscode/
 tests/.build*/
+.worktrees/
 
 # Runtime scratch the nightly run (fetch.sh) writes into the app dir. The real
 # report data lives in the storage tree, not here; these are regenerated every
