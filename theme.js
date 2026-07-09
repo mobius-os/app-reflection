@@ -477,6 +477,8 @@ button.rf-card { cursor: pointer; }
   touch-action: manipulation; user-select: none;
 }
 .rf-select:focus:not(:focus-visible) { outline: none; }
+.rf-agent-stack { display: grid; gap: 12px; }
+.rf-agent-field { display: grid; gap: 7px; }
 .rf-meta {
   font-size: 12px; color: var(--muted); line-height: 1.5;
   font-family: var(--mono, var(--font));
