@@ -179,6 +179,7 @@ export default function App({ appId, token }) {
               storage={storage}
               online={online}
               onOpen={openDetail}
+              onSetup={() => { closeDetail(); setTab('settings') }}
             />
             {openDate && (
               <ReportDetail

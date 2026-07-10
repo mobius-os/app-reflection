@@ -273,6 +273,10 @@ button.rf-card { cursor: pointer; }
   font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: var(--font);
   touch-action: manipulation; user-select: none;
 }
+.rf-empty-action {
+  align-self: center;
+  margin-top: 14px;
+}
 .rf-offline-banner {
   max-width: 660px; margin: 0 auto 14px; padding: 10px 14px;
   border-radius: 12px; background: ${ACCENT_DIM}; border: 1px solid var(--border);

@@ -6,7 +6,7 @@ import { StreakBar } from './StreakBar.jsx'
 // Reports list
 // ---------------------------------------------------------------------------
 
-export function ReportsList({ appId, storage, online, onOpen }) {
+export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
   const [dates, setDates] = useState([])
   const [streak, setStreak] = useState(0)
   const [lastSummary, setLastSummary] = useState('')
@@ -118,6 +118,13 @@ export function ReportsList({ appId, storage, online, onOpen }) {
         Reflection runs overnight — consolidating what the day’s agents learned,
         tidying your Memory, and tending your apps. Your first morning brief will
         be waiting right here.
+        <button
+          type="button"
+          className="rf-retry-btn rf-empty-action rf-pressable"
+          onClick={onSetup}
+        >
+          Open Settings
+        </button>
       </div>
     )
   }
