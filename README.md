@@ -24,7 +24,7 @@ Möbius fetches the manifest, shows you the requested permissions and schedule, 
 
 The run is one multi-turn goal, not a single prompt. Working from the day's activity and chats, the agent:
 
-1. **Interviews the agents that worked during the day.** It forks each chat (and each app sub-agent run) into a throwaway copy — reusing the same provider that did the original work — and asks what was hard, what it learned, what you'd want flagged. Your real chats are never touched.
+1. **Interviews the chat agents worth interviewing.** It forks selected chats into throwaway copies — reusing the same provider that did the original work — and asks what was hard, what it learned, what you'd want flagged. Your real chats are never touched. Background jobs are reviewed from their logs and artifacts unless a future session registry explicitly records a safe interview target.
 2. **Sharpens its own skills and the system loop.** What it learns from the interviews gets folded back into the agent's skills (including the reflection skill itself). It can read Memory's maintenance log to spot how the memory system should improve, but **Memory** owns reading, writing, and consolidating the graph.
 3. **Hardens your apps.** It opens each app, exercises the paths you actually use, and fixes the small, obviously-correct breakages so you wake to working apps. Anything with a judgment call is left as a proposal, not applied.
 4. **Researches what you care about and proposes features**, each tied to something it observed you doing.
