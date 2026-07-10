@@ -28,6 +28,24 @@ export {
 } from './domain.js'
 export { makeStorage } from './storage.js'
 
+const SETUP_COMPLETIONS_KEY = 'mobius:setup-complete:v1'
+
+function markSetupComplete(appId) {
+  if (appId == null || typeof window === 'undefined') return
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SETUP_COMPLETIONS_KEY) || '{}')
+    const data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    data[String(appId)] = { completedAt: new Date().toISOString() }
+    window.localStorage.setItem(SETUP_COMPLETIONS_KEY, JSON.stringify(data))
+  } catch {}
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(
+      { type: 'moebius:setup-complete', appId },
+      window.location.origin,
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -84,6 +102,18 @@ export default function App({ appId, token }) {
     detailNavRef.current = null
     setOpenDate(null)
   }, [])
+
+  useEffect(() => {
+    function onMessage(e) {
+      if (e.origin !== window.location.origin) return
+      if (e.data?.type === 'moebius:app-intent' && e.data.intent === 'setup') {
+        closeDetail()
+        setTab('settings')
+      }
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [closeDetail])
 
   const openDetail = useCallback(async (dateStr) => {
     try { detailNavRef.current?.close?.() } catch {}
@@ -193,7 +223,12 @@ export default function App({ appId, token }) {
             )}
           </>
         ) : (
-          <SettingsTab appId={appId} storage={storage} token={token} />
+          <SettingsTab
+            appId={appId}
+            storage={storage}
+            token={token}
+            onSetupComplete={() => markSetupComplete(appId)}
+          />
         )}
       </div>
     </div>

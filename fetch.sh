@@ -6,10 +6,10 @@
 #
 # Unlike v1, this wrapper is NOT a security boundary. The Reflection agent
 # runs with FULL tools and a REAL token (no staging tree, no
-# Bash-less/token-less envelope, no graph validation gate). It forks
-# chats, consolidates the memory graph, edits skills, fixes apps, writes
-# the brief to reports/<date>.html via the storage API, opens the
-# morning chat, and commits — all itself, instructed by its skill
+# Bash-less/token-less envelope, no wrapper-owned validation gate). It forks
+# chats, reviews Memory's update log, edits skills, fixes apps, writes
+# the brief to reports/<date>.html via the storage API, and commits —
+# all itself, instructed by its skill
 # (/data/shared/skills/reflection.md), per Möbius's "code empowers the
 # agent; it does not police it." Reversibility comes from git, not from
 # walls. So this file gathers a little read-only context for the agent,
@@ -148,11 +148,11 @@ def get(path):
         return json.load(r)
 print("# Recent chats (fork + interview the ones with activity)\n")
 print("# `[app]` rows are app-driven chats (created_by_app_id set): hidden from")
-print("# the user's drawer but yours to read for the memory graph. `updated` is the")
+print("# the user's drawer but useful for the system-improvement brief. `updated` is the")
 print("# cadence signal — interview the most recently/often active first.\n")
 try:
     # include_app_chats=1 surfaces app-created chats too — they're excluded from
-    # the owner's drawer history but are relevant to memory consolidation.
+    # the owner's drawer history but are relevant to system-improvement review.
     chats = get("/api/chats?include_app_chats=1")
     chats = chats if isinstance(chats, list) else chats.get("chats", [])
     chats = sorted(chats, key=lambda c: c.get("updated_at",""), reverse=True)[:20]

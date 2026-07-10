@@ -15,7 +15,7 @@ import { fetchModelConfig } from '../providers.js'
 // Settings
 // ---------------------------------------------------------------------------
 
-export function SettingsTab({ appId, storage, token }) {
+export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [hour, setHour] = useState(DEFAULT_HOUR)
   const [excludeApps, setExcludeApps] = useState([])
   const [settingsExtra, setSettingsExtra] = useState({})
@@ -160,6 +160,7 @@ export function SettingsTab({ appId, storage, token }) {
         focus: focus.trim() || null,
         avoid: avoid.trim() || null,
       })
+      onSetupComplete?.()
       setToast('Saved ✓')
       setTimeout(() => setToast(''), 2600)
     } catch {
@@ -169,7 +170,7 @@ export function SettingsTab({ appId, storage, token }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, fallbackProvider, fallbackModel, verbosity, focus, avoid, settingsExtra, storage])
+  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, fallbackProvider, fallbackModel, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
 
   if (loading) {
     return (

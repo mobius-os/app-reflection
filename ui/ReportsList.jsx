@@ -115,8 +115,8 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
           <span className="rf-empty-mark-glyph" aria-hidden="true">🌙</span>
         </div>
         <div className="rf-empty-title">No briefs yet</div>
-        Reflection runs overnight — consolidating what the day’s agents learned,
-        tidying your Memory, and tending your apps. Your first morning brief will
+        Reflection runs overnight — reviewing what the day’s agents learned,
+        tending your apps, and proposing system improvements. Your first morning brief will
         be waiting right here.
         <button
           type="button"
