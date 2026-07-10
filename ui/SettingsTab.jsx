@@ -160,6 +160,19 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         focus: focus.trim() || null,
         avoid: avoid.trim() || null,
       })
+      // Launch analytics: which knobs the owner is actually customizing. Flat
+      // primitives only — the steering focus/avoid text is user content, so send
+      // presence booleans, never the strings. Fire-and-forget.
+      window.mobius?.signal?.('settings_saved', {
+        hour,
+        custom_cron: cronIsCustom,
+        use_system_primary: useSystemPrimary,
+        has_fallback: Boolean(fallbackProvider),
+        verbosity,
+        exclude_count: excludeApps.length,
+        has_focus: focus.trim().length > 0,
+        has_avoid: avoid.trim().length > 0,
+      })
       onSetupComplete?.()
       setToast('Saved ✓')
       setTimeout(() => setToast(''), 2600)
