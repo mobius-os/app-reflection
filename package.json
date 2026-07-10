@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs && bash -n fetch.sh && python3 -c \"import py_compile; py_compile.compile('reflection_runner.py', cfile='/tmp/app-reflection-runner.pyc', doraise=True)\""
   },
   "devDependencies": {}
 }

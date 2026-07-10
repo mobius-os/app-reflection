@@ -33,7 +33,8 @@ HEARTBEAT="$DATA_DIR/cron-logs/reflection.heartbeat"
 TOKEN_FILE="$DATA_DIR/service-token.txt"
 DATE="$(date +%F)"
 INPUTS="$DATA_DIR/apps/reflection/inputs"
-RUNNER="${REFLECTION_RUNNER:-/app/scripts/reflection_runner.py}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 # Wall-clock cap for the whole night. Generous (the agent does real,
 # multi-phase work) but bounded so a wedged run can't hold the lock past
 # the next night's schedule. Overridable for tests.
