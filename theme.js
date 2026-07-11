@@ -482,7 +482,34 @@ button.rf-card { cursor: pointer; }
 }
 .rf-select:focus:not(:focus-visible) { outline: none; }
 .rf-agent-stack { display: grid; gap: 12px; }
-.rf-agent-field { display: grid; gap: 7px; }
+.rf-agent-field {
+  display: grid; gap: 8px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+}
+.rf-agent-field-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.rf-agent-mode {
+  display: inline-flex; gap: 2px; padding: 2px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg);
+}
+.rf-agent-mode-btn {
+  min-height: 32px; padding: 0 10px; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted);
+  font-family: var(--font); font-size: 12px; font-weight: 700;
+  cursor: pointer; touch-action: manipulation; user-select: none;
+}
+.rf-agent-mode-btn.is-active { background: ${ACCENT}; color: var(--accent-fg); }
+@media (hover:hover) { .rf-agent-mode-btn:not(.is-active):hover { color: var(--text); } }
+.rf-agent-inherit {
+  min-height: 42px; display: flex; align-items: center;
+  padding: 9px 12px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--muted);
+  font-size: 12.5px; font-weight: 600; line-height: 1.35;
+}
 .rf-meta {
   font-size: 12px; color: var(--muted); line-height: 1.5;
   font-family: var(--mono, var(--font));

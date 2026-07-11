@@ -689,8 +689,12 @@ def _resolve_agents(settings: dict) -> dict:
   if primary is None:
     primary = global_primary
 
+  secondary_mode = settings.get("secondary_agent_mode")
   raw_fallback = None
-  if any(settings.get(k) for k in ("fallback_provider", "fallback_model", "fallback_effort")):
+  if secondary_mode == "app" or (
+    secondary_mode != "system"
+    and any(settings.get(k) for k in ("fallback_provider", "fallback_model", "fallback_effort"))
+  ):
     raw_fallback = {
       "provider": settings.get("fallback_provider"),
       "model": settings.get("fallback_model"),
