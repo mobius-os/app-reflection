@@ -46,6 +46,12 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
   // The detail body — the resize math measures its height to convert a pointer
   // drag into a 0..1 ratio.
   const bodyRef = useRef(null)
+  // The brief-read scroll container (the top pane). Used to detect when the
+  // reader reaches the bottom of the brief — a "read complete" analytics signal
+  // that separates a real read from a bounce.
+  const scrollRef = useRef(null)
+  const readSizedRef = useRef(false)  // iframe has reported its real height ≥ once
+  const readFiredRef = useRef(false)  // brief_read_complete already fired this open
 
   // Persist chat open + split ratio per app (mirrors app-latex).
   useEffect(() => {
@@ -138,6 +144,8 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
     setState({ phase: 'loading', html: '' })
     setQuestions([])
     setBriefHeight(360)
+    readSizedRef.current = false
+    readFiredRef.current = false
     ;(async () => {
       const res = await storage.getReportHtml(`${dateStr}.html`)
       if (cancelled) return
@@ -175,6 +183,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
       if (ev.source !== iframeRef.current?.contentWindow) return
       const h = Number(ev.data.height)
       if (Number.isFinite(h) && h > 0) {
+        readSizedRef.current = true
         // The reported height is applied as-is (no buffer): the reporter
         // sends Math.ceil of an exact content metric, and re-applying a
         // buffer per emit would creep the height upward. Clamp to a sane
@@ -189,6 +198,31 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [])
+
+  // "Read complete" analytics: fire once when the reader reaches the bottom of
+  // the brief. Gated on the iframe having reported its real height at least once
+  // (readSizedRef) so a short pre-sizing layout doesn't count as a read. Fire-
+  // and-forget — a signal failure never affects the read.
+  const maybeFireReadComplete = useCallback(() => {
+    if (readFiredRef.current || !readSizedRef.current) return
+    const el = scrollRef.current
+    if (!el) return
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) {
+      readFiredRef.current = true
+      window.mobius?.signal?.('brief_read_complete', { date: dateStr })
+    }
+  }, [dateStr])
+
+  // Re-check on scroll and whenever the brief resizes: a just-sized short brief
+  // that fits without scrolling counts as read on sizing; a tall one waits for
+  // the reader to scroll to the end.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return undefined
+    el.addEventListener('scroll', maybeFireReadComplete, { passive: true })
+    return () => el.removeEventListener('scroll', maybeFireReadComplete)
+  }, [maybeFireReadComplete])
+  useEffect(() => { maybeFireReadComplete() }, [briefHeight, maybeFireReadComplete])
 
   const onIframeLoad = useCallback(() => {
     // The height reporter inside the iframe fires on DOMContentLoaded and
@@ -236,7 +270,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
         className="rf-detail-body"
         style={chatOpen ? { '--chat-ratio': chatRatio, '--chat-pane-min': `${CHAT_PANE_MIN_PX}px` } : undefined}
       >
-        <div className="rf-split-body rf-scroll">
+        <div ref={scrollRef} className="rf-split-body rf-scroll">
           {state.phase === 'loading' && (
             <div className="rf-brief-loading">
               <span className="rf-spinner" aria-hidden="true" />
