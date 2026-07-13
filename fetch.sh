@@ -326,9 +326,8 @@ fi
 # per-app-digest.json — compact per-app analytics summary the Reflection
 # agent uses to triage which apps need attention tonight. Produced from
 # two sources:
-#   - activity.jsonl ON DISK (already staged above) for opens_24h counts
-#   - each app's signals.jsonl read via the storage API for signal counts,
-#     last-5-error messages, and the has_signals flag
+#   - activity.jsonl ON DISK for opens and durable app_signal events
+#   - each app's legacy signals.jsonl during the runtime migration
 # ~2–3 KB for 12 apps vs 10–100 KB of raw log; gives the agent a
 # digest-first orientation so it doesn't burn turns re-reading raw events.
 # Graceful on API errors: a failed app-read records has_signals:false and
@@ -365,9 +364,13 @@ def storage_get_text(app_id, path, timeout=15):
     except Exception:
         return None
 
-# --- opens_24h: count app_open events in the already-staged activity.jsonl ---
+# --- activity: opens plus replay-safe app_signal events ---
 activity_path = os.path.join(inp_dir, "activity.jsonl")
 opens_by_app = {}   # app_id (str) -> count
+signal_counts_by_app = {}
+error_signals_by_app = {}
+apps_with_signals = set()
+seen_signal_ids = set()
 if os.path.exists(activity_path):
     with open(activity_path) as f:
         for line in f:
@@ -378,11 +381,41 @@ if os.path.exists(activity_path):
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if ev.get("ev") != "app_open":
-                continue
             aid = str(ev.get("app_id", ""))
-            if aid:
+            if ev.get("ev") == "app_open" and aid:
                 opens_by_app[aid] = opens_by_app.get(aid, 0) + 1
+                continue
+            if ev.get("ev") != "app_signal" or not aid:
+                continue
+            signal_id = ev.get("id")
+            if not isinstance(signal_id, str) or not signal_id:
+                continue
+            signal_key = (aid, signal_id)
+            if signal_key in seen_signal_ids:
+                continue
+            occurred = ev.get("occurred_at", "")
+            try:
+                occurred_at = datetime.datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+                if occurred_at.tzinfo is None:
+                    occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
+                if occurred_at < cutoff:
+                    continue
+            except (ValueError, TypeError, AttributeError):
+                continue
+            seen_signal_ids.add(signal_key)
+            apps_with_signals.add(aid)
+            sname = ev.get("name", "")
+            if sname:
+                counts = signal_counts_by_app.setdefault(aid, {})
+                counts[sname] = counts.get(sname, 0) + 1
+            if sname == "error":
+                payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+                msg = payload.get("message") or payload.get("msg") or ""
+                if msg:
+                    errors = error_signals_by_app.setdefault(aid, [])
+                    errors.append((occurred_at, str(msg)[:200]))
+                    errors.sort(key=lambda row: row[0])
+                    del errors[:-5]
 
 # --- fetch app list ---
 try:
@@ -405,14 +438,15 @@ for app in apps:
     opens_24h = opens_by_app.get(app_id, 0)
 
     # Parse signals.jsonl for this app from the storage API.
-    signal_counts = {}
-    last_5_errors = []
-    has_signals   = False
+    signal_counts = dict(signal_counts_by_app.get(app_id, {}))
+    error_signals = list(error_signals_by_app.get(app_id, []))
+    has_signals   = app_id in apps_with_signals
     signals_error = None
+
+    # Migration path: older cached runtimes wrote one per-app signals.jsonl.
     try:
         raw = storage_get_text(app_id, "signals.jsonl")
         if raw:
-            has_signals = True
             for line in raw.splitlines():
                 line = line.strip()
                 if not line:
@@ -434,12 +468,13 @@ for app in apps:
                     continue
                 sname = sig.get("name", "")
                 if sname:
+                    has_signals = True
                     signal_counts[sname] = signal_counts.get(sname, 0) + 1
                 # Collect last-5 error messages (newest last in file → reverse later)
                 if sname == "error":
                     msg = sig.get("message") or sig.get("msg") or ""
                     if msg:
-                        last_5_errors.append(str(msg)[:200])
+                        error_signals.append((ts, str(msg)[:200]))
     except Exception as e:
         signals_error = str(e)[:200]
 
@@ -450,7 +485,7 @@ for app in apps:
         "opens_24h":   opens_24h,
         "has_signals": has_signals,
         "signal_counts": signal_counts,
-        "last_5_errors": last_5_errors[-5:],
+        "last_5_errors": [msg for _, msg in sorted(error_signals, key=lambda row: row[0])[-5:]],
     }
     if signals_error:
         entry["signals_read_error"] = signals_error
