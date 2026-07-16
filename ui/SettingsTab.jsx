@@ -10,6 +10,7 @@ import {
 } from '../constants.js'
 import { buildCron, hourClockLabel, hourToTimeValue, parseCronHour } from '../domain.js'
 import { fetchModelConfig } from '../providers.js'
+import { ModelPicker } from './ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -73,14 +74,14 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
           !modelValue &&
           !effortValue
         )
-        const hasPrimaryOverride = primaryMode === 'app' || (
+        const hasPrimaryOverride = primaryMode === 'app' || primaryMode === 'custom' || (
           primaryMode !== 'system' &&
           !legacyDefaultPrimary &&
           Boolean(providerValue || modelValue || effortValue)
         )
         setUseSystemPrimary(!hasPrimaryOverride)
         const secondaryMode = s.secondary_agent_mode
-        const hasSecondaryOverride = secondaryMode === 'app' || (
+        const hasSecondaryOverride = secondaryMode === 'app' || secondaryMode === 'custom' || (
           secondaryMode !== 'system' &&
           Boolean(s.fallback_provider || s.fallback_model || s.fallback_effort)
         )
@@ -291,8 +292,8 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
           <h2 className="rf-section-label">Background agents</h2>
         </div>
         <p className="rf-note">
-          Which agents run the overnight pass. System uses the global
-          Background agents from Settings; Override is only for Reflection.
+          Uses the ordered Background agents from Möbius Settings by default.
+          Override either slot only when Reflection needs its own model.
         </p>
         {modelGroups === null ? (
           <div className="rf-note">Loading models…</div>
@@ -314,7 +315,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                     aria-pressed={useSystemPrimary}
                     onClick={() => setUseSystemPrimary(true)}
                   >
-                    System
+                    Background agents
                   </button>
                   <button
                     type="button"
@@ -327,58 +328,21 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 </div>
               </div>
               {useSystemPrimary ? (
-                <div className="rf-agent-inherit">Using system Background primary</div>
+                <div className="rf-agent-inherit">Using the primary Background agent from Möbius Settings</div>
               ) : (
-                <>
-                  <select
-                    className="rf-select"
-                    value={model ? `${provider}\t${model}` : `${provider}\t`}
-                    onChange={(e) => {
-                      const idx = e.target.value.indexOf('\t')
-                      const nextProvider = e.target.value.slice(0, idx)
-                      const nextModel = e.target.value.slice(idx + 1) || null
-                      if (nextProvider) {
-                        setUseSystemPrimary(false)
-                        setProvider(nextProvider)
-                        setModel(nextModel)
-                      }
-                    }}
-                    aria-label="Reflection primary model"
-                  >
-                    {modelGroups.map((group) => {
-                      const isConnected = !connectedProviders || connectedProviders.has(group.key)
-                      const onProviderDefault = provider === group.key && !model
-                      return (
-                        <optgroup
-                          key={group.key}
-                          label={`${group.label}${isConnected ? '' : ' (not connected)'}`}
-                        >
-                          <option
-                            value={`${group.key}\t`}
-                            disabled={!isConnected && !onProviderDefault}
-                          >
-                            {group.label} default
-                          </option>
-                          {group.models.map((m) => {
-                            const on = provider === group.key && model === m.id
-                            return (
-                              <option
-                                key={`${group.key}-${m.id}`}
-                                value={`${group.key}\t${m.id}`}
-                                disabled={!isConnected && !on}
-                              >
-                                {m.name}
-                              </option>
-                            )
-                          })}
-                        </optgroup>
-                      )
-                    })}
-                  </select>
-                  <div className="rf-meta">
-                    {`${modelGroups.find((group) => group.key === provider)?.label || provider} · ${model || 'provider default'}`}
-                  </div>
-                </>
+                <ModelPicker
+                  provider={provider}
+                  model={model}
+                  groups={modelGroups}
+                  connectedProviders={connectedProviders}
+                  title="Reflection primary model"
+                  navKey="reflection-primary-model"
+                  onChange={(nextProvider, nextModel) => {
+                    setUseSystemPrimary(false)
+                    setProvider(nextProvider)
+                    setModel(nextModel || null)
+                  }}
+                />
               )}
             </div>
             <div className="rf-agent-field">
@@ -391,7 +355,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                     aria-pressed={useSystemSecondary}
                     onClick={() => setUseSystemSecondary(true)}
                   >
-                    System
+                    Background agents
                   </button>
                   <button
                     type="button"
@@ -404,58 +368,21 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 </div>
               </div>
               {useSystemSecondary ? (
-                <div className="rf-agent-inherit">Using system Background secondary</div>
+                <div className="rf-agent-inherit">Using the secondary Background agent from Möbius Settings</div>
               ) : (
-                <>
-                  <select
-                    className="rf-select"
-                    value={fallbackProvider ? `${fallbackProvider}\t${fallbackModel || ''}` : ''}
-                    onChange={(e) => {
-                      const idx = e.target.value.indexOf('\t')
-                      const nextProvider = e.target.value.slice(0, idx)
-                      const nextModel = e.target.value.slice(idx + 1) || null
-                      if (nextProvider) {
-                        setUseSystemSecondary(false)
-                        setFallbackProvider(nextProvider)
-                        setFallbackModel(nextModel)
-                      }
-                    }}
-                    aria-label="Reflection secondary model"
-                  >
-                    {modelGroups.map((group) => {
-                      const isConnected = !connectedProviders || connectedProviders.has(group.key)
-                      const onProviderDefault = fallbackProvider === group.key && !fallbackModel
-                      return (
-                        <optgroup
-                          key={group.key}
-                          label={`${group.label}${isConnected ? '' : ' (not connected)'}`}
-                        >
-                          <option
-                            value={`${group.key}\t`}
-                            disabled={!isConnected && !onProviderDefault}
-                          >
-                            {group.label} default
-                          </option>
-                          {group.models.map((m) => {
-                            const on = fallbackProvider === group.key && fallbackModel === m.id
-                            return (
-                              <option
-                                key={`${group.key}-${m.id}`}
-                                value={`${group.key}\t${m.id}`}
-                                disabled={!isConnected && !on}
-                              >
-                                {m.name}
-                              </option>
-                            )
-                          })}
-                        </optgroup>
-                      )
-                    })}
-                  </select>
-                  <div className="rf-meta">
-                    {`${modelGroups.find((group) => group.key === fallbackProvider)?.label || fallbackProvider} · ${fallbackModel || 'provider default'}`}
-                  </div>
-                </>
+                <ModelPicker
+                  provider={fallbackProvider}
+                  model={fallbackModel}
+                  groups={modelGroups}
+                  connectedProviders={connectedProviders}
+                  title="Reflection secondary model"
+                  navKey="reflection-secondary-model"
+                  onChange={(nextProvider, nextModel) => {
+                    setUseSystemSecondary(false)
+                    setFallbackProvider(nextProvider)
+                    setFallbackModel(nextModel || null)
+                  }}
+                />
               )}
             </div>
           </div>

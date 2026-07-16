@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "2.7.6",
+  "version": "2.7.7",
   "description": "While you sleep, Möbius reviews the system, proposes improvements, and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
@@ -65,6 +65,7 @@
     "ui/StreakBar.jsx",
     "ui/ReportsList.jsx",
     "ui/LastNightStatus.jsx",
+    "ui/ModelPicker.jsx",
     "ui/SettingsTab.jsx"
   ]
 }
