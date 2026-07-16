@@ -43,6 +43,11 @@ export const CSS = `
 }
 /* /mobius-ui:Focus */
 
+.rf-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
 /* mobius-ui:Root v1 — keep in sync; library candidate. Diverge below the marker only. */
 .rf-root {
   position: relative;
@@ -81,7 +86,7 @@ export const CSS = `
 .rf-brand-fallback {
   flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px;
   align-items: center; justify-content: center;
-  background: ${ACCENT}; color: var(--bg, #0c0c0c);
+  background: ${ACCENT}; color: var(--accent-fg);
   font-weight: 700; line-height: 1;
 }
 .rf-header-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex: 0 0 auto; position: relative; z-index: 1; }
@@ -438,8 +443,8 @@ button.rf-card { cursor: pointer; }
 .rf-status-hint  { color: var(--muted); font-size: 12px; }
 .rf-status-investigate {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 12px; border-radius: 9px; border: 1px solid var(--danger, #f85149);
-  background: transparent; color: var(--danger, #f85149);
+  min-height: 44px; padding: 5px 12px; border-radius: 9px; border: 1px solid var(--danger);
+  background: transparent; color: var(--danger);
   font-size: 12px; font-weight: 650; cursor: pointer; font-family: var(--font);
   touch-action: manipulation; user-select: none;
 }
@@ -461,7 +466,7 @@ button.rf-card { cursor: pointer; }
 .rf-note-strong { color: var(--text); font-weight: 650; }
 .rf-time-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
 .rf-time-input {
-  padding: 9px 12px; font-size: 16px; font-family: var(--font); font-weight: 600;
+  min-height: 44px; padding: 9px 12px; font-size: 16px; font-family: var(--font); font-weight: 600;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px;
   width: 132px;
@@ -497,7 +502,7 @@ button.rf-card { cursor: pointer; }
   background: var(--bg);
 }
 .rf-agent-mode-btn {
-  min-height: 32px; padding: 0 10px; border: none; border-radius: 6px;
+  min-height: 44px; padding: 0 10px; border: none; border-radius: 6px;
   background: transparent; color: var(--muted);
   font-family: var(--font); font-size: 12px; font-weight: 700;
   cursor: pointer; touch-action: manipulation; user-select: none;
@@ -602,7 +607,7 @@ button.rf-card { cursor: pointer; }
 .rf-rq__opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .rf-rq__opt {
   display: inline-flex; align-items: center; gap: 7px;
-  padding: 8px 13px; min-height: 38px;
+  padding: 8px 13px; min-height: 44px;
   border-radius: 9px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text);
   font-size: 13px; cursor: pointer; box-sizing: border-box;

@@ -138,6 +138,7 @@ export default function App({ appId, token }) {
   return (
     <div className="rf-root">
       <style>{CSS}</style>
+      <h1 className="rf-sr-only">Reflection</h1>
       <div className="rf-aurora" aria-hidden="true" />
       <div className="rf-header">
         <div className="rf-brand">
