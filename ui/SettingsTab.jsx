@@ -5,16 +5,29 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   DEFAULT_VERBOSITY,
+  EFFORT_LEVELS,
   FALLBACK_MODEL_GROUPS,
   VERBOSITY_OPTIONS,
+  defaultEffort,
 } from '../constants.js'
 import { buildCron, hourClockLabel, hourToTimeValue, parseCronHour } from '../domain.js'
 import { fetchModelConfig } from '../providers.js'
+import { EffortStepper } from './EffortStepper.jsx'
 import { ModelPicker } from './ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
+
+function effortForProvider(provider, value) {
+  const levels = EFFORT_LEVELS[provider] || []
+  return levels.some((level) => level.value === value) ? value : defaultEffort(provider)
+}
+
+function effortLabel(provider, value) {
+  const levels = EFFORT_LEVELS[provider] || []
+  return levels.find((level) => level.value === effortForProvider(provider, value))?.label || ''
+}
 
 export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [hour, setHour] = useState(DEFAULT_HOUR)
@@ -23,9 +36,11 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [useSystemPrimary, setUseSystemPrimary] = useState(true)
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
   const [model, setModel] = useState(DEFAULT_MODEL)
+  const [effort, setEffort] = useState(defaultEffort(DEFAULT_PROVIDER))
   const [useSystemSecondary, setUseSystemSecondary] = useState(true)
   const [fallbackProvider, setFallbackProvider] = useState('')
   const [fallbackModel, setFallbackModel] = useState('')
+  const [fallbackEffort, setFallbackEffort] = useState('')
   const [verbosity, setVerbosity] = useState(DEFAULT_VERBOSITY)
   const [focus, setFocus] = useState('')
   const [avoid, setAvoid] = useState('')
@@ -92,11 +107,17 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         if (typeof s.model === 'string' && s.model.trim()) {
           setModel(s.model.trim())
         }
+        setEffort(effortForProvider(providerValue || DEFAULT_PROVIDER, effortValue))
         if (typeof s.fallback_provider === 'string' && s.fallback_provider.trim()) {
           setFallbackProvider(s.fallback_provider.trim())
         }
         if (typeof s.fallback_model === 'string' && s.fallback_model.trim()) {
           setFallbackModel(s.fallback_model.trim())
+        }
+        const fallbackProviderValue = typeof s.fallback_provider === 'string' ? s.fallback_provider.trim() : ''
+        const fallbackEffortValue = typeof s.fallback_effort === 'string' ? s.fallback_effort.trim() : ''
+        if (fallbackProviderValue) {
+          setFallbackEffort(effortForProvider(fallbackProviderValue, fallbackEffortValue))
         }
         const vOpt = VERBOSITY_OPTIONS.find((o) => o.id === s.verbosity)
         if (vOpt) setVerbosity(vOpt.id)
@@ -137,23 +158,27 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
 
   const enablePrimaryOverride = useCallback(() => {
     setUseSystemPrimary(false)
-    if (!modelGroups || modelGroups.some(group => group.key === provider)) return
+    const currentGroup = modelGroups?.find(group => group.key === provider)
+    if (currentGroup?.models?.some(item => item.id === model)) return
     const chosen = chooseDefaultAgentGroup()
     if (chosen) {
       setProvider(chosen.key)
       setModel(chosen.models?.[0]?.id || '')
+      setEffort(defaultEffort(chosen.key))
     }
-  }, [modelGroups, provider, chooseDefaultAgentGroup])
+  }, [modelGroups, provider, model, chooseDefaultAgentGroup])
 
   const enableSecondaryOverride = useCallback(() => {
     setUseSystemSecondary(false)
-    if (fallbackProvider && modelGroups?.some(group => group.key === fallbackProvider)) return
+    const currentGroup = modelGroups?.find(group => group.key === fallbackProvider)
+    if (currentGroup?.models?.some(item => item.id === fallbackModel)) return
     const chosen = chooseDefaultAgentGroup(provider)
     if (chosen) {
       setFallbackProvider(chosen.key)
       setFallbackModel(chosen.models?.[0]?.id || '')
+      setFallbackEffort(defaultEffort(chosen.key))
     }
-  }, [fallbackProvider, modelGroups, provider, chooseDefaultAgentGroup])
+  }, [fallbackProvider, fallbackModel, modelGroups, provider, chooseDefaultAgentGroup])
 
   const onTimeChange = useCallback((e) => {
     // <input type="time"> can be cleared to "" -> NaN. Drop NaN so we never
@@ -190,10 +215,12 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         exclude_apps: excludeApps,
         provider: useSystemPrimary ? null : (provider || settingsExtra.provider || DEFAULT_PROVIDER),
         model: useSystemPrimary ? null : (model || settingsExtra.model || null),
-        effort: useSystemPrimary ? null : (settingsExtra.effort ?? null),
+        effort: useSystemPrimary ? null : effortForProvider(provider || DEFAULT_PROVIDER, effort),
         fallback_provider: !useSystemSecondary ? (fallbackProvider || null) : null,
         fallback_model: !useSystemSecondary && fallbackProvider ? (fallbackModel || null) : null,
-        fallback_effort: !useSystemSecondary && fallbackProvider ? (settingsExtra.fallback_effort ?? null) : null,
+        fallback_effort: !useSystemSecondary && fallbackProvider
+          ? effortForProvider(fallbackProvider, fallbackEffort)
+          : null,
         primary_agent_mode: useSystemPrimary ? 'system' : 'app',
         secondary_agent_mode: useSystemSecondary ? 'system' : 'app',
         verbosity,
@@ -223,7 +250,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, useSystemSecondary, fallbackProvider, fallbackModel, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
+  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
 
   if (loading) {
     return (
@@ -337,10 +364,15 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                   connectedProviders={connectedProviders}
                   title="Reflection primary model"
                   navKey="reflection-primary-model"
+                  effortLabel={effortLabel(provider, effort)}
+                  effortControl={(
+                    <EffortStepper provider={provider} value={effort} onChange={setEffort} />
+                  )}
                   onChange={(nextProvider, nextModel) => {
                     setUseSystemPrimary(false)
                     setProvider(nextProvider)
                     setModel(nextModel || null)
+                    setEffort(effortForProvider(nextProvider, effort))
                   }}
                 />
               )}
@@ -377,10 +409,19 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                   connectedProviders={connectedProviders}
                   title="Reflection secondary model"
                   navKey="reflection-secondary-model"
+                  effortLabel={effortLabel(fallbackProvider, fallbackEffort)}
+                  effortControl={(
+                    <EffortStepper
+                      provider={fallbackProvider}
+                      value={fallbackEffort}
+                      onChange={setFallbackEffort}
+                    />
+                  )}
                   onChange={(nextProvider, nextModel) => {
                     setUseSystemSecondary(false)
                     setFallbackProvider(nextProvider)
                     setFallbackModel(nextModel || null)
+                    setFallbackEffort(effortForProvider(nextProvider, fallbackEffort))
                   }}
                 />
               )}

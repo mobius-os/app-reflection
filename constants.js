@@ -39,6 +39,32 @@ export const FALLBACK_MODEL_GROUPS = []
 export const DEFAULT_PROVIDER = 'claude'
 export const DEFAULT_MODEL = null
 
+export const EFFORT_LEVELS = {
+  claude: [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
+    { value: 'ultracode', label: 'Ultracode' },
+  ],
+  codex: [
+    { value: 'none', label: 'None' },
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+  ],
+}
+
+export function defaultEffort(provider) {
+  const levels = EFFORT_LEVELS[provider] || []
+  return levels.find((level) => level.value === 'medium')?.value
+    || levels[0]?.value
+    || 'medium'
+}
+
 // The default schedule: 06:00 local -> "0 6 * * *". We only ever let the
 // user pick an hour (minute pinned to 0), so the cron field is always
 // "0 <h> * * *". parseCronHour / buildCron are the single round-trip
