@@ -54,8 +54,25 @@ export default function App({ appId, token }) {
   const [tab, setTab] = useState('reports')
   const [openDate, setOpenDate] = useState(null)
   const detailNavRef = useRef(null)
+  const tabRefs = useRef([])
   const online = useOnline()
   const storage = useMemo(() => makeStorage(appId, token), [appId, token])
+  const selectTab = (next) => {
+    if (next === 'settings') closeDetail()
+    setTab(next)
+  }
+  const onTabKeyDown = (event, index) => {
+    const order = ['reports', 'settings']
+    let nextIndex = index
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % order.length
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + order.length) % order.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = order.length - 1
+    else return
+    event.preventDefault()
+    selectTab(order[nextIndex])
+    window.requestAnimationFrame(() => tabRefs.current[nextIndex]?.focus())
+  }
   const appReadyFiredRef = useRef(false)
   // A save can resolve 'queued' (durably outboxed offline) and then be FATALLY
   // refused later, when the outbox drains — an async outcome the resolved
@@ -168,18 +185,30 @@ export default function App({ appId, token }) {
           )}
           <div className="rf-seg" role="tablist" aria-label="View">
             <button
+              id="rf-tab-reports"
+              ref={(node) => { tabRefs.current[0] = node }}
+              type="button"
               role="tab"
               aria-selected={tab === 'reports'}
+              aria-controls="rf-panel-reports"
+              tabIndex={tab === 'reports' ? 0 : -1}
               className={`rf-seg-btn${tab === 'reports' ? ' is-active' : ''}`}
-              onClick={() => setTab('reports')}
+              onClick={() => selectTab('reports')}
+              onKeyDown={(event) => onTabKeyDown(event, 0)}
             >
               Briefs
             </button>
             <button
+              id="rf-tab-settings"
+              ref={(node) => { tabRefs.current[1] = node }}
+              type="button"
               role="tab"
               aria-selected={tab === 'settings'}
+              aria-controls="rf-panel-settings"
+              tabIndex={tab === 'settings' ? 0 : -1}
               className={`rf-seg-btn${tab === 'settings' ? ' is-active' : ''}`}
-              onClick={() => { closeDetail(); setTab('settings') }}
+              onClick={() => selectTab('settings')}
+              onKeyDown={(event) => onTabKeyDown(event, 1)}
             >
               Settings
             </button>
@@ -202,7 +231,7 @@ export default function App({ appId, token }) {
           </div>
         )}
         {tab === 'reports' ? (
-          <>
+          <div id="rf-panel-reports" role="tabpanel" aria-labelledby="rf-tab-reports">
             {/* Last-night status row — shows most recent cron_outcome for reflection */}
             <LastNightStatus token={token} />
             <ReportsList
@@ -222,14 +251,16 @@ export default function App({ appId, token }) {
                 token={token}
               />
             )}
-          </>
+          </div>
         ) : (
-          <SettingsTab
-            appId={appId}
-            storage={storage}
-            token={token}
-            onSetupComplete={() => markSetupComplete(appId)}
-          />
+          <div id="rf-panel-settings" role="tabpanel" aria-labelledby="rf-tab-settings">
+            <SettingsTab
+              appId={appId}
+              storage={storage}
+              token={token}
+              onSetupComplete={() => markSetupComplete(appId)}
+            />
+          </div>
         )}
       </div>
     </div>
