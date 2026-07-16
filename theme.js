@@ -18,6 +18,7 @@
 // ---------------------------------------------------------------------------
 
 const ACCENT = '#7c6cf0'        // reflection's own violet
+const ACCENT_STRONG = '#5f4dcc' // white-text surface; WCAG AA at small sizes
 const ACCENT_2 = '#a78bfa'      // lighter companion for gradients/glows
 const ACCENT_DIM = 'rgba(124,108,240,0.13)'
 const ACCENT_DIM_2 = 'rgba(167,139,250,0.10)'
@@ -154,7 +155,7 @@ button.rf-card { cursor: pointer; }
   touch-action: manipulation; user-select: none;
 }
 @media (hover:hover) { .rf-seg-btn:hover { color: var(--text); } }
-.rf-seg-btn.is-active { background: ${ACCENT}; color: var(--accent-fg); }
+.rf-seg-btn.is-active { background: ${ACCENT_STRONG}; color: var(--accent-fg); }
 /* /mobius-ui:Segmented */
 
 /* mobius-ui:ChatEmbed v1 — keep in sync; library candidate. Diverge below the marker only. */
@@ -263,7 +264,7 @@ button.rf-card { cursor: pointer; }
 .rf-latest-pill {
   font-size: 11px; font-weight: 750; letter-spacing: 0;
   color: var(--accent-fg);
-  background: ${ACCENT}; padding: 2px 8px; border-radius: 999px;
+  background: ${ACCENT_STRONG}; padding: 2px 8px; border-radius: 999px;
 }
 
 /* Loading / error / offline states */
