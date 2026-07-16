@@ -200,6 +200,8 @@ _USAGE_LIMIT_MARKERS = (
   "quota",
   "too many requests",
   "weekly limit",
+  "monthly spend limit",
+  "spend limit",
 )
 
 
