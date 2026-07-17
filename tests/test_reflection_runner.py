@@ -3,9 +3,11 @@ import unittest
 import reflection_runner
 
 
-class ResourceStewardshipGoalTests(unittest.TestCase):
-  def test_goal_stages_resource_evidence_before_broad_checks(self):
+class AdaptiveReflectionGoalTests(unittest.TestCase):
+  def test_goal_stages_meta_model_and_bounded_system_evidence(self):
     goal = reflection_runner.build_goal({})
+    self.assertIn("meta-state.md", goal)
+    self.assertIn("meta-learning.jsonl", goal)
     self.assertIn("resource-snapshot.json", goal)
     self.assertIn("resource-history.jsonl", goal)
     self.assertIn("resource-decisions.jsonl", goal)

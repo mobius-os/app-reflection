@@ -707,6 +707,8 @@ RESOURCE_MONITOR="$SCRIPT_DIR/resource_monitor.py"
 RESOURCE_HISTORY="$DATA_DIR/apps/reflection/resource-history.jsonl"
 RESOURCE_STATE="$DATA_DIR/apps/reflection/resource-monitor-state.json"
 RESOURCE_LEDGER="$DATA_DIR/apps/reflection/resource-decisions.jsonl"
+META_STATE="$DATA_DIR/apps/reflection/meta-state.md"
+META_LOG="$DATA_DIR/apps/reflection/meta-learning.jsonl"
 if [[ -r "$RESOURCE_MONITOR" ]]; then
   if ! python3 "$RESOURCE_MONITOR" snapshot \
       --data-dir "$DATA_DIR" \
@@ -727,6 +729,76 @@ if [[ -r "$RESOURCE_LEDGER" ]]; then
   tail -n 100 "$RESOURCE_LEDGER" >"$INPUTS/resource-decisions.jsonl" 2>>"$LOG" || true
 else
   : >"$INPUTS/resource-decisions.jsonl"
+fi
+
+# A compact, agent-owned operating model. Unlike the raw run log, this file is
+# deliberately rewritten as understanding evolves: it keeps only the current
+# useful model of the partner, system, watchlist, and Reflection's own approach.
+# The append-only learning tail preserves why that model changed.
+if [[ ! -f "$META_STATE" ]]; then
+  python3 - "$META_STATE" <<'PY' 2>>"$LOG" || true
+import os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+text = """# Reflection operating model
+
+Keep this concise and evidence-based. Rewrite it as the model changes.
+
+## Partner and working patterns
+- No stable pattern recorded yet.
+
+## System and workflow
+- No stable pattern recorded yet.
+
+## Near-term horizon
+- Review recent work and open loops before predicting what may help next.
+
+## Watchlist and cadence
+- Add only useful watches, each with evidence, last checked, and next review.
+
+## Reflection approach
+- Prefer a few high-leverage, verifiable improvements over completing a checklist.
+"""
+tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+tmp.write_text(text, encoding="utf-8")
+os.replace(tmp, path)
+PY
+fi
+cp "$META_STATE" "$INPUTS/meta-state.md" 2>>"$LOG" || true
+if [[ -r "$META_LOG" ]]; then
+  # Keep the durable explanation log useful but finite. Reflection appends
+  # JSON objects; the wrapper validates them, keeps the newest 200 records,
+  # and enforces a 1 MiB ceiling before staging the recent tail.
+  python3 - "$META_LOG" <<'PY' 2>>"$LOG" || true
+import json, os, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+except OSError:
+    raise SystemExit(0)
+
+rows = []
+for raw in raw_lines:
+    try:
+        row = json.loads(raw)
+    except (TypeError, ValueError):
+        continue
+    if isinstance(row, dict):
+        rows.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+
+rows = rows[-200:]
+while rows and len(("\n".join(rows) + "\n").encode("utf-8")) > 1024 * 1024:
+    rows.pop(0)
+
+text = "\n".join(rows) + ("\n" if rows else "")
+tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+tmp.write_text(text, encoding="utf-8")
+os.replace(tmp, path)
+PY
+  tail -n 100 "$META_LOG" >"$INPUTS/meta-learning.jsonl" 2>>"$LOG" || true
+else
+  : >"$INPUTS/meta-learning.jsonl"
 fi
 
 # reflection-run-history.txt — bounded self-observation for the next agent.
@@ -765,7 +837,7 @@ PY
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
-log "gathered inputs (activity + status, chats, feedback, app digest, resource snapshot + decisions) into $INPUTS/"
+log "gathered inputs (meta model, activity, chats, feedback, app digest, resource evidence) into $INPUTS/"
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a

@@ -1,6 +1,6 @@
 # Reflection
 
-The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, Möbius reflects on the day: a real agent wakes up with the whole night ahead of it and does the slow, deferred work that improves your long-term productivity. That includes learning what helps you, improving procedures and apps, and keeping storage, memory, CPU, network, and model usage economical. In the morning it hands you a one-page brief with only the decisions worth your attention.
+The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, a real agent steps back from individual tasks and looks at the larger picture: how you work, what the system learned, what caused friction, what may matter tomorrow or next week, and how Möbius itself should evolve. In the morning it leaves a concise brief with the useful outcomes and only the decisions worth your attention.
 
 It always ships a brief, even on quiet nights — Möbius's reflection skill mandates a brief every run.
 
@@ -22,18 +22,37 @@ Möbius fetches the manifest, shows you the requested permissions and schedule, 
 
 ## What a run does
 
-The run is one multi-turn goal, not a single prompt. Working from the day's activity and chats, the agent:
+The run is one multi-turn goal, not a fixed checklist. It works from recent activity, chats, logs, code, prior Reflection learning, and current web research, then chooses the few highest-leverage moves. A night may:
 
-1. **Interviews the chat agents worth interviewing.** It forks selected chats into throwaway copies — reusing the same provider that did the original work — and asks what was hard, what it learned, what you'd want flagged. Your real chats are never touched. Background jobs are reviewed from their logs and artifacts unless a future session registry explicitly records a safe interview target.
-2. **Sharpens its own skills and the system loop.** What it learns from the interviews gets folded back into the agent's skills (including the reflection skill itself). It can read Memory's maintenance log to spot how the memory system should improve, but **Memory** owns reading, writing, and consolidating the graph.
-3. **Hardens your apps.** It opens each app, exercises the paths you actually use, and fixes the small, obviously-correct breakages so you wake to working apps. Anything with a judgment call is left as a proposal, not applied.
-4. **Researches what you care about and proposes features**, each tied to something it observed you doing.
-5. **Stewards resources.** It reads a cheap daily disk/cgroup pulse and a bounded history, performs deeper inventories only when due or triggered by pressure/growth, safely removes proven disposable residue, and turns recurring leaks into programmatic limits. Railway deployments get stricter scrutiny because storage, RAM, CPU, and network consumption affect the bill.
-6. **Writes the brief and captures feedback.** A standalone HTML brief lands in `reports/<date>.html`; any decision cards in the report are saved for the next run to act on.
+1. **Review yesterday's work.** Find repeated effort, weak procedures, unfinished loops, avoidable failures, and things a future agent should know.
+2. **Evolve its own approach.** Rewrite its compact operating model, append durable learning, prune stale prompt rules, and improve the Reflection skill when evidence shows a better way to work.
+3. **Anticipate what is likely to help.** Prepare context, research, fixes, or small improvements for the next day and week. This can include checking relevant releases or practices for tools and dependencies you actually use—not generic news gathering.
+4. **Improve the system.** Harden an app or workflow, simplify a recurring process, improve observability, reduce unnecessary usage, or turn repeated cleanup into a bounded lifecycle rule.
+5. **Learn about you carefully.** Update its model only from observed patterns and feedback, keeping hypotheses distinct from confirmed preferences.
+6. **Write the brief.** A standalone HTML brief lands in `reports/<date>.html`; optional decision cards are saved for the next run, but unanswered questions never block useful work.
 
 When you leave feedback in the morning, that closes the loop: the agent can act on your notes and records what your answers taught it, so the next night's run wastes fewer of your taps.
 
-## Resource stewardship
+## How Reflection evolves
+
+`meta-state.md` is Reflection's concise current operating model: observed working
+patterns, system strengths and friction, near-term hypotheses, a small watchlist,
+and the cadence for revisiting each item. Reflection rewrites it when evidence
+changes the model. `meta-learning.jsonl` is the bounded explanation of why the
+model or prompt changed, so a later run does not have to rediscover the lesson.
+
+The editable Reflection skill is its procedure, not a diary. Reflection changes
+that prompt only when a finding generalizes to future runs, and removes rules
+that have become stale or redundant. This lets the approach evolve without the
+prompt growing forever.
+
+Web research is driven by the user's real work and a near-term horizon. For
+example, Reflection may check whether a frequently used tool has a relevant new
+release, whether a dependency changed in a way that affects an active project,
+or whether tomorrow's likely task can be prepared in advance. Each watch records
+when it was checked and when it is worth checking again.
+
+## Bounded resource evidence
 
 `resource_monitor.py` records a small daily snapshot in `resource-history.jsonl`.
 It always reads cheap filesystem and cgroup counters, but walks `/data` only on

@@ -1,11 +1,9 @@
 import datetime as dt
 import json
-import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import resource_monitor
 
@@ -56,10 +54,6 @@ class ResourceMonitorTests(unittest.TestCase):
 
     self.assertFalse(snapshot["deep_scan"]["ran"])
     self.assertEqual(snapshot["deep_scan"]["reason"], "not-due")
-
-  def test_railway_environment_is_explicit(self):
-    with mock.patch.dict(os.environ, {"RAILWAY_PROJECT_ID": "project"}, clear=False):
-      self.assertEqual(resource_monitor._platform(), "railway")
 
   def test_record_command_writes_structured_ledger(self):
     ledger = self.root / "decisions.jsonl"

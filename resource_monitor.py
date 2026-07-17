@@ -177,14 +177,6 @@ def _runtime_counters() -> dict[str, Any]:
   return result
 
 
-def _platform() -> str:
-  railway_vars = (
-    "RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_ID",
-    "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID",
-  )
-  return "railway" if any(os.environ.get(name) for name in railway_vars) else "self-hosted"
-
-
 def _parse_time(value: object) -> dt.datetime | None:
   if not isinstance(value, str):
     return None
@@ -375,7 +367,6 @@ def make_snapshot(
   snapshot: dict[str, Any] = {
     "version": VERSION,
     "captured_at": now.isoformat(),
-    "platform": _platform(),
     "pressure": pressure,
     "disk": disk,
     "runtime": _runtime_counters(),

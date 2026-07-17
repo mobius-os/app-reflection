@@ -88,6 +88,8 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const resourceHistory = await readFile(join(dataDir, 'apps', 'reflection', 'resource-history.jsonl'), 'utf8')
     const stagedResourceHistory = await readFile(join(inputs, 'resource-history.jsonl'), 'utf8')
     const runHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
+    const metaState = await readFile(join(inputs, 'meta-state.md'), 'utf8')
+    const metaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
     assert.equal(snapshot, activity)
     assert.equal(status.ok, true)
     assert.equal(status.event_count, 3)
@@ -102,6 +104,17 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(resourceHistory.trim().split('\n').length, 1)
     assert.equal(stagedResourceHistory, resourceHistory)
     assert.match(runHistory, /no prior metrics/)
+    assert.match(metaState, /Reflection operating model/)
+    assert.equal(metaLearning, '')
+
+    const learning = JSON.stringify({
+      ts: '2026-07-17T00:00:00Z',
+      evidence: 'Repeated broad checks produced no new finding',
+      inference: 'A due date is a better trigger than a nightly ritual',
+      change: 'Added adaptive review cadence',
+      revisit_after: '2026-07-24',
+    })
+    await writeFile(join(dataDir, 'apps', 'reflection', 'meta-learning.jsonl'), `${learning}\nnot-json\n`)
 
     failActivity = true
     await run()
@@ -110,6 +123,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const failedDigest = JSON.parse(await readFile(join(inputs, 'per-app-digest.json'), 'utf8'))
     const nextResources = JSON.parse(await readFile(join(inputs, 'resource-snapshot.json'), 'utf8'))
     const nextRunHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
+    const nextMetaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
     assert.equal(retained, activity)
     assert.equal(failedStatus.ok, false)
     assert.equal(failedStatus.retained_previous_snapshot, true)
@@ -120,6 +134,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(nextResources.deep_scan.ran, false)
     assert.equal(nextResources.deep_scan.reason, 'not-due')
     assert.match(nextRunHistory, /"exit_code":0/)
+    assert.equal(nextMetaLearning, `${learning}\n`)
   } finally {
     server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))
