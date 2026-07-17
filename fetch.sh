@@ -39,6 +39,15 @@ RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 # multi-phase work) but bounded so a wedged run can't hold the lock past
 # the next night's schedule. Overridable for tests.
 RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
+RUN_METRICS="$DATA_DIR/apps/reflection/reflection-run-metrics.jsonl"
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+RUN_STARTED_EPOCH="$(date +%s)"
+RUN_DISK_BEFORE="$(python3 - "$DATA_DIR" <<'PY' 2>/dev/null || echo 0
+import shutil, sys
+print(shutil.disk_usage(sys.argv[1]).used)
+PY
+)"
+RUN_CPU_BEFORE="$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat 2>/dev/null || echo 0)"
 
 # CLI credentials the spawned claude/codex binary reads. Exported (not
 # just set) so the runner and any subprocess it forks inherit them.
@@ -689,10 +698,74 @@ else
 fi
 [[ -z "${DIGEST_TMP:-}" ]] || rm -f -- "$DIGEST_TMP"
 
+# resource-snapshot.json — a cheap daily filesystem/cgroup pulse plus an
+# adaptive deep /data inventory. The helper remembers its last complete deep
+# scan and only walks the tree weekly, under pressure, or after unusual growth.
+# This gives Reflection trend evidence without paying for the same broad `du`
+# commands every night. History and decisions are bounded durable logs.
+RESOURCE_MONITOR="$SCRIPT_DIR/resource_monitor.py"
+RESOURCE_HISTORY="$DATA_DIR/apps/reflection/resource-history.jsonl"
+RESOURCE_STATE="$DATA_DIR/apps/reflection/resource-monitor-state.json"
+RESOURCE_LEDGER="$DATA_DIR/apps/reflection/resource-decisions.jsonl"
+if [[ -r "$RESOURCE_MONITOR" ]]; then
+  if ! python3 "$RESOURCE_MONITOR" snapshot \
+      --data-dir "$DATA_DIR" \
+      --output "$INPUTS/resource-snapshot.json" \
+      --history "$RESOURCE_HISTORY" \
+      --state "$RESOURCE_STATE" 2>>"$LOG"; then
+    log "WARN resource monitor failed; resource snapshot may be stale"
+  fi
+else
+  log "WARN resource monitor missing at $RESOURCE_MONITOR"
+fi
+if [[ -r "$RESOURCE_HISTORY" ]]; then
+  tail -n 30 "$RESOURCE_HISTORY" >"$INPUTS/resource-history.jsonl" 2>>"$LOG" || true
+else
+  : >"$INPUTS/resource-history.jsonl"
+fi
+if [[ -r "$RESOURCE_LEDGER" ]]; then
+  tail -n 100 "$RESOURCE_LEDGER" >"$INPUTS/resource-decisions.jsonl" 2>>"$LOG" || true
+else
+  : >"$INPUTS/resource-decisions.jsonl"
+fi
+
+# reflection-run-history.txt — bounded self-observation for the next agent.
+# Metrics answer "did the last change make the run cheaper?"; the short log
+# tail carries friction; git history prevents a later run from re-adding an
+# experiment that an earlier run deliberately removed.
+python3 - "$RUN_METRICS" "$LOG" "$DATA_DIR" >"$INPUTS/reflection-run-history.txt" 2>>"$LOG" <<'PY' || true
+import json, pathlib, subprocess, sys
+
+metrics_path, log_path, data_dir = map(pathlib.Path, sys.argv[1:])
+print("# Reflection run history (bounded; newest last)\n")
+print("## Run metrics")
+try:
+    rows = metrics_path.read_text(encoding="utf-8", errors="replace").splitlines()[-14:]
+except OSError:
+    rows = []
+print("\n".join(rows) if rows else "(no prior metrics)")
+print("\n## Recent reflection log tail")
+try:
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]
+except OSError:
+    lines = []
+print("\n".join(lines) if lines else "(no prior log)")
+print("\n## Recent edits to reflection.md")
+try:
+    result = subprocess.run(
+        ["git", "-C", str(data_dir), "log", "--oneline", "-10", "--",
+         "shared/skills/reflection.md"],
+        text=True, capture_output=True, timeout=10, check=False,
+    )
+    print(result.stdout.strip() or "(no recorded edits)")
+except Exception as exc:
+    print(f"(could not read skill history: {exc})")
+PY
+
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
-log "gathered inputs (activity + status, chats, app-feedback, prev-report, per-app-digest) into $INPUTS/"
+log "gathered inputs (activity + status, chats, feedback, app digest, resource snapshot + decisions) into $INPUTS/"
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a
@@ -824,6 +897,54 @@ PY
   esac
 }
 send_morning_push
+
+# Persist one compact row about Reflection's own footprint. Keep the log
+# bounded: it is an optimization input, not an audit trail. Cost/token details
+# emitted by provider SDKs remain in the short reflection.log tail staged above.
+RUN_FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+RUN_FINISHED_EPOCH="$(date +%s)"
+RUN_DISK_AFTER="$(python3 - "$DATA_DIR" <<'PY' 2>/dev/null || echo 0
+import shutil, sys
+print(shutil.disk_usage(sys.argv[1]).used)
+PY
+)"
+RUN_CPU_AFTER="$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat 2>/dev/null || echo 0)"
+python3 - "$RUN_METRICS" "$RUN_STARTED_AT" "$RUN_FINISHED_AT" \
+    "$RUN_STARTED_EPOCH" "$RUN_FINISHED_EPOCH" "$RC" \
+    "$RUN_DISK_BEFORE" "$RUN_DISK_AFTER" "$RUN_CPU_BEFORE" "$RUN_CPU_AFTER" \
+    "$DATA_DIR/apps/$APP_ID/reports/$DATE.html" "${REFLECTION_DRY:-0}" \
+    2>>"$LOG" <<'PY' || log "WARN could not persist reflection run metrics"
+import json, os, pathlib, sys
+
+(path, started_at, finished_at, started_epoch, finished_epoch, rc,
+ disk_before, disk_after, cpu_before, cpu_after, report, dry) = sys.argv[1:]
+def integer(value):
+    try: return int(value)
+    except (TypeError, ValueError): return 0
+row = {
+    "started_at": started_at,
+    "finished_at": finished_at,
+    "duration_seconds": max(0, integer(finished_epoch) - integer(started_epoch)),
+    "exit_code": integer(rc),
+    "dry_run": dry == "1",
+    "brief_written": pathlib.Path(report).is_file(),
+    "disk_used_delta_bytes": integer(disk_after) - integer(disk_before),
+    "cgroup_cpu_usage_usec_delta": max(0, integer(cpu_after) - integer(cpu_before)),
+}
+target = pathlib.Path(path)
+try:
+    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+except OSError:
+    lines = []
+lines = [line for line in lines if line.strip()][-59:]
+lines.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+target.parent.mkdir(parents=True, exist_ok=True)
+tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+with tmp.open("w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines) + "\n")
+    handle.flush(); os.fsync(handle.fileno())
+os.replace(tmp, target)
+PY
 
 # --- emit cron_outcome ------------------------------------------------
 emit_outcome "$RC"

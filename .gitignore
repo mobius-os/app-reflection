@@ -1,5 +1,20 @@
-.DS_Store
+# Generated build output and vendored deps are not hand-written source.
+dist/
+.build/
 node_modules/
+# Manifest static_assets are install-managed (re-fetched from the manifest,
+# tracked in .mobius-static-assets.json), not edited source.
+static/
+.mobius-static-assets.json
+# Install/rollback snapshots are not source.
+*.bak
+*.mobius-bak
+*.mobius-drop-bak
+# Cron scaffolding is install-managed and must not be restored by source merges.
+init-cron.sh
+init-cron.sh.tombstoned
+.cron-pending.json
+# Python bytecode, logs, env files, editor/IDE and worktree scratch.
 __pycache__/
 *.py[cod]
 *.log
@@ -10,10 +25,18 @@ __pycache__/
 .vscode/
 tests/.build*/
 .worktrees/
-
-# Runtime scratch the nightly run (fetch.sh) writes into the app dir. The real
-# report data lives in the storage tree, not here; these are regenerated every
-# run. Keep them untracked so a run never dirties the repo or turns a routine
-# update into a phantom "local changes" conflict.
+# Runtime workspaces staged by Reflection are bounded operational state, not
+# catalog source. The numeric-id storage tree holds user-facing reports.
 inputs/
+runs/
+settings.json
 last-run.json
+reflection-brief-template.html
+fork-chat.sh
+fork-session.sh
+resource-history.jsonl
+resource-decisions.jsonl
+resource-monitor-state.json
+reflection-run-metrics.jsonl
+# Defensive: a numeric data directory is app storage, never source.
+[0-9]*/

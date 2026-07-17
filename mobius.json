@@ -1,8 +1,8 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "2.7.9",
-  "description": "While you sleep, Möbius reviews the system, proposes improvements, and leaves a one-page morning brief.",
+  "version": "2.8.0",
+  "description": "While you sleep, Möbius improves long-term productivity, resource efficiency, and the system itself, then leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
   "homepage": "https://github.com/mobius-os/app-reflection",
@@ -53,6 +53,7 @@
   "embeds_agent": true,
   "source_files": [
     "reflection_runner.py",
+    "resource_monitor.py",
     "constants.js",
     "theme.js",
     "domain.js",
