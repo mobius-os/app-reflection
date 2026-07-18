@@ -741,8 +741,14 @@ import os, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 path.parent.mkdir(parents=True, exist_ok=True)
 text = """# Reflection operating model
+<!-- first-run seed: never populated yet — cold-start scaffold, not a reset -->
 
-Keep this concise and evidence-based. Rewrite it as the model changes.
+This is the cold-start seed for Reflection's operating model. It has never been
+populated yet: a fresh scaffold written on install, NOT a blanked or reset file.
+The "No stable pattern recorded yet." lines below are placeholders — do not read
+them as lost prior state or open a watch about a reset. Delete this note and the
+sentinel comment above once you record the first real observation. Keep this
+concise and evidence-based, and rewrite it as the model changes.
 
 ## Partner and working patterns
 - No stable pattern recorded yet.
