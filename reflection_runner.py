@@ -250,7 +250,7 @@ def steering_thresholds(max_turns: int) -> tuple[int, int]:
 
 
 def steering_message(
-  prev_turn: int, turn: int, max_turns: int,
+  prev_turn: int, turn: int, max_turns: int, *, brief_written: bool = False,
 ) -> str | None:
   """Returns the turn-budget steering text to inject, or None.
 
@@ -265,6 +265,13 @@ def steering_message(
   """
   soft, hard = steering_thresholds(max_turns)
   if prev_turn < hard <= turn:
+    if brief_written:
+      return (
+        f"TURN BUDGET: you are at turn {turn} of {max_turns}, but tonight's "
+        "brief already exists. Preserve that deliverable, stop open-ended "
+        "investigation, commit any finished safe work, record only essential "
+        "meta-state, and stop. Do not replace the brief with a rushed rewrite."
+      )
     return (
       f"TURN BUDGET: you are at turn {turn} of {max_turns} and almost "
       "out. Stop open-ended investigation now and write a MINIMAL "
@@ -273,11 +280,19 @@ def steering_message(
       "dir, commit it, and stop. Skip everything else."
     )
   if prev_turn < soft <= turn:
+    if brief_written:
+      return (
+        f"TURN BUDGET: you are at turn {turn} of {max_turns} and the floor "
+        "deliverable is already written. Close only bounded work that is "
+        "nearly complete, update the live operating model if evidence changed, "
+        "commit, and stop before the hard reserve."
+      )
     return (
       f"TURN BUDGET: you are at turn {turn} of {max_turns}. STOP "
       "open-ended investigation now. Commit whatever safe work is done, "
-      "then write the brief. Remaining app triage, Memory-system review, "
-      "and research are over unless needed for one brief sentence."
+      "then write the brief. Reserve the remaining turns for the live "
+      "meta-state, brief, and commit. Remaining app triage, Memory-system "
+      "review, and research are over unless needed for one brief sentence."
     )
   return None
 
@@ -599,6 +614,10 @@ def build_goal(settings: dict) -> str:
     "                          marked with a `first-run seed` sentinel comment",
     "                          — that is the normal empty scaffold, not a reset,",
     "                          so do not raise a watch about it.",
+    "  - meta-state-status.json  identity, age, hash, and cold-start status for",
+    "                          the canonical live model. meta-state.md is a",
+    f"                          read-only snapshot; Read {DATA_DIR / 'apps' / 'reflection' / 'meta-state.md'}",
+    "                          before editing that same live path.",
     "  - meta-learning.jsonl  recent durable discoveries about your own",
     "                          effectiveness; use it to avoid rediscovery and",
     "                          prompt churn",
@@ -613,10 +632,17 @@ def build_goal(settings: dict) -> str:
     "                          app_errors_24h + recent_app_errors for",
     "                          UNCAUGHT crashes, last_5_errors for signalled",
     "                          ones) — read to orient phase 4",
+    "  - memory-health.json   content-free Memory run/publish health, retry",
+    "                          backlog, graph counts, and writer contract. Treat",
+    "                          one recovered failure as advisory; diagnose a",
+    "                          current/repeated failure. Memory is the sole writer.",
     "  - resource-snapshot.json  cheap daily disk/cgroup pulse plus an adaptive",
-    "                          deep /data inventory when due or under pressure;",
-    "                          use its trend and scan freshness before running",
-    "                          any broad resource commands",
+    "                          deep /data inventory when due or under pressure.",
+    "                          filesystems.data_volume (/data) and",
+    "                          filesystems.container_root (host-backing view)",
+    "                          are different scopes. Compare only when",
+    "                          comparable_to_previous=true; never infer host",
+    "                          recovery from a healthier or remounted /data.",
     "  - resource-history.jsonl  bounded recent pulses/deep scans for trends;",
     "                          use this instead of recreating yesterday's",
     "                          inventory",
@@ -629,7 +655,9 @@ def build_goal(settings: dict) -> str:
     "                          may be retained from an earlier run when ok=false",
     "  - activity.jsonl        raw platform events; use as tonight's 24h window",
     "                          only when activity-status.json says ok=true",
-    "  - chats.md              recent chats list (fork + interview these)",
+    "  - chats.md              recent-chat digest with update/note-size signals;",
+    "                          triage it first, then open/fork only the sessions",
+    "                          whose activity can change tonight's conclusions",
     "  - prev-report.html      yesterday's brief (don't repeat yourself)",
     "  - prev-question-answers.json  the partner's taps on a recent brief's",
     "                          question cards — saved for THIS run (no live",
@@ -640,9 +668,10 @@ def build_goal(settings: dict) -> str:
     "Follow your skill (your system prompt) for the full procedure. "
     "Memory owns graph consolidation; Reflection reviews Memory's update "
     "log for system-improvement signals but does not drain or rewrite the "
-    "graph. The floor deliverable is the brief (phase 6). At turn 40 cut "
-    "unfinished deep work and ship a truthful brief so the partner wakes "
-    "to something useful.",
+    "graph. Diagnose through memory-health.json; never take shared write authority. "
+    "The floor deliverable is the brief (phase 6). Reserve the final 15 turns "
+    "for the live meta-state, brief, and commits; at turn 40 cut unfinished "
+    "deep work and ship a truthful brief so the partner wakes to something useful.",
     "",
     f"Your working directory is {DATA_DIR}. You have a real token "
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
@@ -795,7 +824,13 @@ async def _drain_session(
       prev_turn = turns_seen
       turns_seen += 1
       if countdown:
-        steer = steering_message(prev_turn, turns_seen, max_turns)
+        brief = todays_brief_path()
+        steer = steering_message(
+          prev_turn,
+          turns_seen,
+          max_turns,
+          brief_written=bool(brief and brief.is_file()),
+        )
         if steer is not None:
           # Best-effort: a failed injection leaves the run no worse
           # than before this layer existed (the fallback still

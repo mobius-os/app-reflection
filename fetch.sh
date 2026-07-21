@@ -242,11 +242,11 @@ else
 fi
 [[ -z "${ACTIVITY_TMP:-}" ]] || rm -f -- "$ACTIVITY_TMP"
 
-# chats.md — recent chats list (titles + ids + provider), so the agent
-# knows which sessions to fork-and-interview without re-deriving the list.
-python3 - "$API_BASE_URL" "$SERVICE_TOKEN" >"$INPUTS/chats.md" 2>>"$LOG" <<'PY' || true
-import json, sys, urllib.request
-base, token = sys.argv[1], sys.argv[2]
+# chats.md — recent chats list plus cheap note/message-size signals, so the
+# agent can triage from a digest before opening full transcripts or notes.
+python3 - "$API_BASE_URL" "$SERVICE_TOKEN" "$DATA_DIR" >"$INPUTS/chats.md" 2>>"$LOG" <<'PY' || true
+import json, pathlib, re, sys, urllib.request
+base, token, data_dir = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
 def get(path):
     req = urllib.request.Request(base+path, headers={"Authorization": "Bearer "+token})
     with urllib.request.urlopen(req, timeout=20) as r:
@@ -266,7 +266,20 @@ try:
         prov = c.get("provider") or "claude"
         updated = c.get("updated_at","")
         tag = "  [app]" if c.get("created_by_app_id") else ""
-        print(f"- `{cid}`  [{prov}]{tag}  {title}  (updated {updated})")
+        message_count = c.get("message_count", c.get("messages_count"))
+        if message_count is None and isinstance(c.get("messages"), list):
+            message_count = len(c["messages"])
+        metrics = []
+        if isinstance(message_count, int):
+            metrics.append(f"messages={message_count}")
+        if isinstance(cid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", cid):
+            note = data_dir / "shared" / "memory" / "chats" / cid / "index.md"
+            try:
+                metrics.append(f"note_bytes={note.stat().st_size}")
+            except OSError:
+                metrics.append("note=absent")
+        metric_text = ", ".join(metrics) if metrics else "size unavailable"
+        print(f"- `{cid}`  [{prov}]{tag}  {title}  (updated {updated}; {metric_text})")
     if not chats:
         print("(no chats)")
 except Exception as e:
@@ -698,6 +711,20 @@ else
 fi
 [[ -z "${DIGEST_TMP:-}" ]] || rm -f -- "$DIGEST_TMP"
 
+# memory-health.json — a compact operational contract between the two apps.
+# It exposes status, recovery/backlog counters, and graph counts only: never
+# chat bodies, note contents, proposed facts, or other private Memory data.
+MEMORY_HEALTH="$SCRIPT_DIR/memory_health.py"
+if [[ -r "$MEMORY_HEALTH" ]]; then
+  if ! python3 "$MEMORY_HEALTH" \
+      --memory-root "$DATA_DIR/shared/memory" \
+      --output "$INPUTS/memory-health.json" 2>>"$LOG"; then
+    log "WARN Memory health handoff failed"
+  fi
+else
+  log "WARN Memory health helper missing at $MEMORY_HEALTH"
+fi
+
 # resource-snapshot.json — a cheap daily filesystem/cgroup pulse plus an
 # adaptive deep /data inventory. The helper remembers its last complete deep
 # scan and only walks the tree weekly, under pressure, or after unusual growth.
@@ -712,6 +739,7 @@ META_LOG="$DATA_DIR/apps/reflection/meta-learning.jsonl"
 if [[ -r "$RESOURCE_MONITOR" ]]; then
   if ! python3 "$RESOURCE_MONITOR" snapshot \
       --data-dir "$DATA_DIR" \
+      --runtime-root / \
       --output "$INPUTS/resource-snapshot.json" \
       --history "$RESOURCE_HISTORY" \
       --state "$RESOURCE_STATE" 2>>"$LOG"; then
@@ -771,6 +799,31 @@ os.replace(tmp, path)
 PY
 fi
 cp "$META_STATE" "$INPUTS/meta-state.md" 2>>"$LOG" || true
+python3 - "$META_STATE" >"$INPUTS/meta-state-status.json" 2>>"$LOG" <<'PY' || true
+import datetime as dt, hashlib, json, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    raw = path.read_bytes()
+    stat = path.stat()
+except OSError:
+    raw = b""
+    stat = None
+now = dt.datetime.now(dt.timezone.utc)
+mtime = dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc) if stat else None
+text = raw.decode("utf-8", errors="replace")
+print(json.dumps({
+    "version": 1,
+    "canonical_live_path": str(path),
+    "exists": stat is not None,
+    "bytes": len(raw),
+    "sha256": hashlib.sha256(raw).hexdigest() if stat else None,
+    "modified_at": mtime.isoformat() if mtime else None,
+    "age_hours": round((now - mtime).total_seconds() / 3600, 2) if mtime else None,
+    "first_run_seed": "first-run seed" in text,
+    "empty": not text.strip(),
+}, indent=2, sort_keys=True))
+PY
 if [[ -r "$META_LOG" ]]; then
   # Keep the durable explanation log useful but finite. Reflection appends
   # JSON objects; the wrapper validates them, keeps the newest 200 records,

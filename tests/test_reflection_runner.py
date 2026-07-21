@@ -11,7 +11,21 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("resource-snapshot.json", goal)
     self.assertIn("resource-history.jsonl", goal)
     self.assertIn("resource-decisions.jsonl", goal)
+    self.assertIn("memory-health.json", goal)
+    self.assertIn("meta-state-status.json", goal)
+    self.assertIn("different scopes", goal)
+    self.assertIn("Memory is the sole writer", goal)
     self.assertIn("do not repeat a hardened check", goal)
+
+  def test_turn_steering_respects_an_already_written_brief(self):
+    soft, _ = reflection_runner.steering_thresholds(60)
+    message = reflection_runner.steering_message(
+      soft - 1, soft, 60, brief_written=True,
+    )
+    self.assertIn("floor deliverable is already written", message)
+    self.assertIn("Do not replace", reflection_runner.steering_message(
+      44, 45, 60, brief_written=True,
+    ))
 
 
 class UsageLimitClassificationTests(unittest.TestCase):

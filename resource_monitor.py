@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = 1
+VERSION = 2
 DEFAULT_DEEP_INTERVAL_DAYS = 7
 DEFAULT_DEEP_BUDGET_SECONDS = 30
 DEFAULT_HISTORY_ENTRIES = 90
@@ -208,7 +208,10 @@ def _deep_scan_reason(
 
   previous_used = None
   if previous:
-    previous_used = (previous.get("disk") or {}).get("used_bytes")
+    previous_disk = previous.get("disk") or {}
+    if not _same_filesystem(previous_disk, disk):
+      return True, "filesystem-identity-changed"
+    previous_used = previous_disk.get("used_bytes")
   if isinstance(previous_used, int):
     growth = disk["used_bytes"] - previous_used
     growth_trigger = max(256 * 1024**2, int(disk["total_bytes"] * 0.05))
@@ -224,6 +227,53 @@ def _deep_scan_reason(
   if now - last_deep >= dt.timedelta(days=interval_days):
     return True, "scheduled"
   return False, "not-due"
+
+
+def _filesystem_snapshot(path: Path, *, scope: str) -> dict[str, Any]:
+  usage = shutil.disk_usage(path)
+  try:
+    device_id = path.stat().st_dev
+  except OSError:
+    device_id = None
+  return {
+    "scope": scope,
+    "path": str(path),
+    "device_id": device_id,
+    "total_bytes": usage.total,
+    "used_bytes": usage.used,
+    "free_bytes": usage.free,
+    "used_percent": round(100 * usage.used / usage.total, 2) if usage.total else 0,
+  }
+
+
+def _same_filesystem(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+  """Only compare trends from the same named scope and mounted device."""
+  return bool(
+    previous.get("scope") == current.get("scope")
+    and previous.get("device_id") is not None
+    and previous.get("device_id") == current.get("device_id")
+    and previous.get("total_bytes") == current.get("total_bytes")
+  )
+
+
+def _pressure(used_percent: float, *, warn: int, critical: int) -> str:
+  if used_percent >= critical:
+    return "critical"
+  if used_percent >= warn:
+    return "warning"
+  return "normal"
+
+
+def _trend(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
+  previous_disk = previous or {}
+  comparable = _same_filesystem(previous_disk, current)
+  previous_used = previous_disk.get("used_bytes")
+  return {
+    "comparable_to_previous": comparable,
+    "reason": None if comparable else "filesystem-identity-changed",
+    "used_bytes_delta": current["used_bytes"] - previous_used
+    if comparable and isinstance(previous_used, int) else None,
+  }
 
 
 def _allocated_bytes(stat_result: os.stat_result) -> int:
@@ -342,16 +392,13 @@ def make_snapshot(
   *,
   history_path: Path,
   state_path: Path,
+  runtime_root: Path | None = None,
   now: dt.datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
   now = now or _now()
-  usage = shutil.disk_usage(data_dir)
-  disk = {
-    "total_bytes": usage.total,
-    "used_bytes": usage.used,
-    "free_bytes": usage.free,
-    "used_percent": round(100 * usage.used / usage.total, 2) if usage.total else 0,
-  }
+  runtime_root = runtime_root or data_dir
+  disk = _filesystem_snapshot(data_dir, scope="data-volume")
+  root_disk = _filesystem_snapshot(runtime_root, scope="container-root")
   history = _read_jsonl(history_path)
   previous = history[-1] if history else None
   state = _read_json(state_path)
@@ -360,19 +407,28 @@ def make_snapshot(
   )
   warn = _env_int("REFLECTION_RESOURCE_WARN_PERCENT", DEFAULT_WARN_PERCENT)
   critical = _env_int("REFLECTION_RESOURCE_CRITICAL_PERCENT", DEFAULT_CRITICAL_PERCENT)
-  pressure = "critical" if disk["used_percent"] >= critical else (
-    "warning" if disk["used_percent"] >= warn else "normal"
+  data_pressure = _pressure(disk["used_percent"], warn=warn, critical=critical)
+  root_pressure = _pressure(root_disk["used_percent"], warn=warn, critical=critical)
+  pressure_rank = {"normal": 0, "warning": 1, "critical": 2}
+  pressure = max((data_pressure, root_pressure), key=pressure_rank.get)
+  previous_disk = (previous.get("disk") or {}) if previous else None
+  previous_root = (
+    ((previous.get("filesystems") or {}).get("container_root") or {})
+    if previous else None
   )
-  previous_used = (previous.get("disk") or {}).get("used_bytes") if previous else None
   snapshot: dict[str, Any] = {
     "version": VERSION,
     "captured_at": now.isoformat(),
     "pressure": pressure,
     "disk": disk,
+    "filesystems": {
+      "data_volume": {**disk, "pressure": data_pressure},
+      "container_root": {**root_disk, "pressure": root_pressure},
+    },
     "runtime": _runtime_counters(),
     "trend": {
-      "used_bytes_delta": disk["used_bytes"] - previous_used
-      if isinstance(previous_used, int) else None,
+      **_trend(previous_disk, disk),
+      "container_root": _trend(previous_root, root_disk),
     },
     "deep_scan": {"ran": run_deep, "reason": reason},
   }
@@ -407,7 +463,10 @@ def snapshot_command(args: argparse.Namespace) -> int:
   history_path = Path(args.history)
   state_path = Path(args.state)
   snapshot, state = make_snapshot(
-    data_dir, history_path=history_path, state_path=state_path,
+    data_dir,
+    history_path=history_path,
+    state_path=state_path,
+    runtime_root=Path(args.runtime_root).resolve(),
   )
   _atomic_json(Path(args.output), snapshot)
   _append_bounded(
@@ -448,6 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
   sub = parser.add_subparsers(dest="command", required=True)
   snapshot = sub.add_parser("snapshot", help="write a cheap pulse and adaptive deep scan")
   snapshot.add_argument("--data-dir", required=True)
+  snapshot.add_argument(
+    "--runtime-root", default="/",
+    help="container-root filesystem pulse; never conflated with the data volume",
+  )
   snapshot.add_argument("--output", required=True)
   snapshot.add_argument("--history", required=True)
   snapshot.add_argument("--state", required=True)
