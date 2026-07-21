@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -20,6 +20,10 @@ function json(response, status, value) {
 test('fetch stages an exact activity snapshot and fails closed while retaining it', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'reflection-fetch-'))
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
+  const chatId = 'chat-with-note'
+  const chatNote = join(dataDir, 'shared', 'memory', 'chats', chatId, 'index.md')
+  await mkdir(dirname(chatNote), { recursive: true })
+  await writeFile(chatNote, 'bounded note\n')
   let failActivity = false
   const now = new Date().toISOString()
   const activity = [
@@ -47,7 +51,10 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       }
       return
     }
-    if (url.pathname === '/api/chats') return json(response, 200, [])
+    if (url.pathname === '/api/chats') return json(response, 200, [{
+      id: chatId, title: 'Useful session', provider: 'codex',
+      updated_at: now, message_count: 7,
+    }])
     if (url.pathname === '/api/apps/') {
       return json(response, 200, [{ id: 1, name: 'reflection', display_name: 'Reflection' }])
     }
@@ -73,6 +80,8 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       DATA_DIR: dataDir,
       REFLECTION_DRY: '1',
       REFLECTION_TIMEOUT: '5',
+      REFLECTION_RESOURCE_WARN_PERCENT: '100',
+      REFLECTION_RESOURCE_CRITICAL_PERCENT: '101',
       CODEX_HOME: join(dataDir, 'codex-home'),
       CLAUDE_CONFIG_DIR: join(dataDir, 'claude-home'),
     },
@@ -85,11 +94,14 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const status = JSON.parse(await readFile(join(inputs, 'activity-status.json'), 'utf8'))
     const digest = JSON.parse(await readFile(join(inputs, 'per-app-digest.json'), 'utf8'))
     const resources = JSON.parse(await readFile(join(inputs, 'resource-snapshot.json'), 'utf8'))
+    const memoryHealth = JSON.parse(await readFile(join(inputs, 'memory-health.json'), 'utf8'))
     const resourceHistory = await readFile(join(dataDir, 'apps', 'reflection', 'resource-history.jsonl'), 'utf8')
     const stagedResourceHistory = await readFile(join(inputs, 'resource-history.jsonl'), 'utf8')
     const runHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
     const metaState = await readFile(join(inputs, 'meta-state.md'), 'utf8')
+    const metaStateStatus = JSON.parse(await readFile(join(inputs, 'meta-state-status.json'), 'utf8'))
     const metaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
+    const chats = await readFile(join(inputs, 'chats.md'), 'utf8')
     assert.equal(snapshot, activity)
     assert.equal(status.ok, true)
     assert.equal(status.event_count, 3)
@@ -99,13 +111,20 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(digest.apps[0].signal_counts.item_created, 1)
     assert.equal(digest.apps[0].app_errors_24h, 1)
     assert.equal(digest.apps[0].recent_app_errors[0].message, 'render failed')
-    assert.equal(resources.version, 1)
+    assert.equal(resources.version, 2)
+    assert.equal(resources.filesystems.data_volume.scope, 'data-volume')
+    assert.equal(resources.filesystems.container_root.scope, 'container-root')
+    assert.equal(memoryHealth.available, false)
+    assert.equal(memoryHealth.writer_contract.reflection_may_write_graph, false)
     assert.equal(resources.deep_scan.ran, true)
     assert.equal(resourceHistory.trim().split('\n').length, 1)
     assert.equal(stagedResourceHistory, resourceHistory)
     assert.match(runHistory, /no prior metrics/)
     assert.match(metaState, /Reflection operating model/)
+    assert.equal(metaStateStatus.exists, true)
+    assert.equal(metaStateStatus.first_run_seed, true)
     assert.equal(metaLearning, '')
+    assert.match(chats, /messages=7, note_bytes=13/)
 
     const learning = JSON.stringify({
       ts: '2026-07-17T00:00:00Z',

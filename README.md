@@ -40,6 +40,14 @@ patterns, system strengths and friction, near-term hypotheses, a small watchlist
 and the cadence for revisiting each item. Reflection rewrites it when evidence
 changes the model. `meta-learning.jsonl` is the bounded explanation of why the
 model or prompt changed, so a later run does not have to rediscover the lesson.
+The staged copy is read-only evidence; a companion status file names and hashes
+the canonical live file so the agent reads that path before rewriting it.
+
+Reflection also receives `memory-health.json`, a content-free handoff containing
+Memory's recent run outcome, recovery/backlog counters, and graph health counts.
+Memory remains the sole graph writer. Reflection observes and diagnoses that
+loop, then surfaces bounded recommendations instead of silently becoming a
+second consolidator.
 
 The editable Reflection skill is its procedure, not a diary. Reflection changes
 that prompt only when a finding generalizes to future runs, and removes rules
@@ -57,8 +65,11 @@ when it was checked and when it is worth checking again.
 `resource_monitor.py` records a small daily snapshot in `resource-history.jsonl`.
 It always reads cheap filesystem and cgroup counters, but walks `/data` only on
 the first run, on its weekly cadence, when disk pressure rises, or when daily
-growth is unusual. Deep scans have a wall-clock budget and histories are
-bounded, so the observer cannot quietly become the resource leak.
+growth is unusual. The `/data` volume and container-root/host-backing view have
+separate scope and device identities; growth is calculated only across matching
+identities, so a remount cannot be mistaken for reclaimed host space. Deep scans
+have a wall-clock budget and histories are bounded, so the observer cannot
+quietly become the resource leak.
 
 Reflection records each cleanup or policy decision in
 `resource-decisions.jsonl`: the evidence, action, measured result, next review
