@@ -504,8 +504,44 @@ error_signals_by_app = {}
 app_errors_by_app = {}
 recent_app_errors = {}
 shell_errors = []
+request_errors_by_app = {}
+shell_request_errors = {}
 apps_with_signals = set()
 seen_signal_ids = set()
+
+def add_request_error(groups, ev):
+    """Merge one platform-bounded request_error window into a safe route group."""
+    try:
+        status = int(ev.get("status"))
+        count = max(1, int(ev.get("count", 1)))
+    except (TypeError, ValueError):
+        return
+    method = str(ev.get("method") or "?")[:16]
+    route = str(ev.get("route") or "<unmatched>")[:240]
+    key = (method, route, status)
+    group = groups.setdefault(key, {
+        "method": method,
+        "route": route,
+        "status": status,
+        "count": 0,
+        "peak_window_count": 0,
+        "first_ts": str(ev.get("first_ts") or ev.get("ts") or ""),
+        "last_ts": str(ev.get("last_ts") or ev.get("ts") or ""),
+    })
+    group["count"] += count
+    group["peak_window_count"] = max(group["peak_window_count"], count)
+    first_ts = str(ev.get("first_ts") or ev.get("ts") or "")
+    last_ts = str(ev.get("last_ts") or ev.get("ts") or "")
+    if first_ts and (not group["first_ts"] or first_ts < group["first_ts"]):
+        group["first_ts"] = first_ts
+    if last_ts and last_ts > group["last_ts"]:
+        group["last_ts"] = last_ts
+
+def top_request_errors(groups):
+    return sorted(
+        groups.values(),
+        key=lambda item: (-item["count"], item["status"], item["route"]),
+    )[:5]
 if activity_source.get("ok") and not os.path.exists(activity_path):
     activity_source = {
         **activity_source,
@@ -541,7 +577,12 @@ if activity_source.get("ok"):
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                aid = str(ev.get("app_id", ""))
+                raw_app_id = ev.get("app_id")
+                aid = str(raw_app_id) if raw_app_id is not None else ""
+                if ev.get("ev") == "request_error":
+                    groups = request_errors_by_app.setdefault(aid, {}) if aid else shell_request_errors
+                    add_request_error(groups, ev)
+                    continue
                 if ev.get("ev") == "app_error":
                     message = str(ev.get("message") or "")[:200]
                     summary = {
@@ -602,6 +643,8 @@ if activity_source.get("ok"):
         app_errors_by_app.clear()
         recent_app_errors.clear()
         shell_errors.clear()
+        request_errors_by_app.clear()
+        shell_request_errors.clear()
         apps_with_signals.clear()
         seen_signal_ids.clear()
         activity_source = {
@@ -683,6 +726,10 @@ for app in apps:
         "last_5_errors": [msg for _, msg in sorted(error_signals, key=lambda row: row[0])[-5:]],
         "app_errors_24h": app_errors_by_app.get(app_id, 0),
         "recent_app_errors": recent_app_errors.get(app_id, []),
+        "request_errors_24h": sum(
+            group["count"] for group in request_errors_by_app.get(app_id, {}).values()
+        ),
+        "top_request_errors": top_request_errors(request_errors_by_app.get(app_id, {})),
     }
     if signals_error:
         entry["signals_read_error"] = signals_error
@@ -693,6 +740,10 @@ print(json.dumps({
     "activity_source": activity_source,
     "shell_errors_24h": len(shell_errors),
     "recent_shell_errors": shell_errors,
+    "shell_request_errors_24h": sum(
+        group["count"] for group in shell_request_errors.values()
+    ),
+    "top_shell_request_errors": top_request_errors(shell_request_errors),
     "apps": digests,
 }, indent=2))
 PY
