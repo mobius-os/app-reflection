@@ -30,6 +30,11 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     { ev: 'app_open', ts: now, app_id: 1 },
     { ev: 'app_error', ts: now, app_id: 1, message: 'render failed', where: 'canvas' },
     {
+      ev: 'request_error', ts: now, app_id: 1, method: 'GET',
+      route: '/api/storage/apps/{app_id}/{path:path}', status: 404,
+      count: 1320, first_ts: now, last_ts: now, duration_ms: 59900,
+    },
+    {
       ev: 'app_signal', ts: now, app_id: 1, id: 'signal-1',
       occurred_at: now, name: 'item_created', payload: { type: 'note' },
     },
@@ -104,13 +109,23 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const chats = await readFile(join(inputs, 'chats.md'), 'utf8')
     assert.equal(snapshot, activity)
     assert.equal(status.ok, true)
-    assert.equal(status.event_count, 3)
+    assert.equal(status.event_count, 4)
     assert.equal(status.sha256, createHash('sha256').update(activity).digest('hex'))
     assert.equal(digest.activity_source.ok, true)
     assert.equal(digest.apps[0].opens_24h, 1)
     assert.equal(digest.apps[0].signal_counts.item_created, 1)
     assert.equal(digest.apps[0].app_errors_24h, 1)
     assert.equal(digest.apps[0].recent_app_errors[0].message, 'render failed')
+    assert.equal(digest.apps[0].request_errors_24h, 1320)
+    assert.deepEqual(digest.apps[0].top_request_errors[0], {
+      method: 'GET',
+      route: '/api/storage/apps/{app_id}/{path:path}',
+      status: 404,
+      count: 1320,
+      peak_window_count: 1320,
+      first_ts: now,
+      last_ts: now,
+    })
     assert.equal(resources.version, 2)
     assert.equal(resources.filesystems.data_volume.scope, 'data-volume')
     assert.equal(resources.filesystems.container_root.scope, 'container-root')
@@ -150,6 +165,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(failedDigest.activity_source.ok, false)
     assert.equal(failedDigest.apps[0].opens_24h, 0)
     assert.equal(failedDigest.apps[0].app_errors_24h, 0)
+    assert.equal(failedDigest.apps[0].request_errors_24h, 0)
     assert.equal(nextResources.deep_scan.ran, false)
     assert.equal(nextResources.deep_scan.reason, 'not-due')
     assert.match(nextRunHistory, /"exit_code":0/)
