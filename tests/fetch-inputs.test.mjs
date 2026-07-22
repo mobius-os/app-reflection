@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
@@ -20,6 +20,19 @@ function json(response, status, value) {
 test('fetch stages an exact activity snapshot and fails closed while retaining it', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'reflection-fetch-'))
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
+  const cronLogs = join(dataDir, 'cron-logs')
+  await mkdir(cronLogs, { recursive: true })
+  const legacyNoise = [
+    '[2026-07-21T06:00:00+00:00] reflection: start (app_id=1)',
+    '  · codex {"type": "tool_start", "tool": "Bash", "input": "inspect"}',
+    ...Array.from({ length: 180 }, (_, i) => (
+      `  · codex {"type": "tool_output", "content": "legacy-noise-${i}-${'x'.repeat(400)}`
+    )),
+    '  · codex tool_result tool=Bash preview={"type": "tool_output"}',
+    ...Array.from({ length: 40 }, (_, i) => `  > prose-delta-${i}`),
+    '[2026-07-21T06:10:00+00:00] reflection_runner: done',
+  ].join('\n') + '\n'
+  await writeFile(join(cronLogs, 'reflection.log'), legacyNoise)
   const chatId = 'chat-with-note'
   const chatNote = join(dataDir, 'shared', 'memory', 'chats', chatId, 'index.md')
   await mkdir(dirname(chatNote), { recursive: true })
@@ -77,7 +90,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address()
-  const run = () => execFileAsync('bash', [join(appRoot, 'fetch.sh'), '1'], {
+  const run = (overrides = {}) => execFileAsync('bash', [join(appRoot, 'fetch.sh'), '1'], {
     cwd: appRoot,
     env: {
       ...process.env,
@@ -85,10 +98,12 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       DATA_DIR: dataDir,
       REFLECTION_DRY: '1',
       REFLECTION_TIMEOUT: '5',
+      REFLECTION_LOG_MAX_BYTES: '4096',
       REFLECTION_RESOURCE_WARN_PERCENT: '100',
       REFLECTION_RESOURCE_CRITICAL_PERCENT: '101',
       CODEX_HOME: join(dataDir, 'codex-home'),
       CLAUDE_CONFIG_DIR: join(dataDir, 'claude-home'),
+      ...overrides,
     },
   })
 
@@ -103,6 +118,8 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const resourceHistory = await readFile(join(dataDir, 'apps', 'reflection', 'resource-history.jsonl'), 'utf8')
     const stagedResourceHistory = await readFile(join(inputs, 'resource-history.jsonl'), 'utf8')
     const runHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
+    const archivedLog = await readFile(join(cronLogs, 'reflection.log.1'), 'utf8')
+    const currentLog = await readFile(join(cronLogs, 'reflection.log'), 'utf8')
     const metaState = await readFile(join(inputs, 'meta-state.md'), 'utf8')
     const metaStateStatus = JSON.parse(await readFile(join(inputs, 'meta-state-status.json'), 'utf8'))
     const metaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
@@ -135,6 +152,13 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(resourceHistory.trim().split('\n').length, 1)
     assert.equal(stagedResourceHistory, resourceHistory)
     assert.match(runHistory, /no prior metrics/)
+    assert.match(runHistory, /Recent reflection log tail \(normalized\)/)
+    assert.match(runHistory, /legacy tool_output stream: 180 chunks omitted/)
+    assert.match(runHistory, /prose-delta-0 prose-delta-1/)
+    assert.doesNotMatch(runHistory, /"content": "legacy-noise/)
+    assert.match(runHistory, /tool_result tool=Bash preview=\{"type": "tool_output"\}/)
+    assert.match(archivedLog, /legacy-noise-179/)
+    assert.doesNotMatch(currentLog, /legacy-noise/)
     assert.match(metaState, /Reflection operating model/)
     assert.equal(metaStateStatus.exists, true)
     assert.equal(metaStateStatus.first_run_seed, true)
@@ -170,6 +194,80 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(nextResources.deep_scan.reason, 'not-due')
     assert.match(nextRunHistory, /"exit_code":0/)
     assert.equal(nextMetaLearning, `${learning}\n`)
+
+    // A broken primary archive target used to leave the oversized current log
+    // in place, so every retry appended forever. A directory is the persistent
+    // failure shape observed by the reviewer. The fixed fallback archive is
+    // replaced on every retry, and each run starts a fresh bounded current log.
+    const primaryArchive = join(cronLogs, 'reflection.log.1')
+    await rm(primaryArchive, { recursive: true, force: true })
+    await mkdir(primaryArchive)
+    await writeFile(
+      join(cronLogs, 'reflection.log'),
+      `persistent-rotation-evidence ${'r'.repeat(2_048)}\n`,
+    )
+    const currentSizes = []
+    for (let i = 0; i < 4; i += 1) {
+      await run({ REFLECTION_LOG_MAX_BYTES: '1' })
+      const current = await readFile(join(cronLogs, 'reflection.log'))
+      currentSizes.push(current.byteLength)
+      if (i === 0) {
+        const fallbackHistory = await readFile(
+          join(inputs, 'reflection-run-history.txt'), 'utf8',
+        )
+        assert.match(fallbackHistory, /persistent-rotation-evidence/)
+      }
+    }
+    assert.ok(currentSizes.every((size) => size < 2_048), currentSizes.join(','))
+    const fallbackArchive = await readFile(
+      join(cronLogs, 'reflection.log.rotation-fallback'), 'utf8',
+    )
+    assert.ok(fallbackArchive.length < 2_048)
+
+    // Exercise GNU timeout against the real runner, not a direct close() fake.
+    // The fake Codex provider leaves one tool in flight; SIGTERM must cancel
+    // the asyncio task so _LogBroadcast.close() can preserve its true tail,
+    // while the wrapper still records/returns timeout's canonical rc=124.
+    const fakeBackend = join(dataDir, 'fake-backend')
+    const fakeApp = join(fakeBackend, 'app')
+    await mkdir(fakeApp, { recursive: true })
+    await writeFile(join(fakeApp, '__init__.py'), '')
+    await writeFile(join(fakeApp, 'background_agents.py'), `
+def resolve_background_agents(data_dir, settings):
+    return {"primary": {"provider": "codex", "model": None, "effort": None}, "fallback": None}
+`)
+    await writeFile(join(fakeApp, 'codex_sdk_runner.py'), `
+import asyncio
+
+async def run_codex_sdk_turn(**kwargs):
+    bc = kwargs["bc"]
+    bc.publish({"type": "session_init", "session_id": "term-session"})
+    bc.publish({"type": "tool_start", "tool": "Bash", "input": "wait", "tool_use_id": "term-tool"})
+    bc.publish({"type": "tool_output", "content": ("x" * 5000) + " UNIQUE-TERM-CONCLUSION", "tool_use_id": "term-tool"})
+    await asyncio.Event().wait()
+`)
+    const skillDir = join(dataDir, 'shared', 'skills')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'reflection.md'), 'Test reflection skill.\n')
+    let timeoutError
+    try {
+      await run({
+        REFLECTION_DRY: '0',
+        REFLECTION_TIMEOUT: '1',
+        REFLECTION_LOG_MAX_BYTES: '1048576',
+        REFLECTION_RUNNER: join(appRoot, 'reflection_runner.py'),
+        PYTHONPATH: [fakeBackend, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+      })
+    } catch (error) {
+      timeoutError = error
+    }
+    assert.equal(timeoutError?.code, 124)
+    const timeoutLog = await readFile(join(cronLogs, 'reflection.log'), 'utf8')
+    assert.match(timeoutLog, /SIGTERM received; cancelling Reflection/)
+    assert.match(timeoutLog, /id=term-tool state=incomplete/)
+    assert.match(timeoutLog, /UNIQUE-TERM-CONCLUSION/)
+    assert.match(timeoutLog, /agent run hit the 1s timeout/)
+    assert.match(timeoutLog, /done \(rc=124\)/)
   } finally {
     server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))

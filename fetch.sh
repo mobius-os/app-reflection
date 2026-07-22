@@ -28,6 +28,8 @@ APP_ID="${1:-}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8000}"
 DATA_DIR="${DATA_DIR:-/data}"
 LOG="$DATA_DIR/cron-logs/reflection.log"
+LOG_ARCHIVE="$DATA_DIR/cron-logs/reflection.log.1"
+LOG_FALLBACK_ARCHIVE="$DATA_DIR/cron-logs/reflection.log.rotation-fallback"
 LOCK="$DATA_DIR/cron-logs/reflection.lock"
 HEARTBEAT="$DATA_DIR/cron-logs/reflection.heartbeat"
 TOKEN_FILE="$DATA_DIR/service-token.txt"
@@ -39,6 +41,12 @@ RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 # multi-phase work) but bounded so a wedged run can't hold the lock past
 # the next night's schedule. Overridable for tests.
 RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
+# Rotate only between runs, while this wrapper owns the no-overlap lock and
+# before the runner opens its long-lived append descriptor. One primary archive
+# plus one fixed failure fallback is enough because run metrics/activity events
+# are the durable outcome record; these files are the bounded diagnostic trace.
+LOG_MAX_BYTES="${REFLECTION_LOG_MAX_BYTES:-1048576}"
+[[ "$LOG_MAX_BYTES" =~ ^[0-9]+$ ]] || LOG_MAX_BYTES=1048576
 RUN_METRICS="$DATA_DIR/apps/reflection/reflection-run-metrics.jsonl"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 RUN_STARTED_EPOCH="$(date +%s)"
@@ -104,6 +112,49 @@ if ! flock -n 9; then
   log "another reflection run holds the lock; skipping this night (exit 5)"
   emit_outcome 5
   exit 5
+fi
+
+# Atomic rename, never in-place truncation. At this point no Reflection runner
+# can be active (fd 9 proves exclusivity), and this wrapper has not opened LOG
+# persistently. The history stage below reads both archive names plus LOG, so
+# rotating does not hide last night's friction from the next agent.
+rotation_error="$(python3 - "$LOG" "$LOG_ARCHIVE" "$LOG_FALLBACK_ARCHIVE" "$LOG_MAX_BYTES" 2>&1 <<'PY'
+import os, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+archive = pathlib.Path(sys.argv[2])
+fallback = pathlib.Path(sys.argv[3])
+limit = int(sys.argv[4])
+try:
+    size = path.stat().st_size
+except FileNotFoundError:
+    raise SystemExit(0)
+if size >= limit:
+    try:
+        os.replace(path, archive)
+    except OSError as primary_error:
+        # A persistently invalid primary target (observed when .1 was a
+        # directory) must not leave the oversized current file growing every
+        # night. Move it to one fixed fallback name instead. Replacing that
+        # fallback on later failures keeps retention bounded; this still uses
+        # atomic rename and runs before any long-lived writer is opened.
+        try:
+            os.replace(path, fallback)
+        except OSError as fallback_error:
+            print(
+                f"primary archive failed: {primary_error}; "
+                f"fallback archive failed: {fallback_error}"
+            )
+            raise SystemExit(1)
+        print(
+            f"primary archive failed: {primary_error}; "
+            f"rotated to fallback {fallback.name}"
+        )
+        raise SystemExit(10)
+PY
+)"
+if [[ $? -ne 0 ]]; then
+  log "WARN reflection log rotation: ${rotation_error:0:300}"
 fi
 
 # --- token: export for the agent's shell (NOT a boundary) -------------
@@ -912,13 +963,16 @@ else
 fi
 
 # reflection-run-history.txt — bounded self-observation for the next agent.
-# Metrics answer "did the last change make the run cheaper?"; the short log
-# tail carries friction; git history prevents a later run from re-adding an
+# Metrics answer "did the last change make the run cheaper?"; the normalized
+# semantic tail carries friction without letting hundreds of SDK output/text
+# deltas crowd it out; git history prevents a later run from re-adding an
 # experiment that an earlier run deliberately removed.
-python3 - "$RUN_METRICS" "$LOG" "$DATA_DIR" >"$INPUTS/reflection-run-history.txt" 2>>"$LOG" <<'PY' || true
+python3 - "$RUN_METRICS" "$LOG_ARCHIVE" "$LOG_FALLBACK_ARCHIVE" "$LOG" "$DATA_DIR" >"$INPUTS/reflection-run-history.txt" 2>>"$LOG" <<'PY' || true
 import json, pathlib, subprocess, sys
 
-metrics_path, log_path, data_dir = map(pathlib.Path, sys.argv[1:])
+(
+    metrics_path, archive_path, fallback_archive_path, log_path, data_dir,
+) = map(pathlib.Path, sys.argv[1:])
 print("# Reflection run history (bounded; newest last)\n")
 print("## Run metrics")
 try:
@@ -926,11 +980,80 @@ try:
 except OSError:
     rows = []
 print("\n".join(rows) if rows else "(no prior metrics)")
-print("\n## Recent reflection log tail")
-try:
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]
-except OSError:
-    lines = []
+print("\n## Recent reflection log tail (normalized)")
+
+def tail_lines(path, byte_limit=2 * 1024 * 1024):
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            start = max(0, size - byte_limit)
+            f.seek(start)
+            raw = f.read()
+    except OSError:
+        return []
+    if start:
+        _, _, raw = raw.partition(b"\n")
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+def cap_line(line, limit=800):
+    line = line.rstrip()
+    if len(line) <= limit:
+        return line
+    return f"{line[:limit]}... [{len(line)} chars]"
+
+def normalize(lines):
+    rows = []
+    text_parts = []
+    output_chunks = 0
+
+    def flush_text():
+        nonlocal text_parts
+        if text_parts:
+            joined = " ".join(part.strip() for part in text_parts if part.strip())
+            if joined:
+                rows.append(cap_line(f"  > {joined}"))
+        text_parts = []
+
+    def flush_output():
+        nonlocal output_chunks
+        if output_chunks:
+            rows.append(
+                "  · codex legacy tool_output stream: "
+                f"{output_chunks} chunks omitted from run history; "
+                "inspect reflection.log(.1) for the raw legacy trace"
+            )
+        output_chunks = 0
+
+    for line in lines:
+        # Legacy _LogBroadcast serialized each streamed output event. Those
+        # lines were commonly sliced mid-JSON at 500 chars, so parsing them is
+        # neither reliable nor useful. Count contiguous bursts instead.
+        if line.startswith('  · codex {"type": "tool_output"'):
+            flush_text()
+            output_chunks += 1
+            continue
+        flush_output()
+        if line.startswith("  > ") and not line.startswith("  > codex message "):
+            text_parts.append(line[4:])
+            continue
+        flush_text()
+        rows.append(cap_line(line))
+    flush_output()
+    flush_text()
+    return rows
+
+archives = sorted(
+    (archive_path, fallback_archive_path),
+    key=lambda path: path.stat().st_mtime_ns if path.is_file() else -1,
+)
+raw_lines = []
+for path in archives:
+    raw_lines.extend(tail_lines(path))
+raw_lines.extend(tail_lines(log_path))
+lines = normalize(raw_lines)[-100:]
+while lines and len(("\n".join(lines) + "\n").encode("utf-8")) > 32 * 1024:
+    lines.pop(0)
 print("\n".join(lines) if lines else "(no prior log)")
 print("\n## Recent edits to reflection.md")
 try:

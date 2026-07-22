@@ -1,10 +1,155 @@
 import json
+import io
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
 import reflection_runner
+
+
+class CodexLogBroadcastTests(unittest.TestCase):
+  def test_stream_deltas_collapse_to_one_tool_result_and_one_message(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log)
+    sink.publish({"type": "session_init", "session_id": "thread-1"})
+    sink.publish({
+      "type": "tool_start", "tool": "Bash", "input": "inspect safely",
+      "tool_use_id": "tool-1",
+    })
+    for i in range(468):
+      sink.publish({
+        "type": "tool_output", "content": f"delta-{i}",
+        "tool_use_id": "tool-1",
+      })
+    sink.publish({
+      "type": "tool_output", "content": ("A" * 10_000) + "diagnostic-tail",
+      "tool_use_id": "tool-1",
+    })
+    sink.publish({"type": "tool_end", "tool_use_id": "tool-1"})
+    sink.publish({"type": "text_boundary"})
+    for _ in range(131):
+      sink.publish({"type": "text", "content": "word "})
+    final_text = "opening " + ("z" * 5_000) + " UNIQUE-FINAL-CONCLUSION"
+    sink.publish({"type": "text_final", "content": final_text})
+    sink.close()
+
+    lines = log.getvalue().splitlines()
+    self.assertEqual(sum("tool_start" in line for line in lines), 1)
+    self.assertEqual(sum("tool_result" in line for line in lines), 1)
+    self.assertEqual(sum("codex message" in line for line in lines), 1)
+    result = next(line for line in lines if "tool_result" in line)
+    self.assertIn("output_events=469", result)
+    self.assertIn("final_chars=10015", result)
+    self.assertIn("diagnostic-tail", result)
+    message = next(line for line in lines if "codex message" in line)
+    self.assertIn("chunks=131", message)
+    self.assertIn(f"chars={len(final_text)}", message)
+    self.assertIn("UNIQUE-FINAL-CONCLUSION", message)
+    self.assertLess(len(log.getvalue().encode("utf-8")), 2_000)
+
+  def test_delta_only_long_message_close_preserves_rolling_true_tail(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log)
+    sink.publish({"type": "text_boundary"})
+    sink.publish({"type": "text", "content": "UNIQUE-START " + ("a" * 3_000)})
+    sink.publish({"type": "text", "content": ("b" * 3_000) + " UNIQUE-DELTA-CONCLUSION"})
+    sink.close()
+
+    value = log.getvalue()
+    self.assertIn("state=incomplete", value)
+    self.assertIn("UNIQUE-START", value)
+    self.assertIn("UNIQUE-DELTA-CONCLUSION", value)
+
+  def test_close_preserves_an_incomplete_item(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log)
+    sink.publish({
+      "type": "tool_start", "tool": "Bash", "input": "inspect",
+      "tool_use_id": "unfinished",
+    })
+    sink.publish({
+      "type": "tool_output", "content": "last clue",
+      "tool_use_id": "unfinished",
+    })
+    sink.close()
+    self.assertIn("id=unfinished state=incomplete", log.getvalue())
+    self.assertIn("last clue", log.getvalue())
+
+  def test_trace_budget_is_hard_bounded_and_reported_once(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log, byte_budget=1_200)
+    for i in range(30):
+      tid = f"tool-{i}"
+      sink.publish({
+        "type": "tool_start", "tool": "Bash", "input": "x" * 200,
+        "tool_use_id": tid,
+      })
+      sink.publish({
+        "type": "tool_output", "content": "y" * 500,
+        "tool_use_id": tid,
+      })
+      if i < 29:
+        sink.publish({"type": "tool_end", "tool_use_id": tid})
+    sink.close()
+    sink.close()
+
+    value = log.getvalue()
+    self.assertIn("trace budget reached", value)
+    self.assertIn("suppressed_lines=", value)
+    self.assertEqual(value.count("trace budget reached"), 1)
+    self.assertLessEqual(len(value.encode("utf-8")), 1_200)
+
+  def test_distinct_tool_ids_are_safe_under_concurrent_publishers(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log)
+
+    def emit(index):
+      tid = f"parallel-{index}"
+      sink.publish({
+        "type": "tool_start", "tool": "Read", "input": str(index),
+        "tool_use_id": tid,
+      })
+      sink.publish({
+        "type": "tool_output", "content": f"result-{index}",
+        "tool_use_id": tid,
+      })
+      sink.publish({"type": "tool_end", "tool_use_id": tid})
+
+    threads = [threading.Thread(target=emit, args=(i,)) for i in range(20)]
+    for thread in threads:
+      thread.start()
+    for thread in threads:
+      thread.join()
+    sink.close()
+
+    lines = log.getvalue().splitlines()
+    self.assertEqual(sum("tool_start" in line for line in lines), 20)
+    self.assertEqual(sum("tool_result" in line for line in lines), 20)
+    for i in range(20):
+      self.assertEqual(sum(f"id=parallel-{i} " in line for line in lines), 2)
+
+  def test_repeated_tool_input_replaces_one_bounded_descriptor(self):
+    log = io.StringIO()
+    sink = reflection_runner._LogBroadcast(log)
+    sink.publish({
+      "type": "tool_start", "tool": "WebSearch", "input": "",
+      "tool_use_id": "search-1",
+    })
+    for i in range(10_000):
+      sink.publish({
+        "type": "tool_input", "input": f"query-{i}-" + ("x" * 1_000),
+        "tool_use_id": "search-1",
+      })
+
+    state = sink._tools["search-1"]
+    self.assertEqual(state["tool"], "WebSearch")
+    self.assertLessEqual(len(state["input"]), 160)
+    self.assertIn("query-9999", state["input"])
+    sink.publish({"type": "tool_end", "tool_use_id": "search-1"})
+    sink.close()
+    self.assertLess(len(log.getvalue().encode("utf-8")), 1_000)
 
 
 class AdaptiveReflectionGoalTests(unittest.TestCase):
