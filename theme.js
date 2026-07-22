@@ -490,35 +490,40 @@ button.rf-card { cursor: pointer; }
   touch-action: manipulation; user-select: none;
 }
 .rf-select:focus:not(:focus-visible) { outline: none; }
-.rf-agent-stack { display: grid; gap: 12px; }
-.rf-agent-field {
-  display: grid; gap: 8px;
-  padding: 10px; border: 1px solid var(--border); border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+.mobius-agent-priority-list { display:flex; flex-direction:column; gap:6px; position:relative; }
+.mobius-agent-priority-row {
+  position:relative; display:grid; grid-template-columns:44px minmax(0,1fr);
+  align-items:center; min-height:54px; padding:0; border:0; border-radius:9px;
+  background:transparent; user-select:none; -webkit-user-select:none;
+  -webkit-touch-callout:none; will-change:transform;
+  transition:transform .18s cubic-bezier(.22,1,.36,1), background .15s ease,
+    border-color .15s ease, box-shadow .15s ease, opacity .15s ease;
 }
-.rf-agent-field-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; flex-wrap: wrap;
+.mobius-agent-priority-list.is-committing .mobius-agent-priority-row { transition:none; }
+.mobius-agent-priority-row.is-dragging { opacity:.96; }
+.mobius-agent-priority-row.is-dragging .mobius-model-trigger,
+.mobius-agent-priority-row.is-drop-target .mobius-model-trigger {
+  border-color:color-mix(in srgb,var(--accent) 62%,var(--border));
+  background:color-mix(in srgb,var(--accent) 7%,var(--surface));
+  box-shadow:0 4px 8px rgb(0 0 0 / 18%);
 }
-.rf-agent-mode {
-  display: inline-flex; gap: 2px; padding: 2px;
-  border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg);
+.mobius-agent-priority-handle {
+  align-self:stretch; min-width:44px; min-height:44px; display:grid; place-items:center;
+  border:0; border-radius:7px; padding:0; color:var(--muted); background:transparent;
+  font:inherit; cursor:grab; touch-action:none; -webkit-tap-highlight-color:transparent;
 }
-.rf-agent-mode-btn {
-  min-height: 44px; padding: 0 10px; border: none; border-radius: 6px;
-  background: transparent; color: var(--muted);
-  font-family: var(--font); font-size: 12px; font-weight: 700;
-  cursor: pointer; touch-action: manipulation; user-select: none;
+.mobius-agent-priority-handle:active,
+.mobius-agent-priority-row.is-dragging .mobius-agent-priority-handle {
+  cursor:grabbing; color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 10%,transparent);
 }
-.rf-agent-mode-btn.is-active { background: ${ACCENT}; color: var(--accent-fg); }
-@media (hover:hover) { .rf-agent-mode-btn:not(.is-active):hover { color: var(--text); } }
-.rf-agent-inherit {
-  min-height: 42px; display: flex; align-items: center;
-  padding: 9px 12px; border: 1px dashed var(--border); border-radius: 8px;
-  background: var(--bg); color: var(--muted);
-  font-size: 12.5px; font-weight: 600; line-height: 1.35;
+.mobius-agent-priority-handle:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.mobius-agent-priority-handle svg { display:block; }
+.mobius-agent-priority-body { min-width:0; }
+@media (hover:hover) and (pointer:fine) {
+  .mobius-agent-priority-handle:hover { color:var(--text); background:var(--surface2); }
 }
+@media (prefers-reduced-motion:reduce) { .mobius-agent-priority-row { transition:none; } }
 .mobius-model-trigger {
   display:flex; align-items:center; gap:10px; width:100%; padding:8px 10px;
   border:1px solid var(--border); border-radius:9px; text-align:left;

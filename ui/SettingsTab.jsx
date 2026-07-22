@@ -14,6 +14,7 @@ import { buildCron, hourClockLabel, hourToTimeValue, parseCronHour } from '../do
 import { fetchModelConfig } from '../providers.js'
 import { EffortStepper } from './EffortStepper.jsx'
 import { ModelPicker } from './ModelPicker.jsx'
+import { BackgroundAgentList } from './BackgroundAgentList.jsx'
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -217,6 +218,30 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     }
   }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
 
+  const reorderAgents = useCallback((fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return
+    const primary = {
+      system: useSystemPrimary,
+      provider,
+      model,
+      effort,
+    }
+    const secondary = {
+      system: useSystemSecondary,
+      provider: fallbackProvider,
+      model: fallbackModel,
+      effort: fallbackEffort,
+    }
+    setUseSystemPrimary(secondary.system)
+    setProvider(secondary.provider)
+    setModel(secondary.model)
+    setEffort(secondary.effort)
+    setUseSystemSecondary(primary.system)
+    setFallbackProvider(primary.provider)
+    setFallbackModel(primary.model)
+    setFallbackEffort(primary.effort)
+  }, [useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort])
+
   if (loading) {
     return (
       <div className="rf-loading-wrap">
@@ -284,8 +309,8 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
           <h2 className="rf-section-label">Background agents</h2>
         </div>
         <p className="rf-note">
-          Uses the ordered Background agents from Möbius Settings by default.
-          Override either slot only when Reflection needs its own model.
+          Tried in order. Drag to change priority. Each row follows Möbius
+          Settings by default, or can use its own model for Reflection.
         </p>
         {modelGroups === null ? (
           <div className="rf-note">Loading models…</div>
@@ -296,11 +321,8 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
             for your account.
           </div>
         ) : (
-          <div className="rf-agent-stack">
-            <div className="rf-agent-field">
-              <div className="rf-agent-field-head">
-                <div className="rf-note-strong">Background primary</div>
-              </div>
+          <BackgroundAgentList onMove={reorderAgents}>
+            <div key="primary">
               <ModelPicker
                 provider={useSystemPrimary ? '' : provider}
                 model={useSystemPrimary ? '' : model}
@@ -324,10 +346,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 }}
               />
             </div>
-            <div className="rf-agent-field">
-              <div className="rf-agent-field-head">
-                <div className="rf-note-strong">Background secondary</div>
-              </div>
+            <div key="secondary">
               <ModelPicker
                 provider={useSystemSecondary ? '' : fallbackProvider}
                 model={useSystemSecondary ? '' : fallbackModel}
@@ -355,7 +374,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 }}
               />
             </div>
-          </div>
+          </BackgroundAgentList>
         )}
       </div>
 

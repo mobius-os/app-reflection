@@ -69,6 +69,7 @@
     "ui/LastNightStatus.jsx",
     "ui/EffortStepper.jsx",
     "ui/ModelPicker.jsx",
+    "ui/BackgroundAgentList.jsx",
     "ui/SettingsTab.jsx"
   ]
 }
