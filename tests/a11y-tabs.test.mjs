@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { canReorderAgentSlots, reorderAgentSlots } from '../ui/backgroundAgentOrder.js'
 
 const app = readFileSync(new URL('../index.jsx', import.meta.url), 'utf8')
 
@@ -12,15 +13,27 @@ test('brief and settings tabs use roving focus and labelled tab panels', () => {
   assert.match(app, /role="tabpanel" aria-labelledby="rf-tab-settings"/)
 })
 
-test('agent overrides default to Background agents and use the production-style dialog picker', () => {
+test('agent overrides default to Settings and use the production-style dialog picker', () => {
   const settings = readFileSync(new URL('../ui/SettingsTab.jsx', import.meta.url), 'utf8')
   const picker = readFileSync(new URL('../ui/ModelPicker.jsx', import.meta.url), 'utf8')
+  const priorityList = readFileSync(new URL('../ui/BackgroundAgentList.jsx', import.meta.url), 'utf8')
   const effort = readFileSync(new URL('../ui/EffortStepper.jsx', import.meta.url), 'utf8')
   const theme = readFileSync(new URL('../theme.js', import.meta.url), 'utf8')
   assert.match(settings, /useState\(true\)/)
   assert.match(settings, /primaryMode === 'custom'/)
   assert.match(settings, /secondaryMode === 'custom'/)
-  assert.match(settings, /Background agents/)
+  assert.match(settings, /useSettingsDefault=\{useSystemPrimary\}/)
+  assert.match(settings, /useSettingsDefault=\{useSystemSecondary\}/)
+  assert.match(settings, /onSettingsDefault=\{\(\) => setUseSystemPrimary\(true\)\}/)
+  assert.match(settings, /onSettingsDefault=\{\(\) => setUseSystemSecondary\(true\)\}/)
+  assert.match(settings, /setUseSystemPrimary\(false\)/)
+  assert.match(settings, /setUseSystemSecondary\(false\)/)
+  assert.match(settings, /<BackgroundAgentList/)
+  assert.match(settings, /onMove=\{reorderAgents\}/)
+  assert.match(settings, /reorderAgentSlots\(slots, fromIndex, toIndex\)/)
+  assert.match(settings, /setUseSystemPrimary\(primary\.mode === 'system'\)/)
+  assert.match(settings, /setUseSystemSecondary\(secondary\.mode === 'system'\)/)
+  assert.doesNotMatch(settings, /role="radiogroup" aria-label="Reflection (?:primary|secondary) agent mode"/)
   assert.match(settings, /<ModelPicker/)
   assert.match(settings, /effort: useSystemPrimary \? null : effortForProvider/)
   assert.match(settings, /fallback_effort: !useSystemSecondary/)
@@ -33,10 +46,42 @@ test('agent overrides default to Background agents and use the production-style 
   assert.match(picker, /function ClaudeLogo/)
   assert.match(picker, /function OpenAILogo/)
   assert.match(picker, /mobius-model-trigger__effort/)
+  assert.match(picker, /Default from settings/)
+  assert.match(picker, /onSettingsDefault/)
+  assert.match(picker, /aria-label=\{triggerLabel\}/)
+  assert.match(picker, /aria-pressed=\{useSettingsDefault\}/)
+  assert.match(picker, /aria-pressed=\{selected\}/)
+  assert.match(picker, /effortLabel \? `, \$\{effortLabel\} effort`/)
+  assert.match(picker, /\{open && createPortal\([\s\S]*document\.body,\s*\)\}/)
+  assert.match(picker, /event\.target === event\.currentTarget\) closeSheet\(\)/)
+  assert.match(picker, /mobius-model-sheet__close" onClick=\{closeSheet\}/)
+  assert.match(picker, /closeRef\.current\?\.focus\?\.\(\)/)
+  assert.match(picker, /triggerRef\.current\?\.focus\?\.\(\)/)
+  assert.match(theme, /\.mobius-model-sheet__backdrop\s*\{[\s\S]*position:fixed[\s\S]*z-index:1000/)
+  assert.match(priorityList, /mobius-agent-priority-handle/)
+  assert.match(priorityList, /onPointerDown/)
+  assert.match(priorityList, /event\.key === 'ArrowUp'/)
+  assert.match(priorityList, /itemLabels/)
+  assert.match(priorityList, /aria-live="polite"/)
+  assert.match(settings, /reorderDisabled=\{!canReorderAgents\}/)
   assert.match(effort, /role="radiogroup"/)
   assert.match(effort, /role="radio"/)
   assert.match(effort, /e\.key === 'Home'/)
   assert.match(effort, /e\.key === 'End'/)
   assert.match(theme, /\.rf-rise \{ animation: rf-rise [^}]+ backwards;/)
   assert.doesNotMatch(theme, /\.rf-rise \{ animation: rf-rise [^}]+ both;/)
+})
+
+test('agent reorder swaps exact overrides and refuses inherited positional rows', () => {
+  const primary = { mode: 'app', provider: 'claude', model: 'claude-primary', effort: 'high' }
+  const fallback = { mode: 'app', provider: 'codex', model: 'codex-fallback', effort: 'medium' }
+  const before = [primary, fallback]
+  const after = reorderAgentSlots(before, 0, 1)
+  assert.equal(canReorderAgentSlots(before), true)
+  assert.deepEqual(after, [fallback, primary])
+  assert.notEqual(after[1], primary)
+
+  const inherited = [primary, { mode: 'system' }]
+  assert.equal(canReorderAgentSlots(inherited), false)
+  assert.equal(reorderAgentSlots(inherited, 0, 1), inherited)
 })

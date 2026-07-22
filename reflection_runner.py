@@ -369,6 +369,15 @@ def fallback_needed(rc: int, brief_path: Path | None) -> bool:
   return not brief_path.is_file()
 
 
+def configured_fallback_needed(
+  rc: int,
+  fallback: dict | None,
+  brief_path: Path | None,
+) -> bool:
+  """A configured second agent gets one turn after any failed empty run."""
+  return fallback is not None and fallback_needed(rc, brief_path)
+
+
 def build_fallback_goal() -> str:
   """Builds the goal message for the guaranteed-brief rescue pass."""
   from datetime import date
@@ -1518,9 +1527,9 @@ async def run() -> int:
   The wrapper maps the exit code into the `cron_outcome` event, so this
   is the one signal the activity log records about whether the night
   ran. A non-zero night additionally triggers the guaranteed-brief
-  fallback (which never changes the exit code — it rescues the
-  deliverable, not the record); the auth/usage rcs route that fallback
-  to a CLI-free static brief instead of another doomed CLI rescue.
+  fallback. A configured distinct second agent is tried first after any
+  failed run that left no brief; if it also fails, the bounded guaranteed-
+  brief rescue remains the final floor.
   """
   settings = load_settings()
   agents = _resolve_agents(settings)
@@ -1557,11 +1566,7 @@ async def run() -> int:
       primary, goal=goal, skill_text=skill_text, env=env,
       max_turns=max_turns, log_fh=log_fh, countdown=True,
     )
-    if (
-      rc in (AUTH_FAILURE_RC, USAGE_LIMIT_RC)
-      and fallback is not None
-      and fallback_needed(rc, todays_brief_path())
-    ):
+    if configured_fallback_needed(rc, fallback, todays_brief_path()):
       _log(
         f"primary background agent failed rc={rc}; trying fallback "
         f"provider={fallback['provider']} "
