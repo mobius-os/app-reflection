@@ -145,41 +145,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     return () => { cancelled = true }
   }, [token])
 
-  const chooseDefaultAgentGroup = useCallback((avoidProvider = '') => {
-    if (!modelGroups || modelGroups.length === 0) return null
-    const connected = (group) => !connectedProviders || connectedProviders.has(group.key)
-    return (
-      modelGroups.find(g => g.key !== avoidProvider && connected(g) && g.models?.length) ||
-      modelGroups.find(g => connected(g) && g.models?.length) ||
-      modelGroups.find(g => g.models?.length) ||
-      null
-    )
-  }, [modelGroups, connectedProviders])
-
-  const enablePrimaryOverride = useCallback(() => {
-    setUseSystemPrimary(false)
-    const currentGroup = modelGroups?.find(group => group.key === provider)
-    if (currentGroup?.models?.some(item => item.id === model)) return
-    const chosen = chooseDefaultAgentGroup()
-    if (chosen) {
-      setProvider(chosen.key)
-      setModel(chosen.models?.[0]?.id || '')
-      setEffort(defaultEffort(chosen.key))
-    }
-  }, [modelGroups, provider, model, chooseDefaultAgentGroup])
-
-  const enableSecondaryOverride = useCallback(() => {
-    setUseSystemSecondary(false)
-    const currentGroup = modelGroups?.find(group => group.key === fallbackProvider)
-    if (currentGroup?.models?.some(item => item.id === fallbackModel)) return
-    const chosen = chooseDefaultAgentGroup(provider)
-    if (chosen) {
-      setFallbackProvider(chosen.key)
-      setFallbackModel(chosen.models?.[0]?.id || '')
-      setFallbackEffort(defaultEffort(chosen.key))
-    }
-  }, [fallbackProvider, fallbackModel, modelGroups, provider, chooseDefaultAgentGroup])
-
   const onTimeChange = useCallback((e) => {
     // <input type="time"> can be cleared to "" -> NaN. Drop NaN so we never
     // write a corrupt cron; the input repaints with the last good value.
@@ -335,96 +300,60 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
             <div className="rf-agent-field">
               <div className="rf-agent-field-head">
                 <div className="rf-note-strong">Background primary</div>
-                <div className="rf-agent-mode" role="radiogroup" aria-label="Reflection primary agent mode">
-                  <button
-                    type="button"
-                    className={`rf-agent-mode-btn${useSystemPrimary ? ' is-active' : ''}`}
-                    aria-pressed={useSystemPrimary}
-                    onClick={() => setUseSystemPrimary(true)}
-                  >
-                    Background agents
-                  </button>
-                  <button
-                    type="button"
-                    className={`rf-agent-mode-btn${!useSystemPrimary ? ' is-active' : ''}`}
-                    aria-pressed={!useSystemPrimary}
-                    onClick={enablePrimaryOverride}
-                  >
-                    Override
-                  </button>
-                </div>
               </div>
-              {useSystemPrimary ? (
-                <div className="rf-agent-inherit">Using the primary Background agent from Möbius Settings</div>
-              ) : (
-                <ModelPicker
-                  provider={provider}
-                  model={model}
-                  groups={modelGroups}
-                  connectedProviders={connectedProviders}
-                  title="Reflection primary model"
-                  navKey="reflection-primary-model"
-                  effortLabel={effortLabel(provider, effort)}
-                  effortControl={(
-                    <EffortStepper provider={provider} value={effort} onChange={setEffort} />
-                  )}
-                  onChange={(nextProvider, nextModel) => {
-                    setUseSystemPrimary(false)
-                    setProvider(nextProvider)
-                    setModel(nextModel || null)
-                    setEffort(effortForProvider(nextProvider, effort))
-                  }}
-                />
-              )}
+              <ModelPicker
+                provider={useSystemPrimary ? '' : provider}
+                model={useSystemPrimary ? '' : model}
+                groups={modelGroups}
+                connectedProviders={connectedProviders}
+                title="Reflection primary model"
+                navKey="reflection-primary-model"
+                useSettingsDefault={useSystemPrimary}
+                onSettingsDefault={() => setUseSystemPrimary(true)}
+                effortLabel={useSystemPrimary ? '' : effortLabel(provider, effort)}
+                efforts={EFFORT_LEVELS[provider] || []}
+                effort={effort}
+                effortControl={useSystemPrimary ? null : (
+                  <EffortStepper provider={provider} value={effort} onChange={setEffort} />
+                )}
+                onChange={(nextProvider, nextModel) => {
+                  setUseSystemPrimary(false)
+                  setProvider(nextProvider)
+                  setModel(nextModel || null)
+                  setEffort(effortForProvider(nextProvider, effort))
+                }}
+              />
             </div>
             <div className="rf-agent-field">
               <div className="rf-agent-field-head">
                 <div className="rf-note-strong">Background secondary</div>
-                <div className="rf-agent-mode" role="radiogroup" aria-label="Reflection secondary agent mode">
-                  <button
-                    type="button"
-                    className={`rf-agent-mode-btn${useSystemSecondary ? ' is-active' : ''}`}
-                    aria-pressed={useSystemSecondary}
-                    onClick={() => setUseSystemSecondary(true)}
-                  >
-                    Background agents
-                  </button>
-                  <button
-                    type="button"
-                    className={`rf-agent-mode-btn${!useSystemSecondary ? ' is-active' : ''}`}
-                    aria-pressed={!useSystemSecondary}
-                    onClick={enableSecondaryOverride}
-                  >
-                    Override
-                  </button>
-                </div>
               </div>
-              {useSystemSecondary ? (
-                <div className="rf-agent-inherit">Using the secondary Background agent from Möbius Settings</div>
-              ) : (
-                <ModelPicker
-                  provider={fallbackProvider}
-                  model={fallbackModel}
-                  groups={modelGroups}
-                  connectedProviders={connectedProviders}
-                  title="Reflection secondary model"
-                  navKey="reflection-secondary-model"
-                  effortLabel={effortLabel(fallbackProvider, fallbackEffort)}
-                  effortControl={(
-                    <EffortStepper
-                      provider={fallbackProvider}
-                      value={fallbackEffort}
-                      onChange={setFallbackEffort}
-                    />
-                  )}
-                  onChange={(nextProvider, nextModel) => {
-                    setUseSystemSecondary(false)
-                    setFallbackProvider(nextProvider)
-                    setFallbackModel(nextModel || null)
-                    setFallbackEffort(effortForProvider(nextProvider, fallbackEffort))
-                  }}
-                />
-              )}
+              <ModelPicker
+                provider={useSystemSecondary ? '' : fallbackProvider}
+                model={useSystemSecondary ? '' : fallbackModel}
+                groups={modelGroups}
+                connectedProviders={connectedProviders}
+                title="Reflection secondary model"
+                navKey="reflection-secondary-model"
+                useSettingsDefault={useSystemSecondary}
+                onSettingsDefault={() => setUseSystemSecondary(true)}
+                effortLabel={useSystemSecondary ? '' : effortLabel(fallbackProvider, fallbackEffort)}
+                efforts={EFFORT_LEVELS[fallbackProvider] || []}
+                effort={fallbackEffort}
+                effortControl={useSystemSecondary ? null : (
+                  <EffortStepper
+                    provider={fallbackProvider}
+                    value={fallbackEffort}
+                    onChange={setFallbackEffort}
+                  />
+                )}
+                onChange={(nextProvider, nextModel) => {
+                  setUseSystemSecondary(false)
+                  setFallbackProvider(nextProvider)
+                  setFallbackModel(nextModel || null)
+                  setFallbackEffort(effortForProvider(nextProvider, fallbackEffort))
+                }}
+              />
             </div>
           </div>
         )}
