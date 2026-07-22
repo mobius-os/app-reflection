@@ -15,6 +15,7 @@ import { fetchModelConfig } from '../providers.js'
 import { EffortStepper } from './EffortStepper.jsx'
 import { ModelPicker } from './ModelPicker.jsx'
 import { BackgroundAgentList } from './BackgroundAgentList.jsx'
+import { agentSlotLabel, canReorderAgentSlots, reorderAgentSlots } from './backgroundAgentOrder.js'
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -219,28 +220,42 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
 
   const reorderAgents = useCallback((fromIndex, toIndex) => {
-    if (fromIndex === toIndex) return
-    const primary = {
-      system: useSystemPrimary,
+    const slots = [{
+      mode: useSystemPrimary ? 'system' : 'app',
       provider,
       model,
       effort,
-    }
-    const secondary = {
-      system: useSystemSecondary,
+    }, {
+      mode: useSystemSecondary ? 'system' : 'app',
       provider: fallbackProvider,
       model: fallbackModel,
       effort: fallbackEffort,
-    }
-    setUseSystemPrimary(secondary.system)
-    setProvider(secondary.provider)
-    setModel(secondary.model)
-    setEffort(secondary.effort)
-    setUseSystemSecondary(primary.system)
-    setFallbackProvider(primary.provider)
-    setFallbackModel(primary.model)
-    setFallbackEffort(primary.effort)
+    }]
+    const ordered = reorderAgentSlots(slots, fromIndex, toIndex)
+    if (ordered === slots) return false
+    const [primary, secondary] = ordered
+    setUseSystemPrimary(primary.mode === 'system')
+    setProvider(primary.provider)
+    setModel(primary.model)
+    setEffort(primary.effort)
+    setUseSystemSecondary(secondary.mode === 'system')
+    setFallbackProvider(secondary.provider)
+    setFallbackModel(secondary.model)
+    setFallbackEffort(secondary.effort)
+    return true
   }, [useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort])
+
+  const agentSlots = [{
+    mode: useSystemPrimary ? 'system' : 'app', provider, model, effort,
+  }, {
+    mode: useSystemSecondary ? 'system' : 'app',
+    provider: fallbackProvider, model: fallbackModel, effort: fallbackEffort,
+  }]
+  const canReorderAgents = canReorderAgentSlots(agentSlots)
+  const agentLabels = [
+    agentSlotLabel(agentSlots[0], modelGroups, 'Settings default primary agent'),
+    agentSlotLabel(agentSlots[1], modelGroups, 'Settings default secondary agent'),
+  ]
 
   if (loading) {
     return (
@@ -321,7 +336,12 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
             for your account.
           </div>
         ) : (
-          <BackgroundAgentList onMove={reorderAgents}>
+          <BackgroundAgentList
+            onMove={reorderAgents}
+            itemLabels={agentLabels}
+            reorderDisabled={!canReorderAgents}
+            reorderDisabledReason="Choose an app override for both rows before changing priority; inherited Settings agents keep their Möbius Settings order."
+          >
             <div key="primary">
               <ModelPicker
                 provider={useSystemPrimary ? '' : provider}

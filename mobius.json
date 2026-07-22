@@ -70,6 +70,7 @@
     "ui/EffortStepper.jsx",
     "ui/ModelPicker.jsx",
     "ui/BackgroundAgentList.jsx",
+    "ui/backgroundAgentOrder.js",
     "ui/SettingsTab.jsx"
   ]
 }

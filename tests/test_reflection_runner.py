@@ -305,5 +305,42 @@ class UsageLimitClassificationTests(unittest.TestCase):
     self.assertFalse(reflection_runner._is_usage_limit("The model process exited unexpectedly"))
 
 
+class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
+  async def test_generic_primary_failure_tries_the_distinct_configured_fallback(self):
+    primary = {"provider": "claude", "model": "claude-primary", "effort": "high"}
+    fallback = {"provider": "codex", "model": "codex-fallback", "effort": "medium"}
+    with tempfile.TemporaryDirectory() as raw:
+      log_path = Path(raw) / "reflection.log"
+      runner = mock.AsyncMock(side_effect=[reflection_runner.GENERIC_MODEL_RC, 0])
+      with (
+        mock.patch.object(reflection_runner, "LOG_PATH", log_path),
+        mock.patch.object(reflection_runner, "load_settings", return_value={}),
+        mock.patch.object(reflection_runner, "_resolve_agents", return_value={"primary": primary, "fallback": fallback}),
+        mock.patch.object(reflection_runner, "load_skill", return_value="skill"),
+        mock.patch.object(reflection_runner, "seed_brief_template"),
+        mock.patch.object(reflection_runner, "build_goal", return_value="goal"),
+        mock.patch.object(reflection_runner, "build_env", return_value={}),
+        mock.patch.object(reflection_runner, "_bounded_max_turns", return_value=20),
+        mock.patch.object(reflection_runner, "_safety_snapshot"),
+        mock.patch.object(reflection_runner, "_log"),
+        mock.patch.object(reflection_runner, "todays_brief_path", return_value=Path(raw) / "missing.html"),
+        mock.patch.object(reflection_runner, "_run_agent_choice", runner),
+      ):
+        rc = await reflection_runner.run()
+
+    self.assertEqual(rc, 0)
+    self.assertEqual(runner.await_count, 2)
+    self.assertEqual(runner.await_args_list[0].args[0], primary)
+    self.assertEqual(runner.await_args_list[1].args[0], fallback)
+
+  def test_existing_brief_or_missing_configured_fallback_suppresses_retry(self):
+    with tempfile.TemporaryDirectory() as raw:
+      brief = Path(raw) / "brief.html"
+      brief.write_text("ready", encoding="utf-8")
+      fallback = {"provider": "codex"}
+      self.assertFalse(reflection_runner.configured_fallback_needed(64, fallback, brief))
+      self.assertFalse(reflection_runner.configured_fallback_needed(64, None, Path(raw) / "missing"))
+
+
 if __name__ == "__main__":
   unittest.main()
