@@ -4,10 +4,8 @@ import {
   DEFAULT_HOUR,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
-  DEFAULT_VERBOSITY,
   EFFORT_LEVELS,
   FALLBACK_MODEL_GROUPS,
-  VERBOSITY_OPTIONS,
   defaultEffort,
 } from '../constants.js'
 import { buildCron, hourClockLabel, hourToTimeValue, parseCronHour } from '../domain.js'
@@ -31,6 +29,11 @@ function effortLabel(provider, value) {
   return levels.find((level) => level.value === effortForProvider(provider, value))?.label || ''
 }
 
+function withoutLegacyBriefControls(settings) {
+  const { verbosity, focus, avoid, ...rest } = settings || {}
+  return rest
+}
+
 export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [hour, setHour] = useState(DEFAULT_HOUR)
   const [excludeApps, setExcludeApps] = useState([])
@@ -43,9 +46,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [fallbackProvider, setFallbackProvider] = useState('')
   const [fallbackModel, setFallbackModel] = useState('')
   const [fallbackEffort, setFallbackEffort] = useState('')
-  const [verbosity, setVerbosity] = useState(DEFAULT_VERBOSITY)
-  const [focus, setFocus] = useState('')
-  const [avoid, setAvoid] = useState('')
   const [modelGroups, setModelGroups] = useState(null)
   const [connectedProviders, setConnectedProviders] = useState(null)
   // The raw cron we loaded — when it's a custom shape parseCronHour can't
@@ -65,7 +65,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
       if (cancelled) return
       const s = res.data && typeof res.data === 'object' ? res.data : null
       if (s) {
-        setSettingsExtra(s)
+        setSettingsExtra(withoutLegacyBriefControls(s))
         const parsedHour = parseCronHour(s.cron)
         if (parsedHour != null) {
           setHour(parsedHour)
@@ -121,12 +121,8 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         if (fallbackProviderValue) {
           setFallbackEffort(effortForProvider(fallbackProviderValue, fallbackEffortValue))
         }
-        const vOpt = VERBOSITY_OPTIONS.find((o) => o.id === s.verbosity)
-        if (vOpt) setVerbosity(vOpt.id)
-        if (typeof s.focus === 'string') setFocus(s.focus)
-        if (typeof s.avoid === 'string') setAvoid(s.avoid)
       }
-      // res.notFound (first run) -> keep the 06:00 / standard defaults.
+      // res.notFound (first run) -> keep the 06:00 defaults.
       setLoading(false)
     })()
     return () => { cancelled = true }
@@ -190,22 +186,14 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
           : null,
         primary_agent_mode: useSystemPrimary ? 'system' : 'app',
         secondary_agent_mode: useSystemSecondary ? 'system' : 'app',
-        verbosity,
-        focus: focus.trim() || null,
-        avoid: avoid.trim() || null,
       })
-      // Launch analytics: which knobs the owner is actually customizing. Flat
-      // primitives only — the steering focus/avoid text is user content, so send
-      // presence booleans, never the strings. Fire-and-forget.
+      // Launch analytics: which durable settings the owner customized.
       window.mobius?.signal?.('settings_saved', {
         hour,
         custom_cron: cronIsCustom,
         use_system_primary: useSystemPrimary,
         has_fallback: Boolean(fallbackProvider),
-        verbosity,
         exclude_count: excludeApps.length,
-        has_focus: focus.trim().length > 0,
-        has_avoid: avoid.trim().length > 0,
       })
       onSetupComplete?.()
       setToast('Saved ✓')
@@ -217,7 +205,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, verbosity, focus, avoid, settingsExtra, storage, onSetupComplete])
+  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, settingsExtra, storage, onSetupComplete])
 
   const reorderAgents = useCallback((fromIndex, toIndex) => {
     const slots = [{
@@ -396,63 +384,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
             </div>
           </BackgroundAgentList>
         )}
-      </div>
-
-      <div className="rf-settings-card">
-        <div className="rf-section-head">
-          <span className="rf-section-icon" aria-hidden="true">📝</span>
-          <h2 className="rf-section-label">Brief style</h2>
-        </div>
-        <p className="rf-note">
-          How long and how detailed you'd like the morning brief. The reflection
-          skill honors this when writing tonight's report.
-        </p>
-        <div className="rf-verbosity-row">
-          {VERBOSITY_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              className={`rf-verb-btn${verbosity === opt.id ? ' is-active' : ''} rf-pressable`}
-              onClick={() => setVerbosity(opt.id)}
-              aria-pressed={verbosity === opt.id}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <p className="rf-verb-hint">
-          {VERBOSITY_OPTIONS.find((o) => o.id === verbosity)?.hint}
-        </p>
-      </div>
-
-      <div className="rf-settings-card">
-        <div className="rf-section-head">
-          <span className="rf-section-icon" aria-hidden="true">🧭</span>
-          <h2 className="rf-section-label">Tonight's steering</h2>
-        </div>
-        <p className="rf-note">
-          Optional nudges the reflection agent reads before deciding what to cover.
-          Leave blank to let it choose freely.
-        </p>
-        <label className="rf-note" style={{ display: 'block', marginBottom: 4 }}>
-          <span className="rf-note-strong">Prioritise</span> — topics or apps to pay extra attention to
-        </label>
-        <textarea
-          className="rf-textarea"
-          value={focus}
-          onChange={(e) => setFocus(e.target.value)}
-          placeholder={'e.g. "look for regressions in the Habits app" or "I\'ve been researching climate policy"'}
-          aria-label="Topics to prioritise tonight"
-        />
-        <label className="rf-note" style={{ display: 'block', marginTop: 10, marginBottom: 4 }}>
-          <span className="rf-note-strong">Skip</span> — topics or apps to leave out of tonight's brief
-        </label>
-        <textarea
-          className="rf-textarea"
-          value={avoid}
-          onChange={(e) => setAvoid(e.target.value)}
-          placeholder={'e.g. "skip the workout app" or "don\'t mention work projects"'}
-          aria-label="Topics to skip tonight"
-        />
       </div>
 
       <div className="rf-save-row">

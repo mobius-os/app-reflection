@@ -1,12 +1,5 @@
 // Shared scalar tables and report template-literal blocks.
 
-export const VERBOSITY_OPTIONS = [
-  { id: 'terse', label: 'Terse', hint: 'A short paragraph — just the highlights.' },
-  { id: 'standard', label: 'Standard', hint: 'A few paragraphs, a suggestion or two, one closing thought.' },
-  { id: 'chatty', label: 'Chatty', hint: 'A longer narrative with more pattern-spotting.' },
-]
-export const DEFAULT_VERBOSITY = 'standard'
-
 // Exit-code meanings for cron_outcome events (from the fetch.sh legend).
 // 2/3 are the WRAPPER's config errors only; the runner's own failures use a
 // separate >=64 band so a model/usage/auth failure is never labeled a config

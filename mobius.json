@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "2.8.7",
+  "version": "2.8.8",
   "description": "While you sleep, Möbius learns from recent work, improves its own approach, anticipates what may help next, and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
@@ -26,10 +26,7 @@
       "primary_agent_mode": "system",
       "secondary_agent_mode": "system",
       "fallback_provider": null,
-      "fallback_model": null,
-      "verbosity": "standard",
-      "focus": null,
-      "avoid": null
+      "fallback_model": null
     }
   },
   "offline": {

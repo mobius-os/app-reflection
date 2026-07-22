@@ -629,28 +629,6 @@ button.rf-card { cursor: pointer; }
   padding: 10px 12px; border-radius: 11px;
   background: var(--bg); border: 1px solid var(--border);
 }
-.rf-model-label {
-  font-size: 12px; color: var(--muted); font-weight: 750;
-  letter-spacing: 0; margin-top: 4px;
-}
-.rf-textarea {
-  width: 100%; min-height: 64px; padding: 9px 12px;
-  border: 1px solid var(--border); border-radius: 10px;
-  background: var(--bg); color: var(--text); font-size: 14px;
-  font-family: var(--font); resize: vertical; line-height: 1.5;
-  box-sizing: border-box;
-}
-.rf-textarea:focus:not(:focus-visible) { outline: none; }
-.rf-verbosity-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-.rf-verb-btn {
-  flex: 1; min-height: 44px; padding: 8px 12px; border-radius: 10px;
-  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
-  font-size: 13px; font-weight: 650; cursor: pointer; font-family: var(--font);
-  transition: background .14s, border-color .14s, color .14s;
-  touch-action: manipulation; user-select: none; text-align: center;
-}
-.rf-verb-btn.is-active { border-color: ${ACCENT}; color: ${ACCENT}; background: ${ACCENT_DIM}; }
-.rf-verb-hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
 .rf-save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
 .rf-save-btn {
   padding: 10px 22px; border-radius: 12px; border: none;

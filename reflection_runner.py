@@ -711,11 +711,6 @@ def build_goal(settings: dict) -> str:
   from datetime import date
   today = date.today().isoformat()
   exclude = _bounded_excludes(settings.get("exclude_apps"))
-  verbosity = settings.get("verbosity")
-  if verbosity not in {"terse", "standard", "chatty"}:
-    verbosity = "standard"
-  focus = _bounded_owner_text(settings.get("focus"))
-  avoid = _bounded_owner_text(settings.get("avoid"))
   cron = _safe_cron_hint(settings.get("cron"))
   inputs_dir = DATA_DIR / "apps" / "reflection" / "inputs"
   lines = [
@@ -787,6 +782,13 @@ def build_goal(settings: dict) -> str:
     "                          triage it first, then open/fork only the sessions",
     "                          whose activity can change tonight's conclusions",
     "  - prev-report.html      yesterday's brief (don't repeat yourself)",
+    "  - prev-report-name.txt  filename/date of that brief. Engagement is",
+    "                          report-aligned: classify non-response only if",
+    "                          prev-report.html has a valid non-empty question",
+    "                          carrier and no staged answer has that exact",
+    "                          report_date. A missing/empty carrier asked",
+    "                          nothing; an older answer proves nothing about",
+    "                          this report. See the skill's phase 0 contract.",
     "  - prev-question-answers.json  the partner's taps on a recent brief's",
     "                          question cards — saved for THIS run (no live",
     "                          agent waited). Read in phase 0; ACT on each in",
@@ -804,8 +806,6 @@ def build_goal(settings: dict) -> str:
     f"Your working directory is {DATA_DIR}. You have a real token "
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
     "Commit as you go with pm-commit.",
-    "",
-    f"Owner settings for this run: brief verbosity is {verbosity}.",
   ]
   storage_dir = reflection_storage_dir()
   if storage_dir is not None:
@@ -815,10 +815,6 @@ def build_goal(settings: dict) -> str:
       f"Saved schedule preference: {cron}. If the installed Reflection cron "
       "differs, reconcile it using the cron skill before the run ends."
     )
-  if focus:
-    lines.append(f"The owner asked you to PRIORITISE tonight: {focus}")
-  if avoid:
-    lines.append(f"The owner asked you to AVOID tonight: {avoid}")
   if exclude:
     lines.append(
       f"\nThe owner asked you to SKIP these apps tonight: {', '.join(map(str, exclude))}."
