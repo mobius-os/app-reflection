@@ -83,8 +83,10 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 # The Codex path does `from app.codex_sdk_runner import ...` (the Claude path
@@ -141,6 +143,18 @@ BRIEF_TEMPLATE_DEST = DATA_DIR / "apps" / "reflection" / "reflection-brief-templ
 # SDK-side ceiling so a wedged loop can't spin forever even if the timeout
 # were removed.
 DEFAULT_MAX_TURNS = 60
+
+# The Codex SDK publishes command output and assistant prose as streaming
+# deltas, then publishes one authoritative completed item. Reflection has no
+# SSE consumer, so its adapter turns that stream into a diagnostic trace. A
+# per-run byte ceiling is a second line of defence: even SDK shape drift or a
+# pathological number of completed items cannot grow one night's trace without
+# bound. The wrapper separately rotates the cross-run file at a safe boundary.
+CODEX_TRACE_BUDGET_BYTES = 64 * 1024
+CODEX_TRACE_SUMMARY_RESERVE_BYTES = 512
+CODEX_LOG_PREVIEW_CHARS = 500
+CODEX_LOG_SOURCE_CHARS = 2_000
+CODEX_MAX_PENDING_TOOLS = 64
 
 # Default provider/model when settings.json doesn't pin one. Reflection
 # defaults to Claude (the production default provider); the owner can
@@ -880,29 +894,264 @@ def _drain_message(sdk_msg, log_fh) -> None:
 
 
 class _LogBroadcast:
-  """Minimal broadcast shim for the unattended Codex runner path."""
+  """Bounded, semantic log sink for the unattended Codex runner.
 
-  def __init__(self, log_fh):
+  ``run_codex_sdk_turn`` uses the same event contract as live chat: assistant
+  text and command output arrive in many deltas, followed by authoritative
+  ``text_final`` / ``tool_end`` events. Logging every delta made one ordinary
+  night hundreds of lines and caused the next run's raw tail to consist mostly
+  of minified command output. This sink instead writes one start and one
+  result line per tool, plus one line per completed assistant message.
+
+  The lock is intentionally local to the adapter. Today the SDK calls
+  ``publish`` from one asyncio task, but a synchronous callback is cheap to
+  make safe if a future SDK dispatches item notifications from worker threads.
+  ``close`` flushes incomplete items after an exception/cancellation so the last
+  useful clue is not lost.
+  """
+
+  def __init__(self, log_fh, *, byte_budget: int = CODEX_TRACE_BUDGET_BYTES):
     self.log_fh = log_fh
+    self.byte_budget = max(CODEX_TRACE_SUMMARY_RESERVE_BYTES, int(byte_budget))
+    self._lock = threading.Lock()
+    self._tools: dict[str, dict] = {}
+    self._active_tool: str | None = None
+    self._anonymous_tool_seq = 0
+    self._text_sample = ""
+    self._text_chars = 0
+    self._text_chunks = 0
+    self._bytes_written = 0
+    self._suppressed_lines = 0
+    self._suppressed_bytes = 0
+    self._closed = False
 
-  def publish(self, event: dict) -> None:
+  @staticmethod
+  def _preview(
+    value, limit: int = CODEX_LOG_PREVIEW_CHARS, *, total_chars: int | None = None,
+  ) -> str:
+    if isinstance(value, str):
+      raw = value
+    else:
+      raw = json.dumps(
+        value, ensure_ascii=True, default=str, separators=(",", ":"),
+      )
+    compact = " ".join(raw.split())
+    if len(compact) <= limit:
+      return compact
+    marker = f" ... [{total_chars or len(compact)} chars] ... "
+    remaining = max(0, limit - len(marker))
+    head = remaining * 2 // 3
+    tail = remaining - head
+    return f"{compact[:head]}{marker}{compact[-tail:] if tail else ''}"
+
+  @staticmethod
+  def _bounded_source(value: str, limit: int = CODEX_LOG_SOURCE_CHARS) -> str:
+    """Keep the true start and true end of a growing diagnostic string.
+
+    Calling this repeatedly as ``sample = _bounded_source(sample + delta)``
+    is safe: once ``sample`` contains the original head and current tail, the
+    next call preserves that head and advances the tail to include the delta.
+    """
+    if len(value) <= limit:
+      return value
+    head = limit // 2
+    tail = limit - head
+    return value[:head] + value[-tail:]
+
+  def _write(self, line: str, *, force: bool = False) -> None:
     if self.log_fh is None:
       return
+    payload = line.rstrip() + "\n"
+    size = len(payload.encode("utf-8", errors="replace"))
+    ordinary_limit = max(
+      0, self.byte_budget - CODEX_TRACE_SUMMARY_RESERVE_BYTES,
+    )
+    if not force and self._bytes_written + size > ordinary_limit:
+      self._suppressed_lines += 1
+      self._suppressed_bytes += size
+      return
     try:
-      kind = event.get("type") if isinstance(event, dict) else None
-      if kind == "text":
-        text = (event.get("content") or "").strip()
-        if text:
-          self.log_fh.write(f"  > {text[:500]}\n")
-      elif kind in ("tool_start", "tool_output", "error", "session_init"):
-        self.log_fh.write(
-          "  · codex "
-          + json.dumps(event, ensure_ascii=True, default=str)[:500]
-          + "\n"
-        )
+      self.log_fh.write(payload)
       self.log_fh.flush()
-    except OSError:
+      self._bytes_written += size
+    except (OSError, ValueError):
       pass
+
+  def _event_tool_key(self, event: dict, *, create: bool = False) -> str | None:
+    raw = event.get("tool_use_id")
+    if raw is not None and str(raw):
+      return self._preview(str(raw), 160)
+    if self._active_tool is not None:
+      return self._active_tool
+    if not create:
+      return None
+    self._anonymous_tool_seq += 1
+    return f"anonymous-{self._anonymous_tool_seq}"
+
+  def _make_tool_room(self) -> None:
+    # The documented SDK contract does not interleave tools, but cap the state
+    # anyway so missing tool_end events under future shape drift cannot retain
+    # an unbounded number of 2 KiB previews until the two-hour timeout.
+    while len(self._tools) >= CODEX_MAX_PENDING_TOOLS:
+      self._flush_tool(next(iter(self._tools)), complete=False)
+
+  def _start_tool(self, event: dict) -> None:
+    key = self._event_tool_key(event, create=True)
+    assert key is not None
+    # A repeated id means the prior item never reached tool_end. Preserve its
+    # accumulated clue before replacing it rather than merging two invocations.
+    if key in self._tools:
+      self._flush_tool(key, complete=False)
+    self._make_tool_room()
+    tool = self._preview(event.get("tool") or "tool", 120)
+    input_preview = self._preview(event.get("input") or "", 240)
+    self._tools[key] = {
+      "tool": tool,
+      "input": input_preview,
+      "output_events": 0,
+      "output_chars": 0,
+      "last_output": "",
+      "last_output_chars": 0,
+    }
+    self._active_tool = key
+    suffix = f" input={input_preview}" if input_preview else ""
+    self._write(f"  · codex tool_start tool={tool} id={key}{suffix}")
+
+  def _record_tool_output(self, event: dict) -> None:
+    key = self._event_tool_key(event, create=True)
+    assert key is not None
+    if key not in self._tools:
+      self._make_tool_room()
+      self._tools[key] = {
+        "tool": "unknown",
+        "input": "",
+        "output_events": 0,
+        "output_chars": 0,
+        "last_output": "",
+        "last_output_chars": 0,
+      }
+    content = str(event.get("content") or "")
+    state = self._tools[key]
+    state["output_events"] += 1
+    state["output_chars"] += len(content)
+    # The completed item is the final output event before tool_end. Keep only
+    # its true head/tail in memory; the summary still records its full length,
+    # and the raw SDK stream cannot make this process grow unbounded.
+    state["last_output"] = self._bounded_source(content)
+    state["last_output_chars"] = len(content)
+    self._active_tool = key
+
+  def _flush_tool(self, key: str, *, complete: bool) -> None:
+    state = self._tools.pop(key, None)
+    if state is None:
+      return
+    preview = self._preview(
+      state["last_output"], total_chars=state["last_output_chars"],
+    )
+    input_suffix = f" input={state['input']}" if state["input"] else ""
+    output_suffix = f" preview={preview}" if preview else ""
+    status = "complete" if complete else "incomplete"
+    self._write(
+      "  · codex tool_result "
+      f"tool={state['tool']} id={key} state={status}{input_suffix} "
+      f"output_events={state['output_events']} "
+      f"stream_chars={state['output_chars']} "
+      f"final_chars={state['last_output_chars']}{output_suffix}"
+    )
+    if self._active_tool == key:
+      self._active_tool = None
+
+  def _record_text(self, content) -> None:
+    text = str(content or "")
+    if not text:
+      return
+    self._text_chars += len(text)
+    self._text_chunks += 1
+    self._text_sample = self._bounded_source(self._text_sample + text)
+
+  def _flush_text(self, *, complete: bool) -> None:
+    if self._text_chars <= 0:
+      self._text_sample = ""
+      self._text_chunks = 0
+      return
+    preview = self._preview(self._text_sample, total_chars=self._text_chars)
+    status = "complete" if complete else "incomplete"
+    self._write(
+      f"  > codex message state={status} chunks={self._text_chunks} "
+      f"chars={self._text_chars}: {preview}"
+    )
+    self._text_sample = ""
+    self._text_chars = 0
+    self._text_chunks = 0
+
+  def publish(self, event: dict) -> None:
+    if self.log_fh is None or not isinstance(event, dict):
+      return
+    with self._lock:
+      if self._closed:
+        return
+      try:
+        kind = event.get("type")
+        if kind == "text_boundary":
+          self._flush_text(complete=False)
+        elif kind == "text":
+          self._record_text(event.get("content"))
+        elif kind == "text_final":
+          # The completed item is authoritative, so replace (rather than
+          # append to) the accumulated deltas and record one semantic line.
+          text = str(event.get("content") or "")
+          if text:
+            self._text_sample = self._bounded_source(text)
+            self._text_chars = len(text)
+            self._text_chunks = max(1, self._text_chunks)
+          self._flush_text(complete=True)
+        elif kind == "tool_start":
+          self._flush_text(complete=False)
+          self._start_tool(event)
+        elif kind == "tool_output":
+          self._record_tool_output(event)
+        elif kind == "tool_end":
+          key = self._event_tool_key(event)
+          if key is not None:
+            self._flush_tool(key, complete=True)
+        elif kind == "tool_input":
+          key = self._event_tool_key(event)
+          if key in self._tools:
+            # WebSearch backfills its real query at completion. Replace the
+            # bounded descriptor rather than appending: repeated metadata
+            # events must not create an unbounded in-memory string.
+            self._tools[key]["input"] = self._preview(
+              event.get("input") or "", 160,
+            )
+        elif kind == "error":
+          self._flush_text(complete=False)
+          for key in list(self._tools):
+            self._flush_tool(key, complete=False)
+          message = event.get("message") or event.get("content") or "error"
+          self._write(f"  ! codex error: {self._preview(message)}")
+        elif kind == "session_init":
+          session_id = self._preview(event.get("session_id") or "(none)", 160)
+          self._write(f"  · codex session_init id={session_id}")
+      except (OSError, TypeError, ValueError):
+        # A malformed diagnostic event must never abort the nightly run.
+        pass
+
+  def close(self) -> None:
+    """Flush incomplete semantic items and the byte-budget summary once."""
+    with self._lock:
+      if self._closed:
+        return
+      self._flush_text(complete=False)
+      for key in list(self._tools):
+        self._flush_tool(key, complete=False)
+      if self._suppressed_lines:
+        self._write(
+          "  ! codex trace budget reached: "
+          f"suppressed_lines={self._suppressed_lines} "
+          f"suppressed_bytes={self._suppressed_bytes}",
+          force=True,
+        )
+      self._closed = True
 
 
 async def _drain_session(
@@ -1100,6 +1349,7 @@ async def _run_codex_session(
   Codex has no max_turns option — the wrapper's wall-clock timeout is
   its hard bound, and the goal text carries any turn guidance.
   """
+  broadcast = _LogBroadcast(log_fh)
   try:
     from app.codex_sdk_runner import run_codex_sdk_turn
     result = await run_codex_sdk_turn(
@@ -1108,7 +1358,7 @@ async def _run_codex_session(
       base_env=env,
       cwd=str(DATA_DIR),
       chat_id="reflection-nightly",
-      bc=_LogBroadcast(log_fh),
+      bc=broadcast,
       pending_questions={},
       db=None,
       agent_settings={
@@ -1120,6 +1370,8 @@ async def _run_codex_session(
   except Exception as exc:
     _log(f"ERROR codex runner failed: {exc!r}")
     return 1
+  finally:
+    broadcast.close()
   if result.get("error"):
     err = str(result.get("error") or "")
     _log(f"WARN codex run ended in error: {err}")
@@ -1339,11 +1591,55 @@ async def run() -> int:
         pass
 
 
+async def _run_with_sigterm_shutdown() -> int:
+  """Run with SIGTERM translated into graceful asyncio cancellation.
+
+  GNU ``timeout`` sends SIGTERM at the wrapper's wall-clock deadline. Python's
+  default action exits immediately, skipping ``finally`` blocks and therefore
+  losing the in-flight Codex tool summary. Cancel the main task instead so SDK
+  teardown, ``_LogBroadcast.close()``, and the log descriptor close all run.
+  The wrapper's ``timeout --kill-after=60`` remains the bounded escalation if a
+  provider teardown wedges; GNU timeout still reports 124 once its deadline
+  fired even though this child returns the conventional 143 after cleanup.
+  """
+  loop = asyncio.get_running_loop()
+  task = asyncio.current_task()
+  sigterm_received = False
+
+  def request_shutdown() -> None:
+    nonlocal sigterm_received
+    if sigterm_received:
+      return
+    sigterm_received = True
+    _log("SIGTERM received; cancelling Reflection for graceful shutdown")
+    if task is not None:
+      task.cancel()
+
+  installed = False
+  try:
+    loop.add_signal_handler(signal.SIGTERM, request_shutdown)
+    installed = True
+  except (NotImplementedError, RuntimeError):
+    # Non-POSIX/event-loop fallback retains the prior platform behaviour.
+    pass
+
+  try:
+    return await run()
+  except asyncio.CancelledError:
+    if not sigterm_received:
+      raise
+    _log("SIGTERM graceful shutdown complete")
+    return 128 + signal.SIGTERM
+  finally:
+    if installed:
+      loop.remove_signal_handler(signal.SIGTERM)
+
+
 def main() -> int:
   """Synchronous entry point for the wrapper / CLI."""
   logging.basicConfig(level=logging.INFO)
   try:
-    return asyncio.run(run())
+    return asyncio.run(_run_with_sigterm_shutdown())
   except KeyboardInterrupt:
     _log("interrupted")
     return 130
