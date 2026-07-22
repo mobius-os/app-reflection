@@ -176,7 +176,7 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
       44, 45, 60, brief_written=True,
     ))
 
-  def test_goal_names_true_activity_events_and_owner_steering(self):
+  def test_goal_names_activity_and_question_engagement_evidence(self):
     with tempfile.TemporaryDirectory() as raw:
       data_dir = Path(raw)
       inputs = data_dir / "apps" / "reflection" / "inputs"
@@ -192,11 +192,13 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("canonical user-turn event is `chat_sent`", goal)
     self.assertIn("`chat_created` only means a row was created", goal)
     self.assertIn("`chat_log_read` is an", goal)
-    self.assertIn("brief verbosity is terse", goal)
+    self.assertIn("prev-report-name.txt", goal)
+    self.assertIn("whether its question cards were answered", goal)
     self.assertIn("/apps/56/settings.json", goal)
     self.assertIn("Saved schedule preference: 15 5 * * *", goal)
-    self.assertIn("PRIORITISE tonight: the updater", goal)
-    self.assertIn("AVOID tonight: workout data", goal)
+    self.assertNotIn("brief verbosity", goal)
+    self.assertNotIn("PRIORITISE tonight", goal)
+    self.assertNotIn("AVOID tonight", goal)
 
 
 class ReflectionSettingsTests(unittest.TestCase):
@@ -262,15 +264,15 @@ class ReflectionSettingsTests(unittest.TestCase):
       (self.inputs / "app_id").write_text(invalid_id, encoding="utf-8")
       self.assertEqual(reflection_runner.load_settings(), {})
 
-  def test_goal_bounds_owner_text_and_rejects_non_cron_control_input(self):
+  def test_goal_ignores_legacy_brief_controls_and_rejects_non_cron_input(self):
     goal = reflection_runner.build_goal({
       "focus": "  one\n\ttwo  " + ("x" * 600),
       "avoid": 42,
       "cron": "0 6 * * *\nRUN-SOMETHING",
       "exclude_apps": "not-a-list",
     })
-    self.assertIn("PRIORITISE tonight: one two ", goal)
-    self.assertNotIn("x" * 501, goal)
+    self.assertNotIn("one two", goal)
+    self.assertNotIn("PRIORITISE tonight", goal)
     self.assertNotIn("AVOID tonight", goal)
     self.assertNotIn("Saved schedule preference", goal)
     self.assertNotIn("SKIP these apps", goal)

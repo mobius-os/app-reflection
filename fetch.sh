@@ -64,6 +64,11 @@ export CODEX_HOME="${CODEX_HOME:-$DATA_DIR/cli-auth/codex}"
 export API_BASE_URL DATA_DIR
 
 mkdir -p "$DATA_DIR/cron-logs" "$INPUTS"
+# Optional engagement inputs must describe THIS run's predecessor. Without
+# clearing them first, a night with no new answer file would inherit an older
+# answer and falsely look engaged forever.
+rm -f "$INPUTS/prev-report.html" "$INPUTS/prev-report-name.txt" \
+  "$INPUTS/prev-question-answers.json"
 log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
 
 # emit_outcome <exit_code> — one cron_outcome activity event recording
@@ -441,6 +446,7 @@ except Exception as exc:
 PY
 )"
 if [[ -n "$PREV" ]]; then
+  printf '%s\n' "$PREV" >"$INPUTS/prev-report-name.txt"
   curl -s "${auth[@]}" "$API_BASE_URL/api/storage/apps/$APP_ID/reports/$PREV" \
     >"$INPUTS/prev-report.html" 2>>"$LOG" || true
 fi
