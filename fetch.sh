@@ -594,6 +594,19 @@ def add_request_error(groups, ev):
     if last_ts and last_ts > group["last_ts"]:
         group["last_ts"] = last_ts
 
+def is_expected_storage_miss(ev):
+    """A missing optional app document is storage state, not an app failure."""
+    try:
+        status = int(ev.get("status"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        status == 404
+        and str(ev.get("method") or "").upper() in {"GET", "DELETE"}
+        and str(ev.get("route") or "")
+        == "/api/storage/apps/{app_id}/{path:path}"
+    )
+
 def top_request_errors(groups):
     return sorted(
         groups.values(),
@@ -637,6 +650,8 @@ if activity_source.get("ok"):
                 raw_app_id = ev.get("app_id")
                 aid = str(raw_app_id) if raw_app_id is not None else ""
                 if ev.get("ev") == "request_error":
+                    if is_expected_storage_miss(ev):
+                        continue
                     groups = request_errors_by_app.setdefault(aid, {}) if aid else shell_request_errors
                     add_request_error(groups, ev)
                     continue

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -46,6 +46,11 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       ev: 'request_error', ts: now, app_id: 1, method: 'GET',
       route: '/api/storage/apps/{app_id}/{path:path}', status: 404,
       count: 1320, first_ts: now, last_ts: now, duration_ms: 59900,
+    },
+    {
+      ev: 'request_error', ts: now, app_id: 1, method: 'POST',
+      route: '/api/apps/{app_id}/compile', status: 500,
+      count: 2, first_ts: now, last_ts: now, duration_ms: 200,
     },
     {
       ev: 'app_signal', ts: now, app_id: 1, id: 'signal-1',
@@ -126,20 +131,20 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const chats = await readFile(join(inputs, 'chats.md'), 'utf8')
     assert.equal(snapshot, activity)
     assert.equal(status.ok, true)
-    assert.equal(status.event_count, 4)
+    assert.equal(status.event_count, 5)
     assert.equal(status.sha256, createHash('sha256').update(activity).digest('hex'))
     assert.equal(digest.activity_source.ok, true)
     assert.equal(digest.apps[0].opens_24h, 1)
     assert.equal(digest.apps[0].signal_counts.item_created, 1)
     assert.equal(digest.apps[0].app_errors_24h, 1)
     assert.equal(digest.apps[0].recent_app_errors[0].message, 'render failed')
-    assert.equal(digest.apps[0].request_errors_24h, 1320)
+    assert.equal(digest.apps[0].request_errors_24h, 2)
     assert.deepEqual(digest.apps[0].top_request_errors[0], {
-      method: 'GET',
-      route: '/api/storage/apps/{app_id}/{path:path}',
-      status: 404,
-      count: 1320,
-      peak_window_count: 1320,
+      method: 'POST',
+      route: '/api/apps/{app_id}/compile',
+      status: 500,
+      count: 2,
+      peak_window_count: 2,
       first_ts: now,
       last_ts: now,
     })
@@ -230,7 +235,9 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     // while the wrapper still records/returns timeout's canonical rc=124.
     const fakeBackend = join(dataDir, 'fake-backend')
     const fakeApp = join(fakeBackend, 'app')
+    const fakeScripts = join(fakeBackend, 'scripts')
     await mkdir(fakeApp, { recursive: true })
+    await mkdir(fakeScripts, { recursive: true })
     await writeFile(join(fakeApp, '__init__.py'), '')
     await writeFile(join(fakeApp, 'background_agents.py'), `
 def resolve_background_agents(data_dir, settings):
@@ -249,13 +256,19 @@ async def run_codex_sdk_turn(**kwargs):
     const skillDir = join(dataDir, 'shared', 'skills')
     await mkdir(skillDir, { recursive: true })
     await writeFile(join(skillDir, 'reflection.md'), 'Test reflection skill.\n')
+    const fakeRunner = join(fakeScripts, 'reflection_runner.py')
+    await copyFile(join(appRoot, 'reflection_runner.py'), fakeRunner)
     let timeoutError
     try {
       await run({
         REFLECTION_DRY: '0',
-        REFLECTION_TIMEOUT: '1',
+        // The real runner takes a best-effort pre-run safety snapshot before
+        // it starts the provider. Leave enough headroom for that unrelated
+        // host work so this test deterministically reaches the fake provider
+        // and exercises cancellation of its in-flight tool.
+        REFLECTION_TIMEOUT: '3',
         REFLECTION_LOG_MAX_BYTES: '1048576',
-        REFLECTION_RUNNER: join(appRoot, 'reflection_runner.py'),
+        REFLECTION_RUNNER: fakeRunner,
         PYTHONPATH: [fakeBackend, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
       })
     } catch (error) {
@@ -266,7 +279,7 @@ async def run_codex_sdk_turn(**kwargs):
     assert.match(timeoutLog, /SIGTERM received; cancelling Reflection/)
     assert.match(timeoutLog, /id=term-tool state=incomplete/)
     assert.match(timeoutLog, /UNIQUE-TERM-CONCLUSION/)
-    assert.match(timeoutLog, /agent run hit the 1s timeout/)
+    assert.match(timeoutLog, /agent run hit the 3s timeout/)
     assert.match(timeoutLog, /done \(rc=124\)/)
   } finally {
     server.closeAllConnections()
