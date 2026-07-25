@@ -863,6 +863,8 @@ if [[ -r "$RESOURCE_MONITOR" ]]; then
   if ! python3 "$RESOURCE_MONITOR" snapshot \
       --data-dir "$DATA_DIR" \
       --runtime-root / \
+      --memory-api "$API_BASE_URL" \
+      --token-file "$TOKEN_FILE" \
       --output "$INPUTS/resource-snapshot.json" \
       --history "$RESOURCE_HISTORY" \
       --state "$RESOURCE_STATE" 2>>"$LOG"; then
