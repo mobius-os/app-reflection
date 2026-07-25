@@ -106,7 +106,7 @@ export const CSS = `
   border: 1px solid var(--border);
 }
 .rf-empty-mark-glyph { font-size: 34px; animation: rf-drift 6s ease-in-out infinite; }
-.rf-empty-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: 0; margin-bottom: 8px; }
+.rf-empty-title { margin: 0 0 8px; font-size: 17px; line-height: 1.3; font-weight: 700; color: var(--text); letter-spacing: 0; }
 /* /mobius-ui:Empty */
 
 /* mobius-ui:Card v1 — keep in sync; library candidate. Diverge below the marker only. */
@@ -282,6 +282,7 @@ button.rf-card { cursor: pointer; }
   font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: var(--font);
   touch-action: manipulation; user-select: none;
 }
+@media (hover:hover) { .rf-retry-btn:hover { background: ${ACCENT_DIM}; } }
 .rf-empty-action {
   align-self: center;
   margin-top: 14px;

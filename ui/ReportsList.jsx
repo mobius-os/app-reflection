@@ -59,7 +59,7 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
   }, [appId, storage, reloadKey])
 
   // Live refresh: a new brief written while the app is open should appear
-  // without a manual "Try again" or a full iframe reload. The cron updates
+  // without a manual retry or a full iframe reload. The cron updates
   // state.json (last_run/streak) on every overnight pass, so a change there is
   // the signal that a new brief just landed — re-list when it fires. subscribe
   // delivers the current value immediately on register; we skip that first
@@ -84,24 +84,28 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
 
   if (phase === 'loading' && dates.length === 0) {
     return (
-      <div className="rf-loading-wrap">
+      <div className="rf-loading-wrap" role="status" aria-live="polite">
         <span className="rf-spinner" aria-hidden="true" />
-        <div>Gathering last night’s brief…</div>
+        <div>Checking for briefs…</div>
       </div>
     )
   }
 
   if (phase === 'error' && dates.length === 0) {
     return (
-      <div className="rf-error-box">
+      <div className="rf-error-box" role="alert">
         <span>
           {online
             ? 'Couldn’t load your briefs just now.'
             : 'You’re offline and there’s nothing cached yet.'}
         </span>
         {online && (
-          <button className="rf-retry-btn rf-pressable" onClick={() => setReloadKey((k) => k + 1)}>
-            Try again
+          <button
+            type="button"
+            className="rf-retry-btn rf-pressable"
+            onClick={() => setReloadKey((k) => k + 1)}
+          >
+            Try Again
           </button>
         )}
       </div>
@@ -114,16 +118,15 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
         <div className="rf-empty-mark">
           <span className="rf-empty-mark-glyph" aria-hidden="true">🌙</span>
         </div>
-        <div className="rf-empty-title">No briefs yet</div>
-        Reflection runs overnight — reviewing what the day’s agents learned,
-        tending your apps, and proposing system improvements. Your first morning brief will
-        be waiting right here.
+        <h2 className="rf-empty-title">No Briefs Yet</h2>
+        Reflection runs on the schedule in Settings. After its first completed
+        run, your morning brief will appear here.
         <button
           type="button"
           className="rf-retry-btn rf-empty-action rf-pressable"
           onClick={onSetup}
         >
-          Open Settings
+          Review Schedule
         </button>
       </div>
     )

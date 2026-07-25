@@ -13,6 +13,18 @@ test('brief and settings tabs use roving focus and labelled tab panels', () => {
   assert.match(app, /role="tabpanel" aria-labelledby="rf-tab-settings"/)
 })
 
+test('reports loading and empty states describe the real work', () => {
+  const reports = readFileSync(new URL('../ui/ReportsList.jsx', import.meta.url), 'utf8')
+  assert.match(reports, /role="status" aria-live="polite"/)
+  assert.match(reports, /className="rf-error-box" role="alert"/)
+  assert.match(reports, /Checking for briefs…/)
+  assert.match(reports, /Reflection runs on the schedule in Settings\./)
+  assert.match(reports, /<h2 className="rf-empty-title">No Briefs Yet<\/h2>/)
+  assert.match(reports, /Try Again/)
+  assert.match(reports, /Review Schedule/)
+  assert.doesNotMatch(reports, /Gathering last night’s brief/)
+})
+
 test('agent overrides default to Settings and use the production-style dialog picker', () => {
   const settings = readFileSync(new URL('../ui/SettingsTab.jsx', import.meta.url), 'utf8')
   const picker = readFileSync(new URL('../ui/ModelPicker.jsx', import.meta.url), 'utf8')
