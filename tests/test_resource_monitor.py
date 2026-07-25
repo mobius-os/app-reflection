@@ -92,6 +92,111 @@ class ResourceMonitorTests(unittest.TestCase):
     self.assertEqual(filesystems["container_root"]["scope"], "container-root")
     self.assertEqual(filesystems["container_root"]["path"], str(self.root))
 
+  def test_compact_memory_report_keeps_groups_without_process_details(self):
+    compact = resource_monitor._compact_memory_report({
+      "process": {
+        "available": True, "pss_bytes": 210, "rss_bytes": 240,
+        "anonymous_bytes": 180, "swap_bytes": 0, "pid": 123,
+      },
+      "cgroup": {
+        "available": True, "current_bytes": 1000,
+        "working_set_bytes": 700, "inactive_file_bytes": 300,
+      },
+      "processes": {
+        "groups": [
+          {
+            "category": "mobius_server", "process_count": 1,
+            "pss_bytes": 210, "anonymous_bytes": 180, "swap_bytes": 0,
+          },
+          {
+            "category": "browser", "process_count": 3,
+            "pss_bytes": 490, "anonymous_bytes": 400, "swap_bytes": 0,
+          },
+        ],
+        "top_processes": [
+          {
+            "pid": 456, "name": "chrome",
+            "owner": "chat-private-label", "pss_bytes": 490,
+          },
+        ],
+      },
+    })
+
+    self.assertTrue(compact["available"])
+    self.assertEqual(compact["server"]["pss_bytes"], 210)
+    self.assertEqual(compact["container"]["working_set_bytes"], 700)
+    self.assertEqual(compact["owners"]["browser"]["pss_bytes"], 490)
+    self.assertNotIn("pid", compact["server"])
+    self.assertNotIn("top_processes", compact)
+    self.assertNotIn("chat-private-label", json.dumps(compact))
+
+  def test_snapshot_compares_server_working_set_and_owner_memory(self):
+    now = dt.datetime(2026, 7, 17, tzinfo=dt.timezone.utc)
+    disk = resource_monitor._filesystem_snapshot(self.data, scope="data-volume")
+    previous_memory = {
+      "available": True,
+      "server": {"pss_bytes": 100},
+      "container": {"working_set_bytes": 800},
+      "owners": {
+        "mobius_server": {"pss_bytes": 100},
+        "browser": {"pss_bytes": 500},
+      },
+    }
+    self.history.write_text(json.dumps({
+      "disk": disk,
+      "filesystems": {
+        "container_root": resource_monitor._filesystem_snapshot(
+          self.root, scope="container-root",
+        ),
+      },
+      "memory": previous_memory,
+    }) + "\n")
+    self.state.write_text(json.dumps({
+      "last_complete_deep_scan_at": (now - dt.timedelta(days=1)).isoformat(),
+    }))
+    current_memory = {
+      "available": True,
+      "server": {"pss_bytes": 125},
+      "container": {"working_set_bytes": 950},
+      "owners": {
+        "mobius_server": {"pss_bytes": 125},
+        "browser": {"pss_bytes": 450},
+        "codex": {"pss_bytes": 75},
+      },
+    }
+
+    snapshot, _ = resource_monitor.make_snapshot(
+      self.data,
+      history_path=self.history,
+      state_path=self.state,
+      runtime_root=self.root,
+      memory_report=current_memory,
+      now=now,
+    )
+
+    trend = snapshot["trend"]["memory"]
+    self.assertTrue(trend["comparable_to_previous"])
+    self.assertEqual(trend["server_pss_bytes_delta"], 25)
+    self.assertEqual(trend["working_set_bytes_delta"], 150)
+    self.assertEqual(trend["owner_pss_bytes_delta"]["browser"], -50)
+    self.assertEqual(trend["owner_pss_bytes_delta"]["codex"], 75)
+
+  def test_memory_fetch_failure_is_non_fatal_and_sanitized(self):
+    token_file = self.root / "service-token.txt"
+    token_file.write_text("test-token")
+    with mock.patch.object(
+      resource_monitor.urllib.request,
+      "urlopen",
+      side_effect=OSError("connection refused at secret host"),
+    ):
+      report = resource_monitor._fetch_memory_report(
+        "http://localhost:8000",
+        token_file,
+      )
+    self.assertFalse(report["available"])
+    self.assertEqual(report["reason"], "request-failed")
+    self.assertNotIn("secret host", json.dumps(report))
+
   def test_root_pressure_survives_an_unrelated_data_volume_and_identity_change(self):
     now = dt.datetime(2026, 7, 17, tzinfo=dt.timezone.utc)
     previous_data = {

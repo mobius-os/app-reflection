@@ -63,13 +63,16 @@ when it was checked and when it is worth checking again.
 ## Bounded resource evidence
 
 `resource_monitor.py` records a small daily snapshot in `resource-history.jsonl`.
-It always reads cheap filesystem and cgroup counters, but walks `/data` only on
-the first run, on its weekly cadence, when disk pressure rises, or when daily
-growth is unusual. The `/data` volume and container-root/host-backing view have
-separate scope and device identities; growth is calculated only across matching
-identities, so a remount cannot be mistaken for reclaimed host space. Deep scans
-have a wall-clock budget and histories are bounded, so the observer cannot
-quietly become the resource leak.
+It always reads cheap filesystem and cgroup counters and takes one compact,
+owner-aware memory sample, but walks `/data` only on the first run, on its weekly
+cadence, when disk pressure rises, or when daily growth is unusual. The memory
+sample keeps only aggregate Möbius, browser, agent, app-service, and tool
+categories; process command lines and per-chat labels are discarded. The
+`/data` volume and container-root/host-backing view have separate scope and
+device identities; growth is calculated only across matching identities, so a
+remount cannot be mistaken for reclaimed host space. Deep scans have a
+wall-clock budget and histories are bounded, so the observer cannot quietly
+become the resource leak.
 
 Reflection records each cleanup or policy decision in
 `resource-decisions.jsonl`: the evidence, action, measured result, next review

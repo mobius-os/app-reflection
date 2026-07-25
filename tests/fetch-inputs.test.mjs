@@ -148,9 +148,11 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       first_ts: now,
       last_ts: now,
     })
-    assert.equal(resources.version, 2)
+    assert.equal(resources.version, 3)
     assert.equal(resources.filesystems.data_volume.scope, 'data-volume')
     assert.equal(resources.filesystems.container_root.scope, 'container-root')
+    assert.equal(resources.memory.available, false)
+    assert.equal(resources.memory.reason, 'http-404')
     assert.equal(memoryHealth.available, false)
     assert.equal(memoryHealth.writer_contract.reflection_may_write_graph, false)
     assert.equal(resources.deep_scan.ran, true)

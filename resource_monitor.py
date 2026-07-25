@@ -17,11 +17,13 @@ import os
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 
-VERSION = 2
+VERSION = 3
 DEFAULT_DEEP_INTERVAL_DAYS = 7
 DEFAULT_DEEP_BUDGET_SECONDS = 30
 DEFAULT_HISTORY_ENTRIES = 90
@@ -29,6 +31,7 @@ DEFAULT_LEDGER_ENTRIES = 200
 DEFAULT_MAX_LOG_BYTES = 2 * 1024 * 1024
 DEFAULT_WARN_PERCENT = 75
 DEFAULT_CRITICAL_PERCENT = 85
+DEFAULT_MEMORY_TIMEOUT_SECONDS = 3
 SESSION_AGE_DAYS = (14, 45)
 CACHE_PARTS = {
   "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache",
@@ -174,6 +177,139 @@ def _runtime_counters() -> dict[str, Any]:
   io = _io_totals(root / "io.stat")
   if io:
     result["io"] = io
+  return result
+
+
+def _compact_memory_report(payload: object) -> dict[str, Any]:
+  """Keep the durable owner trend small and free of process command lines."""
+  if not isinstance(payload, dict):
+    return {"available": False, "reason": "invalid-response"}
+  process = payload.get("process")
+  cgroup = payload.get("cgroup")
+  processes = payload.get("processes")
+  if not isinstance(process, dict) or not process.get("available"):
+    return {"available": False, "reason": "server-memory-unavailable"}
+  if not isinstance(cgroup, dict) or not cgroup.get("available"):
+    return {"available": False, "reason": "cgroup-memory-unavailable"}
+
+  server = {
+    key: process.get(key)
+    for key in (
+      "pss_bytes", "rss_bytes", "anonymous_bytes", "swap_bytes",
+      "threads", "uptime_seconds",
+    )
+    if isinstance(process.get(key), (int, float))
+  }
+  container = {
+    key: cgroup.get(key)
+    for key in (
+      "current_bytes", "working_set_bytes", "limit_bytes",
+      "swap_current_bytes", "anon_bytes", "file_bytes",
+      "inactive_file_bytes", "kernel_bytes", "pressure",
+    )
+    if cgroup.get(key) is not None
+  }
+  owners: dict[str, dict[str, int]] = {}
+  raw_groups = processes.get("groups", []) if isinstance(processes, dict) else []
+  for group in raw_groups:
+    if not isinstance(group, dict):
+      continue
+    category = group.get("category")
+    if not isinstance(category, str) or not category:
+      continue
+    owners[category] = {
+      key: value
+      for key in (
+        "process_count", "pss_bytes", "anonymous_bytes", "swap_bytes",
+      )
+      if isinstance((value := group.get(key)), int)
+    }
+  return {
+    "available": True,
+    "server": server,
+    "container": container,
+    "owners": dict(sorted(owners.items())),
+  }
+
+
+def _fetch_memory_report(
+  api_base_url: str,
+  token_file: Path,
+  *,
+  timeout_seconds: int = DEFAULT_MEMORY_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+  """Fetch one authenticated sample; telemetry failure never fails Reflection."""
+  try:
+    token = token_file.read_text(encoding="utf-8").strip()
+  except OSError:
+    return {"available": False, "reason": "token-unavailable"}
+  if not token or not api_base_url.strip():
+    return {"available": False, "reason": "not-configured"}
+  request = urllib.request.Request(
+    api_base_url.rstrip("/")
+    + "/api/debug/memory?allocation_limit=0&process_limit=0",
+    headers={
+      "Authorization": f"Bearer {token}",
+      "Accept": "application/json",
+      "User-Agent": "mobius-reflection-resource-monitor",
+    },
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+      payload = json.load(response)
+  except urllib.error.HTTPError as exc:
+    return {"available": False, "reason": f"http-{exc.code}"}
+  except (OSError, ValueError, json.JSONDecodeError):
+    return {"available": False, "reason": "request-failed"}
+  return _compact_memory_report(payload)
+
+
+def _memory_trend(
+  previous: dict[str, Any] | None,
+  current: dict[str, Any],
+) -> dict[str, Any]:
+  if not current.get("available"):
+    return {
+      "comparable_to_previous": False,
+      "reason": "current-unavailable",
+    }
+  if not isinstance(previous, dict) or not previous.get("available"):
+    return {
+      "comparable_to_previous": False,
+      "reason": "previous-unavailable",
+    }
+
+  result: dict[str, Any] = {
+    "comparable_to_previous": True,
+    "reason": None,
+  }
+  current_server = current.get("server") or {}
+  previous_server = previous.get("server") or {}
+  current_pss = current_server.get("pss_bytes")
+  previous_pss = previous_server.get("pss_bytes")
+  if isinstance(current_pss, int) and isinstance(previous_pss, int):
+    result["server_pss_bytes_delta"] = current_pss - previous_pss
+
+  current_container = current.get("container") or {}
+  previous_container = previous.get("container") or {}
+  current_working_set = current_container.get("working_set_bytes")
+  previous_working_set = previous_container.get("working_set_bytes")
+  if isinstance(current_working_set, int) and isinstance(previous_working_set, int):
+    result["working_set_bytes_delta"] = (
+      current_working_set - previous_working_set
+    )
+
+  current_owners = current.get("owners") or {}
+  previous_owners = previous.get("owners") or {}
+  owner_deltas = {}
+  for category in sorted(set(current_owners) | set(previous_owners)):
+    current_owner = current_owners.get(category) or {}
+    previous_owner = previous_owners.get(category) or {}
+    current_owner_pss = current_owner.get("pss_bytes", 0)
+    previous_owner_pss = previous_owner.get("pss_bytes", 0)
+    if isinstance(current_owner_pss, int) and isinstance(previous_owner_pss, int):
+      owner_deltas[category] = current_owner_pss - previous_owner_pss
+  result["owner_pss_bytes_delta"] = owner_deltas
   return result
 
 
@@ -393,6 +529,7 @@ def make_snapshot(
   history_path: Path,
   state_path: Path,
   runtime_root: Path | None = None,
+  memory_report: dict[str, Any] | None = None,
   now: dt.datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
   now = now or _now()
@@ -416,6 +553,11 @@ def make_snapshot(
     ((previous.get("filesystems") or {}).get("container_root") or {})
     if previous else None
   )
+  memory = memory_report or {
+    "available": False,
+    "reason": "not-collected",
+  }
+  previous_memory = (previous.get("memory") or {}) if previous else None
   snapshot: dict[str, Any] = {
     "version": VERSION,
     "captured_at": now.isoformat(),
@@ -426,9 +568,11 @@ def make_snapshot(
       "container_root": {**root_disk, "pressure": root_pressure},
     },
     "runtime": _runtime_counters(),
+    "memory": memory,
     "trend": {
       **_trend(previous_disk, disk),
       "container_root": _trend(previous_root, root_disk),
+      "memory": _memory_trend(previous_memory, memory),
     },
     "deep_scan": {"ran": run_deep, "reason": reason},
   }
@@ -462,11 +606,17 @@ def snapshot_command(args: argparse.Namespace) -> int:
   data_dir = Path(args.data_dir).resolve()
   history_path = Path(args.history)
   state_path = Path(args.state)
+  memory_report = _fetch_memory_report(
+    args.memory_api,
+    Path(args.token_file),
+    timeout_seconds=args.memory_timeout,
+  )
   snapshot, state = make_snapshot(
     data_dir,
     history_path=history_path,
     state_path=state_path,
     runtime_root=Path(args.runtime_root).resolve(),
+    memory_report=memory_report,
   )
   _atomic_json(Path(args.output), snapshot)
   _append_bounded(
@@ -514,6 +664,18 @@ def build_parser() -> argparse.ArgumentParser:
   snapshot.add_argument("--output", required=True)
   snapshot.add_argument("--history", required=True)
   snapshot.add_argument("--state", required=True)
+  snapshot.add_argument(
+    "--memory-api", default=os.environ.get("API_BASE_URL", ""),
+    help="Möbius base URL used for one owner-aware memory sample",
+  )
+  snapshot.add_argument(
+    "--token-file", default="/data/service-token.txt",
+    help="owner-scoped service token used for the memory sample",
+  )
+  snapshot.add_argument(
+    "--memory-timeout", type=int, default=DEFAULT_MEMORY_TIMEOUT_SECONDS,
+    help="maximum seconds for the optional memory sample",
+  )
   snapshot.set_defaults(func=snapshot_command)
 
   record = sub.add_parser("record", help="append one bounded resource decision")
