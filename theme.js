@@ -336,6 +336,13 @@ button.rf-card { cursor: pointer; }
   flex-shrink: 0; display: flex; flex-direction: column;
   border-bottom: 1px solid var(--border);
 }
+/* The report iframe must render once to calculate its intrinsic document
+   height. Measure it off-screen behind the loader so the bootstrap 360px
+   height cannot expose the question cards below and then shove them away. */
+.rf-brief-panel.is-measuring {
+  position: absolute; inset: 0 auto auto 0;
+  width: 100%; opacity: 0; pointer-events: none;
+}
 .rf-brief-iframe { width: 100%; border: none; background: var(--bg); display: block; }
 .rf-brief-loading {
   min-height: 320px; display: flex; flex-direction: column;

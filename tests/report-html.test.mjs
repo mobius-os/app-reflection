@@ -115,6 +115,17 @@ test('hardenReportHtml styles details/summary drill-down and the questions card'
   assert.match(hardened, /\.brief-questions\s*\{/)
 })
 
+test('lean brief styling survives a missing root class on semantic report elements', async () => {
+  const { hardenReportHtml } = await bundle()
+
+  const hardened = hardenReportHtml(
+    '<article><section><div class="sec-head"><span class="sec-num">2</span><h2>What I did</h2></div></section></article>',
+  )
+
+  assert.match(hardened, /:where\(\.brief,\s*body\s*>\s*article,\s*body\s*>\s*main\)\s+\.sec-head/)
+  assert.match(hardened, /:where\(\.brief,\s*body\s*>\s*article,\s*body\s*>\s*main\)\s+\.sec-num/)
+})
+
 // ---------------------------------------------------------------------------
 // In-report question carrier: the agent appends an inert JSON carrier as a
 // sibling after the brief root. The React layer must EXTRACT the questions,
