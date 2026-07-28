@@ -1,4 +1,5 @@
 import json
+import datetime as dt
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ class HousekeepingTests(unittest.TestCase):
     self.contrib = self.data / "contrib"
     self.records = self.data / "apps" / "321" / "contributions"
     self.output = self.data / "apps" / "reflection" / "inputs" / "housekeeping.json"
+    self.now = dt.datetime(2026, 7, 28, 20, tzinfo=dt.timezone.utc)
     self.platform.mkdir(parents=True)
     self.contrib.mkdir()
     self.records.mkdir(parents=True)
@@ -51,12 +53,13 @@ class HousekeepingTests(unittest.TestCase):
       git(path, "commit", "-m", name)
     return path, git(path, "rev-parse", "HEAD")
 
-  def write_record(self, record_id, path, head, status="merged"):
+  def write_record(self, record_id, path, head, status="merged", updated_at=None):
     payload = {
       "id": record_id,
       "status": status,
       "url": f"https://example.test/pr/{record_id}" if status == "merged" else None,
       "branch": f"fix/{record_id}",
+      "updated_at": updated_at or "2026-07-27T18:00:00Z",
       "plan": {
         "repo_path": str(path),
         "head_sha": head,
@@ -75,6 +78,7 @@ class HousekeepingTests(unittest.TestCase):
       apply=apply,
       upstream_ref="main",
       active_cwds=active_cwds if active_cwds is not None else set(),
+      now=self.now,
     )
 
   def test_exact_merged_head_is_removed_but_record_is_preserved(self):
@@ -107,6 +111,35 @@ class HousekeepingTests(unittest.TestCase):
       for item in result["needs_reasoning"]
     ))
     self.assertEqual(result["summary"]["preserved"]["actionable-checkout"], 1)
+
+  def test_newly_merged_work_waits_a_full_cycle_before_removal(self):
+    path, head = self.add_worktree("fresh")
+    self.write_record(
+      "fresh", path, head, updated_at="2026-07-28T08:00:00Z",
+    )
+
+    result = self.run_helper()
+
+    self.assertTrue(path.exists())
+    self.assertEqual(result["summary"]["cleaned_count"], 0)
+    self.assertTrue(any(
+      item["path"] == str(path.resolve())
+      and "merged-quarantine" in item["reasons"]
+      for item in result["needs_reasoning"]
+    ))
+
+  def test_merged_record_without_a_trustworthy_time_is_preserved(self):
+    path, head = self.add_worktree("undated")
+    self.write_record("undated", path, head, updated_at="not-a-time")
+
+    result = self.run_helper()
+
+    self.assertTrue(path.exists())
+    self.assertTrue(any(
+      item["path"] == str(path.resolve())
+      and "merged-time-unavailable" in item["reasons"]
+      for item in result["needs_reasoning"]
+    ))
 
   def test_pathful_record_in_another_checkout_cannot_supply_merged_proof(self):
     path, head = self.add_worktree("closed")

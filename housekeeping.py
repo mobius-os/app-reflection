@@ -12,7 +12,9 @@ absent from upstream, but that is evidence for Reflection rather than deletion
 authority: merge topology and worktree intent can still be ambiguous. Even an
 exact merged record is removed only when its checkout is clean, inactive,
 stable, and linked. Prepared or open records, dirty work, standalone clones,
-and ambiguous histories are reported rather than guessed at.
+and ambiguous histories are reported rather than guessed at. A newly merged
+checkout waits one full nightly cycle before removal, so its originating chat
+can finish wrapping up without racing housekeeping.
 
 Dry-run is the default. ``--apply`` enables the narrowly proven removals.
 The structured JSON output is the handoff to the nightly agent.
@@ -35,7 +37,7 @@ from typing import Iterable
 
 VERSION = 1
 ACTIONABLE_STATUSES = {"prepared", "draft", "open", "submitting"}
-MAX_EXCEPTIONS = 100
+MERGED_QUARANTINE = dt.timedelta(hours=24)
 
 
 def _run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -132,6 +134,9 @@ def _load_records(contributions_dir: Path) -> tuple[list[dict], list[str]]:
       "id": str(value.get("id") or path.stem),
       "status": str(value.get("status") or "missing"),
       "url": value.get("url") if isinstance(value.get("url"), str) else None,
+      "updated_at": (
+        value.get("updated_at") if isinstance(value.get("updated_at"), str) else None
+      ),
       "repo_path": plan.get("repo_path") if isinstance(plan.get("repo_path"), str) else None,
       "head_sha": plan.get("head_sha") if isinstance(plan.get("head_sha"), str) else None,
       "branch": (
@@ -141,6 +146,47 @@ def _load_records(contributions_dir: Path) -> tuple[list[dict], list[str]]:
       ),
     })
   return records, errors
+
+
+def _record_time(record: dict) -> dt.datetime | None:
+  raw = record.get("updated_at")
+  if not isinstance(raw, str) or not raw.strip():
+    return None
+  try:
+    parsed = dt.datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+  except ValueError:
+    return None
+  if parsed.tzinfo is None:
+    return None
+  return parsed.astimezone(dt.timezone.utc)
+
+
+def _exact_merged_proof(
+  records: Iterable[dict],
+  head_sha: str | None,
+  now: dt.datetime,
+) -> tuple[dict | None, str | None]:
+  exact = [
+    record for record in records
+    if record["status"] == "merged"
+    and record["url"]
+    and record["head_sha"] == head_sha
+  ]
+  if not exact:
+    return None, "no-exact-merged-head"
+  timed = [(record, _record_time(record)) for record in exact]
+  mature = [
+    (record, observed)
+    for record, observed in timed
+    if observed is not None and now - observed >= MERGED_QUARANTINE
+  ]
+  if mature:
+    # Prefer the oldest durable proof. A duplicate newer record for the same
+    # exact head must not restart quarantine for work already settled.
+    return min(mature, key=lambda item: item[1])[0], None
+  if any(observed is not None for _, observed in timed):
+    return None, "merged-quarantine"
+  return None, "merged-time-unavailable"
 
 
 def _active_cwds() -> set[Path]:
@@ -299,6 +345,7 @@ def _remove_candidate(
   *,
   data_dir: Path,
   contributions_dir: Path,
+  now: dt.datetime,
 ) -> tuple[dict | None, dict | None]:
   """Revalidate and remove one candidate, returning (cleaned, exception)."""
   path = Path(candidate["path"])
@@ -312,14 +359,9 @@ def _remove_candidate(
     current["reasons"].append("actionable-record")
   proof = candidate["proof"]
   if proof == "exact-merged-record":
-    exact = any(
-      record["status"] == "merged"
-      and record["url"]
-      and record["head_sha"] == current["head_sha"]
-      for record in matched
-    )
-    if not exact:
-      current["reasons"].append("merged-proof-changed")
+    exact, proof_reason = _exact_merged_proof(matched, current["head_sha"], now)
+    if exact is None:
+      current["reasons"].append(proof_reason or "merged-proof-changed")
   if errors:
     current["reasons"].append("ledger-became-unreadable")
   if current["reasons"]:
@@ -361,8 +403,13 @@ def run_housekeeping(
   apply: bool,
   upstream_ref: str = "origin/main",
   active_cwds: set[Path] | None = None,
+  now: dt.datetime | None = None,
 ) -> dict:
   started = dt.datetime.now(dt.timezone.utc)
+  observed_at = now or started
+  if observed_at.tzinfo is None:
+    raise ValueError("now must be timezone-aware")
+  observed_at = observed_at.astimezone(dt.timezone.utc)
   contrib_root = (data_dir / "contrib").resolve()
   records, ledger_errors = _load_records(contributions_dir)
   active = active_cwds if active_cwds is not None else _active_cwds()
@@ -401,20 +448,17 @@ def run_housekeeping(
     if statuses & ACTIONABLE_STATUSES:
       preserved["actionable-checkout"] += 1
       continue
-    exact = any(
-      record["status"] == "merged"
-      and record["url"]
-      and record["head_sha"] == inspected["head_sha"]
-      for record in matched
+    exact, proof_reason = _exact_merged_proof(
+      matched, inspected["head_sha"], observed_at,
     )
-    if exact and not inspected["reasons"]:
+    if exact is not None and not inspected["reasons"]:
       candidates[path] = {
         **inspected,
         "proof": "exact-merged-record",
       }
     elif "merged" in statuses or statuses & {"closed", "abandoned"}:
-      if not exact:
-        inspected["reasons"].append("no-exact-merged-head")
+      if exact is None:
+        inspected["reasons"].append(proof_reason or "no-exact-merged-head")
       exceptions.append(inspected)
     else:
       preserved["nonterminal-checkout"] += 1
@@ -457,6 +501,7 @@ def run_housekeeping(
         candidate,
         data_dir=data_dir,
         contributions_dir=contributions_dir,
+        now=observed_at,
       )
       if item:
         cleaned.append(item)
@@ -514,8 +559,8 @@ def run_housekeeping(
     },
     "cleaned": cleaned,
     "would_clean": [] if apply else list(candidates.values()),
-    "needs_reasoning": exceptions[:MAX_EXCEPTIONS],
-    "needs_reasoning_omitted": max(0, len(exceptions) - MAX_EXCEPTIONS),
+    "needs_reasoning": exceptions,
+    "needs_reasoning_omitted": 0,
   }
   _atomic_json(output, payload)
   return payload
