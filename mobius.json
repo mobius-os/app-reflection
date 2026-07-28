@@ -51,6 +51,7 @@
   "embeds_agent": true,
   "source_files": [
     "reflection_runner.py",
+    "housekeeping.py",
     "resource_monitor.py",
     "memory_health.py",
     "tool_friction.py",
