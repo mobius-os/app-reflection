@@ -41,35 +41,15 @@ deliberate and all in service of "autonomous":
   - `permission_mode="bypassPermissions"` — no `can_use_tool`
     callback, no keepalive hook. Every tool auto-runs; there is no
     user to approve anything.
-  - `max_turns` is high (default 60) so the multi-phase run
-    (interviews → skill edits → Memory-system review → app fixes →
-    research → brief) fits in one goal loop. The brief is the night's
-    one deliverable; the conversation about it is opened by the partner
-    on tap in the Reflection app, not by this run.
-  - We loop on `client.receive_response()` exactly once: the SDK's
-    own `max_turns` is the multi-turn budget, and a single
+  - We loop on `client.receive_response()` exactly once: a single
     `query(goal)` + drain runs the whole autonomous session. The
-    agent decides its own sub-steps via tool use within that budget;
-    the only extra `query()` calls are the turn-budget steering
-    messages (below), which speak the turn count into the session
-    because the agent cannot observe it on its own.
+    agent decides its own sub-steps via tool use. The wrapper's
+    two-hour wall clock is the one execution bound.
 
-Two reliability layers protect the brief (the night's one
-non-negotiable deliverable), added after three of four prod nights
-died at `max_turns` (subtype error_max_turns) with NO brief:
-
-  - **Turn-countdown injection.** The drain loop counts assistant
-    turns and injects a steering user message when the run crosses
-    the thresholds from `steering_thresholds` (35 and 45 with the
-    default 60-turn budget). The skill's "bail to the brief by turn
-    40" rule is prose the agent can't act on — it has no view of its
-    own turn count — so the runner supplies the number at the moment
-    it matters.
-  - **Guaranteed-brief fallback.** When the main session still ends
-    in error and tonight's brief file is missing, `run()` spawns ONE
-    short rescue session (`FALLBACK_MAX_TURNS`) whose only goal is a
-    minimal brief from whatever the cut-off run left behind. The
-    rescue never spawns another rescue.
+One reliability layer protects the brief: when the main session ends
+in error and tonight's brief file is missing, `run()` spawns one rescue
+session whose only goal is a minimal brief from whatever the main run
+left behind. The rescue never spawns another rescue.
 
 Importability: every heavyweight import (the SDK) is inside `run()`,
 so `import backend.scripts.reflection_runner` (and `py_compile`) works
@@ -136,14 +116,6 @@ PM_COMMIT = "/app/scripts/pm-commit"
 BAKED_BRIEF_TEMPLATE = Path("/app/scripts/reflection-brief-template.html")
 BRIEF_TEMPLATE_DEST = DATA_DIR / "apps" / "reflection" / "reflection-brief-template.html"
 
-# Multi-turn budget for the whole nightly goal loop. High because one
-# Reflection run spans many phases (interviews, skill edits, Memory-system
-# review, app fixes, research, brief), each costing several tool
-# turns. The wrapper's `timeout` is the real wall-clock bound; this is the
-# SDK-side ceiling so a wedged loop can't spin forever even if the timeout
-# were removed.
-DEFAULT_MAX_TURNS = 60
-
 # The Codex SDK publishes command output and assistant prose as streaming
 # deltas, then publishes one authoritative completed item. Reflection has no
 # SSE consumer, so its adapter turns that stream into a diagnostic trace. A
@@ -160,11 +132,6 @@ CODEX_MAX_PENDING_TOOLS = 64
 # defaults to Claude (the production default provider); the owner can
 # override per-instance via numeric app storage without touching code.
 DEFAULT_PROVIDER = "claude"
-
-# Turn budget for the guaranteed-brief rescue session. Small on
-# purpose: read the cut-off run's leavings, write a minimal brief,
-# commit — no investigation, no chat (the partner opens that on tap).
-FALLBACK_MAX_TURNS = 12
 
 # The runner shares the process exit-code space with its wrapper
 # (`app-reflection/fetch.sh` in the catalog app), whose OWN config errors take the low
@@ -247,69 +214,6 @@ def _is_usage_limit(text: str | None) -> bool:
   return any(marker in low for marker in _USAGE_LIMIT_MARKERS)
 
 
-def steering_thresholds(max_turns: int) -> tuple[int, int]:
-  """Returns the (soft, hard) turn counts that trigger budget steering.
-
-  Scaled from the 60-turn default (35 and 45) so an owner-overridden
-  max_turns keeps the same shape: the soft warning lands just past
-  halfway, the hard one at three quarters. Integer floor math keeps
-  the result deterministic, and the hard threshold always trails the
-  soft one by at least one turn so the two messages can't collapse
-  into the same turn.
-  """
-  soft = max(1, max_turns * 35 // 60)
-  hard = max(soft + 1, max_turns * 45 // 60)
-  return soft, hard
-
-
-def steering_message(
-  prev_turn: int, turn: int, max_turns: int, *, brief_written: bool = False,
-) -> str | None:
-  """Returns the turn-budget steering text to inject, or None.
-
-  Pure crossing detector: fires when the (prev_turn, turn] step
-  crosses a threshold from `steering_thresholds`. The skill tells the
-  agent to bail by turn 40 to the night's floor deliverable — a shipped
-  brief — but the agent cannot observe its own turn count, so the runner
-  counts assistant turns and speaks the number into the session at the
-  right moments. When a single step crosses both thresholds, only the
-  sterner message is returned (two back-to-back budget warnings would
-  dilute each other).
-  """
-  soft, hard = steering_thresholds(max_turns)
-  if prev_turn < hard <= turn:
-    if brief_written:
-      return (
-        f"TURN BUDGET: you are at turn {turn} of {max_turns}, but tonight's "
-        "brief already exists. Preserve that deliverable, stop open-ended "
-        "investigation, commit any finished safe work, record only essential "
-        "meta-state, and stop. Do not replace the brief with a rushed rewrite."
-      )
-    return (
-      f"TURN BUDGET: you are at turn {turn} of {max_turns} and almost "
-      "out. Stop open-ended investigation now and write a MINIMAL "
-      "brief (a heading and a few honest lines on what was done, what "
-      "was skipped, and what needs the partner), save it to the reports "
-      "dir, commit it, and stop. Skip everything else."
-    )
-  if prev_turn < soft <= turn:
-    if brief_written:
-      return (
-        f"TURN BUDGET: you are at turn {turn} of {max_turns} and the floor "
-        "deliverable is already written. Close only bounded work that is "
-        "nearly complete, update the live operating model if evidence changed, "
-        "commit, and stop before the hard reserve."
-      )
-    return (
-      f"TURN BUDGET: you are at turn {turn} of {max_turns}. STOP "
-      "open-ended investigation now. Commit whatever safe work is done, "
-      "then write the brief. Reserve the remaining turns for the live "
-      "meta-state, brief, and commit. Remaining app triage, Memory-system "
-      "review, and research are over unless needed for one brief sentence."
-    )
-  return None
-
-
 def reflection_storage_dir() -> Path | None:
   """Returns the Reflection app's canonical numeric storage directory.
 
@@ -385,10 +289,9 @@ def build_fallback_goal() -> str:
   runs_dir = DATA_DIR / "apps" / "reflection" / "runs" / today
   inputs_dir = DATA_DIR / "apps" / "reflection" / "inputs"
   return "\n".join([
-    f"The main Reflection run of {today} was CUT OFF (turn budget or "
-    "crash) before it could deliver the brief. You are a short rescue "
-    f"pass with roughly {FALLBACK_MAX_TURNS} turns and ONE goal: the "
-    "partner must not wake to nothing.",
+    f"The main Reflection run of {today} failed or stopped before it "
+    "could deliver the brief. You are a focused rescue pass with ONE "
+    "goal: the partner must not wake to nothing.",
     "",
     "Do NOT restart the night's phases. Instead:",
     f"1. Skim what the run left behind: {runs_dir}/ (interviews, "
@@ -477,6 +380,15 @@ def write_static_usage_limit_brief(brief_path: Path) -> bool:
     brief_path,
     "<p>Tonight's reflection couldn't run — the model's usage limit "
     "was reached; I'll resume once it resets.</p>",
+  )
+
+
+def write_static_timeout_brief(brief_path: Path) -> bool:
+  """Static floor when the one wall-clock boundary ends an unfinished run."""
+  return _write_static_floor_brief(
+    brief_path,
+    "<p>Tonight's reflection reached its wall-clock safety boundary. "
+    "Any completed work was kept, but the remaining areas were not assessed.</p>",
   )
 
 
@@ -662,17 +574,6 @@ def _bounded_excludes(value: object) -> list[str]:
   return result
 
 
-def _bounded_max_turns(value: object) -> int:
-  """Keep corrupt app settings from disabling or exploding a nightly run."""
-  if isinstance(value, bool):
-    return DEFAULT_MAX_TURNS
-  try:
-    parsed = int(value)
-  except (TypeError, ValueError, OverflowError):
-    return DEFAULT_MAX_TURNS
-  return max(10, min(parsed, 120))
-
-
 def _resolve_agents(settings: dict) -> dict:
   """Resolve primary/fallback provider choices for the nightly run.
 
@@ -799,9 +700,9 @@ def build_goal(settings: dict) -> str:
     "Memory owns graph consolidation; Reflection reviews Memory's update "
     "log for system-improvement signals but does not drain or rewrite the "
     "graph. Diagnose through memory-health.json; never take shared write authority. "
-    "The floor deliverable is the brief (phase 6). Reserve the final 15 turns "
-    "for the live meta-state, brief, and commits; at turn 40 cut unfinished "
-    "deep work and ship a truthful brief so the partner wakes to something useful.",
+    "The floor deliverable is the brief (phase 6). Keep it current while you "
+    "work, and complete tonight's mandatory assessment gates before optional "
+    "investigations. If a gate did not run, report that area as not assessed.",
     "",
     f"Your working directory is {DATA_DIR}. You have a real token "
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
@@ -1159,19 +1060,8 @@ class _LogBroadcast:
       self._closed = True
 
 
-async def _drain_session(
-  client, log_fh, *, max_turns: int, countdown: bool,
-) -> tuple[bool, bool, bool, bool]:
+async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
   """Drains one SDK response stream to its terminal result.
-
-  Counts assistant turns and, when `countdown` is on, injects the
-  turn-budget steering text from `steering_message` as a user message
-  into the live session — `client.query` writes to the streaming
-  stdin, and the CLI hands queued user input to the model between
-  tool iterations of the in-flight loop. Message types are detected
-  by class NAME so the drain avoids a second SDK import and works
-  against test fakes; `_drain_message` already imported the real
-  types for log formatting.
 
   Returns (saw_result, result_error, auth_failure, usage_limit).
   `auth_failure` is True when the terminal error result names a CLI
@@ -1184,7 +1074,6 @@ async def _drain_session(
   401). Auth takes precedence over usage when a string somehow matches
   both.
   """
-  turns_seen = 0
   saw_result = False
   result_error = False
   auth_failure = False
@@ -1193,36 +1082,16 @@ async def _drain_session(
     if log_fh is not None:
       _drain_message(sdk_msg, log_fh)
     kind = type(sdk_msg).__name__
-    if kind == "AssistantMessage":
-      prev_turn = turns_seen
-      turns_seen += 1
-      if countdown:
-        brief = todays_brief_path()
-        steer = steering_message(
-          prev_turn,
-          turns_seen,
-          max_turns,
-          brief_written=bool(brief and brief.is_file()),
-        )
-        if steer is not None:
-          # Best-effort: a failed injection leaves the run no worse
-          # than before this layer existed (the fallback still
-          # guarantees the brief), so log and keep draining.
-          try:
-            await client.query(steer)
-            _log(
-              "injected turn-budget steering at turn "
-              f"{turns_seen}/{max_turns}"
-            )
-          except Exception as exc:
-            _log(f"WARN steering injection failed: {exc!r}")
+    if kind == "SystemMessage":
+      data = getattr(sdk_msg, "data", None)
+      session_id = data.get("session_id") if isinstance(data, dict) else None
+      if isinstance(session_id, str) and session_id:
+        _log(f"claude session initialized session_id={session_id}")
     if kind == "ResultMessage":
       saw_result = True
-      # is_error covers a hard failure AND the max_turns cap (subtype
-      # error_max_turns). A night that ended in error must NOT report
-      # success — otherwise cron_outcome records exit 0 and both the
-      # next run and the Reflection app believe a brief was produced
-      # when none was.
+      # A night that ended in error must not report success; otherwise
+      # cron_outcome records exit 0 and both the next run and the app
+      # believe a brief was produced when none was.
       if getattr(sdk_msg, "is_error", False):
         result_error = True
         err_text = (
@@ -1254,16 +1123,9 @@ async def _run_claude_session(
   env: dict[str, str],
   model: str | None,
   effort: str | None,
-  max_turns: int,
   log_fh,
-  countdown: bool,
 ) -> int:
-  """Runs one Claude SDK goal loop and returns a process exit code.
-
-  `countdown=True` enables turn-budget steering (the main nightly
-  run). The rescue pass runs with it off — its budget is tiny and its
-  goal already IS "write the brief".
-  """
+  """Runs one Claude SDK goal loop and returns a process exit code."""
   from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
   options_kwargs: dict = {
@@ -1272,7 +1134,6 @@ async def _run_claude_session(
     "env": env,
     "setting_sources": None,
     "permission_mode": "bypassPermissions",
-    "max_turns": max_turns,
     "cli_path": CLI_PATH,
     # Hard-block the Claude Code harness / deferred tools that have no place
     # in an unattended Möbius cron. This is a real bug fix, not hygiene: from
@@ -1310,7 +1171,7 @@ async def _run_claude_session(
 
     await client.query(goal)
     saw_result, result_error, auth_failure, usage_limit = await _drain_session(
-      client, log_fh, max_turns=max_turns, countdown=countdown,
+      client, log_fh,
     )
     if not saw_result:
       _log("WARN stream ended without a terminal ResultMessage")
@@ -1351,8 +1212,7 @@ async def _run_codex_session(
   Codex can run the same Reflection skill through the app-server SDK
   path. The normal chat runner publishes SSE; Reflection swaps in a
   log-only broadcast so unattended runs still leave a useful trace.
-  Codex has no max_turns option — the wrapper's wall-clock timeout is
-  its hard bound, and the goal text carries any turn guidance.
+  The wrapper's wall-clock timeout is its hard bound.
   """
   broadcast = _LogBroadcast(log_fh)
   try:
@@ -1399,9 +1259,7 @@ async def _run_agent_choice(
   goal: str,
   skill_text: str,
   env: dict[str, str],
-  max_turns: int,
   log_fh,
-  countdown: bool,
 ) -> int:
   """Runs the selected provider choice through its matching SDK path."""
   provider = choice["provider"]
@@ -1414,8 +1272,7 @@ async def _run_agent_choice(
     )
   return await _run_claude_session(
     goal=goal, skill_text=skill_text, env=env, model=model,
-    effort=effort, max_turns=max_turns, log_fh=log_fh,
-    countdown=countdown,
+    effort=effort, log_fh=log_fh,
   )
 
 
@@ -1431,10 +1288,8 @@ async def _maybe_write_fallback_brief(
 ) -> None:
   """Guaranteed-brief layer: rescues a failed night that has no brief.
 
-  Three of four prod nights died at max_turns (subtype
-  error_max_turns) with NO brief — the partner woke to nothing. When
-  the main session ends non-zero and tonight's brief file is missing,
-  spawn one short rescue session whose only goal is a minimal brief
+  When the main session ends non-zero and tonight's brief file is missing,
+  spawn one focused rescue session whose only goal is a minimal brief
   built from whatever the cut-off run left behind.
 
   Blocked-night case (rc in {AUTH_FAILURE_RC, USAGE_LIMIT_RC}): the
@@ -1448,8 +1303,8 @@ async def _maybe_write_fallback_brief(
 
   Recursion guard: this helper is called exactly once, from run(),
   after the MAIN session only. The rescue session it spawns goes
-  through the plain session helpers (countdown off, no further
-  fallback), so a failing rescue ends the night instead of recursing.
+  through the plain session helper with no further fallback, so a
+  failing rescue ends the night instead of recursing.
   Best-effort throughout — the rescue must never turn a recorded
   failure into a crash, and the main run's exit code is preserved
   either way so cron_outcome stays honest about the night.
@@ -1497,8 +1352,7 @@ async def _maybe_write_fallback_brief(
     else:
       fallback_rc = await _run_claude_session(
         goal=goal, skill_text=skill_text, env=env, model=model,
-        effort=effort, max_turns=FALLBACK_MAX_TURNS, log_fh=log_fh,
-        countdown=False,
+        effort=effort, log_fh=log_fh,
       )
     wrote = brief is not None and brief.is_file()
     _log(
@@ -1518,7 +1372,7 @@ async def run() -> int:
   start, an unexpected exception), and one of the runner's own error-band
   codes (all >=64, so they never collide with the wrapper's config codes
   2/3/5) when the goal loop ended in an error: GENERIC_MODEL_RC (64) for
-  a generic model/max_turns failure, USAGE_LIMIT_RC (65) for a provider
+  a generic model failure, USAGE_LIMIT_RC (65) for a provider
   usage/rate cap, AUTH_FAILURE_RC (66) for a CLI auth failure (a 401).
   The wrapper maps the exit code into the `cron_outcome` event, so this
   is the one signal the activity log records about whether the night
@@ -1538,7 +1392,6 @@ async def run() -> int:
   seed_brief_template()
   goal = build_goal(settings)
   env = build_env()
-  max_turns = _bounded_max_turns(settings.get("max_turns"))
   log_fh = None
   try:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1548,7 +1401,7 @@ async def run() -> int:
 
   _log(
     f"start provider={provider} model={model or '(default)'} "
-    f"effort={effort or '(default)'} max_turns={max_turns} cwd={DATA_DIR}"
+    f"effort={effort or '(default)'} cwd={DATA_DIR}"
   )
 
   # Guaranteed pre-run restore point: commit /data BEFORE the agent rewrites
@@ -1560,7 +1413,7 @@ async def run() -> int:
   try:
     rc = await _run_agent_choice(
       primary, goal=goal, skill_text=skill_text, env=env,
-      max_turns=max_turns, log_fh=log_fh, countdown=True,
+      log_fh=log_fh,
     )
     if configured_fallback_needed(rc, fallback, todays_brief_path()):
       _log(
@@ -1571,7 +1424,7 @@ async def run() -> int:
       )
       rc = await _run_agent_choice(
         fallback, goal=goal, skill_text=skill_text, env=env,
-        max_turns=max_turns, log_fh=log_fh, countdown=True,
+        log_fh=log_fh,
       )
       provider = fallback["provider"]
       model = fallback.get("model")
@@ -1629,7 +1482,15 @@ async def _run_with_sigterm_shutdown() -> int:
   except asyncio.CancelledError:
     if not sigterm_received:
       raise
+    brief = todays_brief_path()
+    wrote = False
+    if brief is not None and not brief.is_file():
+      wrote = write_static_timeout_brief(brief)
     _log("SIGTERM graceful shutdown complete")
+    _log(
+      "wall-clock floor "
+      f"brief_written={'yes' if wrote else 'already-present' if brief and brief.is_file() else 'no'}"
+    )
     return 128 + signal.SIGTERM
   finally:
     if installed:

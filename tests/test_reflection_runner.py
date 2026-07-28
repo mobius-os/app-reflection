@@ -166,16 +166,6 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("Memory is the sole writer", goal)
     self.assertIn("do not repeat a hardened check", goal)
 
-  def test_turn_steering_respects_an_already_written_brief(self):
-    soft, _ = reflection_runner.steering_thresholds(60)
-    message = reflection_runner.steering_message(
-      soft - 1, soft, 60, brief_written=True,
-    )
-    self.assertIn("floor deliverable is already written", message)
-    self.assertIn("Do not replace", reflection_runner.steering_message(
-      44, 45, 60, brief_written=True,
-    ))
-
   def test_goal_names_activity_and_question_engagement_evidence(self):
     with tempfile.TemporaryDirectory() as raw:
       data_dir = Path(raw)
@@ -281,15 +271,6 @@ class ReflectionSettingsTests(unittest.TestCase):
     self.assertNotIn("Saved schedule preference", goal)
     self.assertNotIn("SKIP these apps", goal)
 
-  def test_corrupt_max_turns_is_bounded(self):
-    self.assertEqual(
-      reflection_runner._bounded_max_turns("not-a-number"),
-      reflection_runner.DEFAULT_MAX_TURNS,
-    )
-    self.assertEqual(reflection_runner._bounded_max_turns(True), 60)
-    self.assertEqual(reflection_runner._bounded_max_turns(-500), 10)
-    self.assertEqual(reflection_runner._bounded_max_turns("500000"), 120)
-
   def test_cron_hint_accepts_numeric_shapes_and_rejects_prompt_text(self):
     self.assertEqual(
       reflection_runner._safe_cron_hint("*/15 0-23/2 * 1,6 0-7"),
@@ -326,7 +307,6 @@ class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
         mock.patch.object(reflection_runner, "seed_brief_template"),
         mock.patch.object(reflection_runner, "build_goal", return_value="goal"),
         mock.patch.object(reflection_runner, "build_env", return_value={}),
-        mock.patch.object(reflection_runner, "_bounded_max_turns", return_value=20),
         mock.patch.object(reflection_runner, "_safety_snapshot"),
         mock.patch.object(reflection_runner, "_log"),
         mock.patch.object(reflection_runner, "todays_brief_path", return_value=Path(raw) / "missing.html"),
