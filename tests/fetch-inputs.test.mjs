@@ -281,8 +281,14 @@ async def run_codex_sdk_turn(**kwargs):
     assert.match(timeoutLog, /SIGTERM received; cancelling Reflection/)
     assert.match(timeoutLog, /id=term-tool state=incomplete/)
     assert.match(timeoutLog, /UNIQUE-TERM-CONCLUSION/)
+    assert.match(timeoutLog, /wall-clock floor brief_written=yes/)
     assert.match(timeoutLog, /agent run hit the 3s timeout/)
     assert.match(timeoutLog, /done \(rc=124\)/)
+    const timeoutBrief = await readFile(
+      join(dataDir, 'apps', '1', 'reports', `${new Date().toISOString().slice(0, 10)}.html`),
+      'utf8',
+    )
+    assert.match(timeoutBrief, /wall-clock safety boundary/)
   } finally {
     server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))
