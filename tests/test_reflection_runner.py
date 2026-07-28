@@ -161,6 +161,8 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("resource-history.jsonl", goal)
     self.assertIn("resource-decisions.jsonl", goal)
     self.assertIn("memory-health.json", goal)
+    self.assertIn("housekeeping.json", goal)
+    self.assertIn("only about", goal)
     self.assertIn("meta-state-status.json", goal)
     self.assertIn("different scopes", goal)
     self.assertIn("Memory is the sole writer", goal)

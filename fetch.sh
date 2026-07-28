@@ -850,6 +850,31 @@ else
   rm -f -- "$INPUTS/tool-friction.json"
 fi
 
+# housekeeping.json — deterministic contribution/worktree lifecycle work runs
+# before the agent and before the resource snapshot. Exact merged heads can be
+# retired without spending model turns; patch equivalence and every ambiguous
+# case remain evidence for Reflection rather than deletion authority. Dry mode
+# audits without mutating so plumbing tests never remove fixtures.
+HOUSEKEEPING="$SCRIPT_DIR/housekeeping.py"
+HOUSEKEEPING_OUTPUT="$INPUTS/housekeeping.json"
+if [[ -r "$HOUSEKEEPING" ]]; then
+  housekeeping_args=(
+    --data-dir "$DATA_DIR"
+    --api-base-url "$API_BASE_URL"
+    --token-file "$TOKEN_FILE"
+    --output "$HOUSEKEEPING_OUTPUT"
+  )
+  if [[ "${REFLECTION_DRY:-0}" != "1" ]]; then
+    housekeeping_args+=(--apply)
+  fi
+  if ! python3 "$HOUSEKEEPING" "${housekeeping_args[@]}" 2>>"$LOG"; then
+    log "WARN deterministic housekeeping failed; inspect housekeeping.json"
+  fi
+else
+  log "WARN deterministic housekeeping helper missing at $HOUSEKEEPING"
+  rm -f -- "$HOUSEKEEPING_OUTPUT"
+fi
+
 # memory-health.json — a compact operational contract between the two apps.
 # It exposes status, recovery/backlog counters, and graph counts only: never
 # chat bodies, note contents, proposed facts, or other private Memory data.
@@ -1109,7 +1134,7 @@ PY
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
-log "gathered inputs (meta model, activity, chats, feedback, app digest, tool friction, resource evidence) into $INPUTS/"
+log "gathered inputs (meta model, activity, chats, feedback, app digest, tool friction, housekeeping, resource evidence) into $INPUTS/"
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a
