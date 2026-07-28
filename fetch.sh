@@ -1186,6 +1186,38 @@ send_morning_push() {
   [[ "$RC" == "0" ]] || { log "morning push: skip (rc=$RC)"; return 0; }
   local brief="$DATA_DIR/apps/$APP_ID/reports/$DATE.html"
   [[ -f "$brief" ]] || { log "morning push: skip (no brief for $DATE)"; return 0; }
+  # Idempotence guard: the wrapper is the sole intended sender, but an
+  # instance whose live (agent-editable) reflection skill predates
+  # wrapper-owned delivery may still have the nightly agent curl
+  # /api/notifications/send itself mid-run — the skill file is seeded once
+  # and never overwritten by app updates, so that stale instruction
+  # survives upgrades indefinitely and the partner gets the same brief
+  # announced twice. Skip when an identically-titled push already went out
+  # today (UTC). Best-effort and fail-open: if history can't be read, send
+  # rather than risk a silent morning.
+  local history_json already_sent
+  history_json="$(curl -s "${auth[@]}" \
+    "$API_BASE_URL/api/notifications?limit=30" 2>>"$LOG")"
+  already_sent="$(HISTORY_JSON="$history_json" python3 - <<'PY' 2>>"$LOG"
+import datetime, json, os
+try:
+    items = json.loads(os.environ.get("HISTORY_JSON", ""))
+except Exception:
+    items = []
+today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+dup = isinstance(items, list) and any(
+    isinstance(n, dict)
+    and n.get("title") == "Your morning brief is ready"
+    and str(n.get("sent_at", "")).startswith(today)
+    for n in items
+)
+print("yes" if dup else "no")
+PY
+)"
+  if [[ "$already_sent" == "yes" ]]; then
+    log "morning push: skip (an identical push already went out today)"
+    return 0
+  fi
   # Trust the headline only if state.json was written by TODAY's run;
   # fall back to a generic line otherwise so the partner is still pinged.
   local headline
