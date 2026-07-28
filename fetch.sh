@@ -834,6 +834,22 @@ else
 fi
 [[ -z "${DIGEST_TMP:-}" ]] || rm -f -- "$DIGEST_TMP"
 
+# tool-friction.json — one bounded, read-only view of repeated agent plumbing.
+# Reflection uses this to choose common owning-primitives worth improving rather
+# than reconstructing thousands of tool blocks or promoting one-off failures.
+TOOL_FRICTION="$SCRIPT_DIR/tool_friction.py"
+if [[ -r "$TOOL_FRICTION" ]]; then
+  if ! python3 "$TOOL_FRICTION" \
+      --db "$DATA_DIR/db/ultimate.db" \
+      --hours 24 \
+      --output "$INPUTS/tool-friction.json" 2>>"$LOG"; then
+    log "WARN tool-friction evidence generation failed"
+  fi
+else
+  log "WARN tool-friction helper missing at $TOOL_FRICTION"
+  rm -f -- "$INPUTS/tool-friction.json"
+fi
+
 # memory-health.json — a compact operational contract between the two apps.
 # It exposes status, recovery/backlog counters, and graph counts only: never
 # chat bodies, note contents, proposed facts, or other private Memory data.
@@ -1093,7 +1109,7 @@ PY
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
-log "gathered inputs (meta model, activity, chats, feedback, app digest, resource evidence) into $INPUTS/"
+log "gathered inputs (meta model, activity, chats, feedback, app digest, tool friction, resource evidence) into $INPUTS/"
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a
