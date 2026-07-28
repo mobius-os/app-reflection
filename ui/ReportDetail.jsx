@@ -41,6 +41,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
   const [chatOpen, setChatOpen] = useState(() => readChatOpen(appId))
   const [chatRatio, setChatRatio] = useState(() => readChatRatio(appId))
   const [briefHeight, setBriefHeight] = useState(360)
+  const [briefMeasured, setBriefMeasured] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const iframeRef = useRef(null)
   // The detail body — the resize math measures its height to convert a pointer
@@ -144,6 +145,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
     setState({ phase: 'loading', html: '' })
     setQuestions([])
     setBriefHeight(360)
+    setBriefMeasured(false)
     readSizedRef.current = false
     readFiredRef.current = false
     ;(async () => {
@@ -193,6 +195,11 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
         // one-page brief; beyond it the iframe scrolls its own overflow
         // rather than the parent column stretching forever.
         setBriefHeight(Math.min(Math.max(h, 200), 16000))
+        // Keep the report and its native question cards behind the loader until
+        // the first real measurement lands. Without this gate the iframe first
+        // paints at the 360px bootstrap height, briefly exposing the cards below
+        // it before the report expands and pushes them out of view.
+        setBriefMeasured(true)
       }
     }
     window.addEventListener('message', onMessage)
@@ -270,8 +277,12 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
         className="rf-detail-body"
         style={chatOpen ? { '--chat-ratio': chatRatio, '--chat-pane-min': `${CHAT_PANE_MIN_PX}px` } : undefined}
       >
-        <div ref={scrollRef} className="rf-split-body rf-scroll">
-          {state.phase === 'loading' && (
+        <div
+          ref={scrollRef}
+          className="rf-split-body rf-scroll"
+          aria-busy={state.phase === 'loading' || (state.phase === 'ready' && !briefMeasured)}
+        >
+          {(state.phase === 'loading' || (state.phase === 'ready' && !briefMeasured)) && (
             <div className="rf-brief-loading">
               <span className="rf-spinner" aria-hidden="true" />
               <span>Opening your brief…</span>
@@ -294,7 +305,10 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
 
           {state.phase === 'ready' && (
             <>
-              <div className="rf-brief-panel">
+              <div
+                className={`rf-brief-panel${briefMeasured ? '' : ' is-measuring'}`}
+                aria-hidden={!briefMeasured}
+              >
                 <iframe
                   ref={iframeRef}
                   className="rf-brief-iframe"
@@ -321,7 +335,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
                   write so it can await the result, flip to "Saved" on a durable
                   outcome (synced or queued), and re-seed the answered state from
                   storage when the brief reopens. */}
-              {questions.length > 0 && (
+              {briefMeasured && questions.length > 0 && (
                 <ReportQuestions
                   questions={questions}
                   storage={storage}
