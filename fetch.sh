@@ -851,9 +851,11 @@ else
 fi
 
 # housekeeping.json — deterministic contribution/worktree lifecycle work runs
-# before the agent and before the resource snapshot. Exact merged heads can be
-# retired without spending model turns; patch equivalence and every ambiguous
-# case remain evidence for Reflection rather than deletion authority. Dry mode
+# BEFORE the agent and BEFORE the resource snapshot. Exact merged heads can be
+# retired without spending model turns; patch-equivalent but unreferenced work
+# is classified for judgment rather than treated as deletion authority.
+# Anything dirty, active, actionable, standalone, or ambiguous is likewise
+# handed to Reflection as a compact exception list. The wrapper's dry mode
 # audits without mutating so plumbing tests never remove fixtures.
 HOUSEKEEPING="$SCRIPT_DIR/housekeeping.py"
 HOUSEKEEPING_OUTPUT="$INPUTS/housekeeping.json"
