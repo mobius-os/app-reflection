@@ -1,5 +1,6 @@
 import json
 import datetime as dt
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -53,7 +54,10 @@ class HousekeepingTests(unittest.TestCase):
       git(path, "commit", "-m", name)
     return path, git(path, "rev-parse", "HEAD")
 
-  def write_record(self, record_id, path, head, status="merged", updated_at=None):
+  def write_record(
+    self, record_id, path, head, status="merged", updated_at=None,
+    *, base=None, diff_sha256=None,
+  ):
     payload = {
       "id": record_id,
       "status": status,
@@ -63,6 +67,8 @@ class HousekeepingTests(unittest.TestCase):
       "plan": {
         "repo_path": str(path),
         "head_sha": head,
+        "base_sha": base,
+        "diff_sha256": diff_sha256,
         "branch": f"fix/{record_id}",
       },
     }
@@ -93,6 +99,95 @@ class HousekeepingTests(unittest.TestCase):
     self.assertTrue((self.records / "merged.json").is_file())
     self.assertNotIn("fix/merged", git(self.platform, "branch", "--format=%(refname:short)"))
     self.assertEqual(json.loads(self.output.read_text()), result)
+
+  def test_attribution_rewrite_is_proven_by_the_reviewed_diff(self):
+    path, reviewed_head = self.add_worktree("rewritten")
+    base = git(path, "rev-parse", "HEAD^")
+    reviewed = subprocess.run(
+      [
+        "git", "-c", "core.quotePath=false", "-C", str(path),
+        "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index",
+        "--src-prefix=a/", "--dst-prefix=b/", f"{base}..{reviewed_head}",
+      ],
+      check=True, capture_output=True,
+    ).stdout
+    digest = hashlib.sha256(reviewed).hexdigest()
+    git(path, "commit", "--amend", "--no-edit", "--author", "Owner <new@example.test>")
+    rewritten_head = git(path, "rev-parse", "HEAD")
+    self.assertNotEqual(rewritten_head, reviewed_head)
+    self.write_record(
+      "rewritten", path, reviewed_head, base=base, diff_sha256=digest,
+    )
+
+    result = self.run_helper()
+
+    self.assertEqual(result["summary"]["cleaned_count"], 0)
+    self.assertTrue(path.exists())
+    self.assertTrue(any(
+      item["path"] == str(path.resolve())
+      and "exact-reviewed-diff-proof-available" in item["reasons"]
+      for item in result["needs_reasoning"]
+    ))
+
+  def test_different_post_review_content_is_not_treated_as_exact(self):
+    path, reviewed_head = self.add_worktree("changed-after-review")
+    base = git(path, "rev-parse", "HEAD^")
+    reviewed = subprocess.run(
+      [
+        "git", "-c", "core.quotePath=false", "-C", str(path),
+        "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index",
+        "--src-prefix=a/", "--dst-prefix=b/", f"{base}..{reviewed_head}",
+      ],
+      check=True, capture_output=True,
+    ).stdout
+    (path / "changed-after-review.txt").write_text("later\n", encoding="utf-8")
+    git(path, "add", "changed-after-review.txt")
+    git(path, "commit", "-m", "later change")
+    self.write_record(
+      "changed-after-review", path, reviewed_head,
+      base=base, diff_sha256=hashlib.sha256(reviewed).hexdigest(),
+    )
+
+    result = self.run_helper()
+
+    self.assertEqual(result["summary"]["cleaned_count"], 0)
+    self.assertTrue(path.exists())
+    self.assertTrue(any(
+      item["path"] == str(path.resolve())
+      and "no-exact-reviewed-head" in item["reasons"]
+      for item in result["needs_reasoning"]
+    ))
+
+  def test_reviewed_diff_survives_submit_time_reparenting(self):
+    path, reviewed_head = self.add_worktree("reparented")
+    base = git(path, "rev-parse", "HEAD^")
+    reviewed = subprocess.run(
+      [
+        "git", "-c", "core.quotePath=false", "-C", str(path),
+        "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index",
+        "--src-prefix=a/", "--dst-prefix=b/", f"{base}..{reviewed_head}",
+      ],
+      check=True, capture_output=True,
+    ).stdout
+    digest = hashlib.sha256(reviewed).hexdigest()
+    git(self.platform, "checkout", "main")
+    (self.platform / "upstream.txt").write_text("new base\n", encoding="utf-8")
+    git(self.platform, "add", "upstream.txt")
+    git(self.platform, "commit", "-m", "advance base")
+    git(path, "rebase", "--onto", "main", base, "fix/reparented")
+    self.write_record(
+      "reparented", path, reviewed_head, base=base, diff_sha256=digest,
+    )
+
+    result = self.run_helper()
+
+    self.assertEqual(result["summary"]["cleaned_count"], 0)
+    self.assertTrue(path.exists())
+    self.assertTrue(any(
+      item["path"] == str(path.resolve())
+      and "exact-reviewed-diff-proof-available" in item["reasons"]
+      for item in result["needs_reasoning"]
+    ))
 
   def test_dirty_or_actionable_work_is_never_removed(self):
     dirty_path, dirty_head = self.add_worktree("dirty")
@@ -165,11 +260,11 @@ class HousekeepingTests(unittest.TestCase):
     self.assertEqual(result["summary"]["cleaned_count"], 0)
     self.assertTrue(any(
       item["path"] == str(path.resolve())
-      and "no-exact-merged-head" in item["reasons"]
+      and "no-exact-reviewed-head" in item["reasons"]
       for item in result["needs_reasoning"]
     ))
 
-  def test_unreferenced_patch_equivalence_is_evidence_not_deletion_authority(self):
+  def test_unreferenced_exact_upstream_ancestor_is_reported_for_review(self):
     represented, _ = self.add_worktree("represented", commit_change=False)
     unique, _ = self.add_worktree("unique", commit_change=True)
 
@@ -183,7 +278,7 @@ class HousekeepingTests(unittest.TestCase):
     ))
     self.assertTrue(any(
       item["path"] == str(represented)
-      and "all-patches-upstream-unreferenced" in item["reasons"]
+      and "exact-upstream-ancestor-unreferenced" in item["reasons"]
       for item in result["needs_reasoning"]
     ))
     self.assertEqual(result["cleaned"], [])
