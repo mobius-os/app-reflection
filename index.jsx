@@ -232,8 +232,8 @@ export default function App({ appId, token }) {
         )}
         {tab === 'reports' ? (
           <div id="rf-panel-reports" role="tabpanel" aria-labelledby="rf-tab-reports">
-            {/* Last-night status row — shows most recent cron_outcome for reflection */}
-            <LastNightStatus token={token} />
+            {/* Last-night status row — shows this app's supervisor-owned outcome */}
+            <LastNightStatus appId={appId} token={token} />
             <ReportsList
               appId={appId}
               storage={storage}

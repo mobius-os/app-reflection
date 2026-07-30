@@ -57,17 +57,33 @@ def test_recent_tool_friction_is_bounded_and_grouped(tmp_path):
 
   result = tool_friction.analyse_database(str(db), hours=24, now=now)
 
-  assert result["overall"] == {
-    "tool_calls": 3,
-    "failed_calls": 1,
-    "truncated_calls": 2,
-    "output_bytes": 10_120,
-    "chat_count": 1,
-    "assistant_turns": 1,
-  }
+  assert result["overall"]["tool_calls"] == 3
+  assert result["overall"]["failed_calls"] == 1
+  assert result["overall"]["truncated_calls"] == 2
+  assert result["overall"]["output_bytes"] == 10_120
+  assert result["overall"]["failure_rate"] == 0.3333
+  assert result["overall"]["truncation_rate"] == 0.6667
   assert result["primitives"]["visual_capture"]["failed_calls"] == 1
   assert result["primitives"]["source_inspection"]["truncated_calls"] == 2
   assert result["run_totals"]["cost_usd"] == 1.25
+  assert result["run_totals"]["cost_per_completed_run"] == 1.25
+  assert result["run_totals"]["cache_read_share"] == 0.8
+  assert result["failure_classes"] == {"nonzero_exit": 1}
+  assert "sample" not in result["repeated_calls"][0]
+  assert result["daily"] == [{
+    "date": "2026-07-28",
+    "tool_calls": 3,
+    "failed_calls": 1,
+    "truncated_calls": 2,
+    "completed_runs": 1,
+    "cost_usd": 1.25,
+    "total_tokens": 120,
+    "input_tokens": 100,
+    "cache_read_input_tokens": 80,
+    "failure_rate": 0.3333,
+    "truncation_rate": 0.6667,
+    "cache_read_share": 0.8,
+  }]
   assert result["repeated_calls"][0]["count"] == 2
 
 

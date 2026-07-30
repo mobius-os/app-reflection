@@ -37,6 +37,7 @@ DATE="$(date +%F)"
 INPUTS="$DATA_DIR/apps/reflection/inputs"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
+INPUT_HELPER="$SCRIPT_DIR/reflection_inputs.py"
 # Wall-clock cap for the whole night. Generous (the agent does real,
 # multi-phase work) but bounded so a wedged run can't hold the lock past
 # the next night's schedule. Overridable for tests.
@@ -71,39 +72,6 @@ rm -f "$INPUTS/prev-report.html" "$INPUTS/prev-report-name.txt" \
   "$INPUTS/prev-question-answers.json"
 log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
 
-# emit_outcome <exit_code> — one cron_outcome activity event recording
-# how the night finished, so the next night's agent (and the Reflection
-# app) can see the run history. Routed through the API so one process
-# owns the activity-log file handle. Defined early because the token
-# guard below emits a failure outcome before the main run.
-emit_outcome() {
-  local exit_code="$1"
-  [[ -r "$TOKEN_FILE" ]] || return 0
-  local token ts payload
-  token="$(cat "$TOKEN_FILE")"
-  ts="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
-  payload="$(printf '{"ev":"cron_outcome","ts":"%s","app_id":%s,"job":"reflection","exit_code":%s}' \
-    "$ts" "${APP_ID:-0}" "$exit_code")"
-  # The activity log is the PRIMARY liveness signal the next night's run
-  # reads, so a dropped emit is invisible there (only this .log file keeps
-  # it). Retry a transient API blip (restart/overload) with backoff before
-  # giving up.
-  local attempt=0
-  while (( attempt < 3 )); do
-    if curl -fsS -X POST \
-        -H "Authorization: Bearer $token" \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        "$API_BASE_URL/api/admin/activity/emit" >/dev/null 2>>"$LOG"; then
-      return 0
-    fi
-    attempt=$(( attempt + 1 ))
-    (( attempt < 3 )) && { log "WARN cron_outcome emit attempt $attempt failed; retrying"; sleep $(( 2 ** attempt )); }
-  done
-  log "WARN cron_outcome emit failed after 3 attempts (rc=$exit_code); NOT recorded in activity log"
-  return 1
-}
-
 # --- no-overlap lock (flock) ------------------------------------------
 # fd 9 holds the lock for the life of this process; flock -n fails fast
 # if a prior night is still running (a long run that overran its window).
@@ -115,7 +83,6 @@ emit_outcome() {
 exec 9>"$LOCK"
 if ! flock -n 9; then
   log "another reflection run holds the lock; skipping this night (exit 5)"
-  emit_outcome 5
   exit 5
 fi
 
@@ -169,7 +136,6 @@ fi
 # API, so fail loud rather than run a crippled night.
 if [[ ! -r "$TOKEN_FILE" ]]; then
   log "ERROR service token unreadable ($TOKEN_FILE) — is the instance signed out? exiting"
-  emit_outcome 3
   exit 3
 fi
 SERVICE_TOKEN="$(cat "$TOKEN_FILE")"
@@ -178,13 +144,10 @@ SERVICE_TOKEN="$(cat "$TOKEN_FILE")"
 export SERVICE_TOKEN AGENT_TOKEN="$SERVICE_TOKEN"
 auth=(-H "Authorization: Bearer $SERVICE_TOKEN")
 
-# App id ($1) scopes storage + the cron_outcome. Checked AFTER the token
-# block (not before, as it was) so a missing id is still recorded in the
-# activity log — emit_outcome needs the token, so an earlier exit was
-# invisible there, asymmetric with the token-missing path above.
+# App id ($1) scopes storage. The platform job supervisor records the outcome
+# for every real attempt, including failures before this wrapper can start.
 if [[ -z "$APP_ID" ]]; then
   log "ERROR no app id passed as \$1; exiting"
-  emit_outcome 2
   exit 2
 fi
 
@@ -204,34 +167,8 @@ ACTIVITY_STATUS="$INPUTS/activity-status.json"
 
 write_activity_status() {
   local ok="$1" error="$2" event_count="${3:-}" sha256="${4:-}"
-  python3 - "$ACTIVITY_STATUS" "$ok" "$error" "$event_count" "$SINCE" "$sha256" <<'PY'
-import datetime, json, os, pathlib, sys
-
-target = pathlib.Path(sys.argv[1])
-ok = sys.argv[2] == "true"
-error = sys.argv[3]
-event_count = sys.argv[4]
-payload = {
-    "ok": ok,
-    "since": sys.argv[5],
-    "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-}
-if event_count:
-    payload["event_count"] = int(event_count)
-if sys.argv[6]:
-    payload["sha256"] = sys.argv[6]
-if error:
-    payload["error"] = error[:500]
-if not ok:
-    payload["retained_previous_snapshot"] = (target.parent / "activity.jsonl").exists()
-tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-with tmp.open("w", encoding="utf-8") as f:
-    json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
-    f.write("\n")
-    f.flush()
-    os.fsync(f.fileno())
-os.replace(tmp, target)
-PY
+  python3 "$INPUT_HELPER" activity-status \
+    "$ACTIVITY_STATUS" "$ok" "$error" "$event_count" "$SINCE" "$sha256"
 }
 
 record_activity_status() {
@@ -258,26 +195,8 @@ if [[ -z "$ACTIVITY_TMP" ]]; then
 elif curl -fsS --connect-timeout 10 --max-time 60 "${auth[@]}" \
     "$API_BASE_URL/api/admin/activity?since=$SINCE" \
     >"$ACTIVITY_TMP" 2>>"$LOG"; then
-  if ACTIVITY_EVENT_COUNT="$(python3 - "$ACTIVITY_TMP" <<'PY' 2>>"$LOG"
-import json, sys
-
-count = 0
-with open(sys.argv[1], encoding="utf-8") as f:
-    for line_no, line in enumerate(f, 1):
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"activity NDJSON line {line_no} is invalid: {exc}")
-        if not isinstance(event, dict) or not isinstance(event.get("ev"), str) \
-                or not isinstance(event.get("ts"), str):
-            raise SystemExit(
-                f"activity NDJSON line {line_no} lacks string ev/ts fields"
-            )
-        count += 1
-print(count)
-PY
+  if ACTIVITY_EVENT_COUNT="$(
+    python3 "$INPUT_HELPER" validate-activity "$ACTIVITY_TMP" 2>>"$LOG"
   )"; then
     if mv -f -- "$ACTIVITY_TMP" "$INPUTS/activity.jsonl"; then
       ACTIVITY_TMP=""
@@ -507,318 +426,9 @@ fi
 # Graceful on API errors: a failed app-read records has_signals:false and
 # an error note rather than aborting the whole step.
 DIGEST_TMP="$(mktemp "$INPUTS/.per-app-digest.json.XXXXXX" 2>>"$LOG" || true)"
-if [[ -n "$DIGEST_TMP" ]] && APP_ID_FOR_DIGEST="$APP_ID" python3 - \
+if [[ -n "$DIGEST_TMP" ]] && python3 "$INPUT_HELPER" app-digest \
     "$API_BASE_URL" "$SERVICE_TOKEN" "$INPUTS" "$SINCE" \
-    >"$DIGEST_TMP" 2>>"$LOG" <<'PY'
-import hashlib, json, os, sys, urllib.request, urllib.error, datetime
-
-base    = sys.argv[1].rstrip("/")
-token   = sys.argv[2]
-inp_dir = sys.argv[3]
-expected_since = sys.argv[4]
-headers = {"Authorization": "Bearer " + token}
-now_utc = datetime.datetime.now(datetime.timezone.utc)
-cutoff = datetime.datetime.fromisoformat(expected_since.replace("Z", "+00:00"))
-
-# --- helpers ---
-
-def api_get(path, timeout=20):
-    req = urllib.request.Request(base + path, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-def storage_get_text(app_id, path, timeout=15):
-    """Fetch a text file from app storage; return None only when it is absent."""
-    url = f"{base}/api/storage/apps/{app_id}/{path}"
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
-
-# --- activity: opens plus replay-safe app_signal events ---
-activity_path = os.path.join(inp_dir, "activity.jsonl")
-activity_status_path = os.path.join(inp_dir, "activity-status.json")
-activity_source = {"ok": False, "error": "activity source status is missing"}
-try:
-    with open(activity_status_path, encoding="utf-8") as f:
-        loaded_activity_source = json.load(f)
-    if isinstance(loaded_activity_source, dict) and isinstance(
-        loaded_activity_source.get("ok"), bool
-    ):
-        activity_source = loaded_activity_source
-    else:
-        activity_source = {"ok": False, "error": "activity source status is invalid"}
-except Exception as exc:
-    activity_source = {"ok": False, "error": f"activity source status unreadable: {exc}"}
-
-opens_by_app = {}   # app_id (str) -> count
-signal_counts_by_app = {}
-error_signals_by_app = {}
-app_errors_by_app = {}
-recent_app_errors = {}
-shell_errors = []
-request_errors_by_app = {}
-shell_request_errors = {}
-apps_with_signals = set()
-seen_signal_ids = set()
-
-def add_request_error(groups, ev):
-    """Merge one platform-bounded request_error window into a safe route group."""
-    try:
-        status = int(ev.get("status"))
-        count = max(1, int(ev.get("count", 1)))
-    except (TypeError, ValueError):
-        return
-    method = str(ev.get("method") or "?")[:16]
-    route = str(ev.get("route") or "<unmatched>")[:240]
-    key = (method, route, status)
-    group = groups.setdefault(key, {
-        "method": method,
-        "route": route,
-        "status": status,
-        "count": 0,
-        "peak_window_count": 0,
-        "first_ts": str(ev.get("first_ts") or ev.get("ts") or ""),
-        "last_ts": str(ev.get("last_ts") or ev.get("ts") or ""),
-    })
-    group["count"] += count
-    group["peak_window_count"] = max(group["peak_window_count"], count)
-    first_ts = str(ev.get("first_ts") or ev.get("ts") or "")
-    last_ts = str(ev.get("last_ts") or ev.get("ts") or "")
-    if first_ts and (not group["first_ts"] or first_ts < group["first_ts"]):
-        group["first_ts"] = first_ts
-    if last_ts and last_ts > group["last_ts"]:
-        group["last_ts"] = last_ts
-
-def is_expected_storage_miss(ev):
-    """A missing optional app document is storage state, not an app failure."""
-    try:
-        status = int(ev.get("status"))
-    except (TypeError, ValueError):
-        return False
-    return (
-        status == 404
-        and str(ev.get("method") or "").upper() in {"GET", "DELETE"}
-        and str(ev.get("route") or "")
-        == "/api/storage/apps/{app_id}/{path:path}"
-    )
-
-def top_request_errors(groups):
-    return sorted(
-        groups.values(),
-        key=lambda item: (-item["count"], item["status"], item["route"]),
-    )[:5]
-if activity_source.get("ok") and not os.path.exists(activity_path):
-    activity_source = {
-        **activity_source,
-        "ok": False,
-        "error": "validated activity snapshot is missing",
-    }
-if activity_source.get("ok"):
-    try:
-        with open(activity_path, "rb") as f:
-            snapshot = f.read()
-        actual_sha = hashlib.sha256(snapshot).hexdigest()
-        actual_count = sum(1 for line in snapshot.splitlines() if line.strip())
-        if activity_source.get("since") != expected_since:
-            raise ValueError("activity status belongs to a different observation window")
-        if activity_source.get("sha256") != actual_sha:
-            raise ValueError("activity snapshot hash does not match its status")
-        if activity_source.get("event_count") != actual_count:
-            raise ValueError("activity snapshot count does not match its status")
-    except Exception as exc:
-        activity_source = {
-            **activity_source,
-            "ok": False,
-            "error": f"activity snapshot status mismatch: {exc}",
-        }
-if activity_source.get("ok"):
-    try:
-        with open(activity_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                raw_app_id = ev.get("app_id")
-                aid = str(raw_app_id) if raw_app_id is not None else ""
-                if ev.get("ev") == "request_error":
-                    if is_expected_storage_miss(ev):
-                        continue
-                    groups = request_errors_by_app.setdefault(aid, {}) if aid else shell_request_errors
-                    add_request_error(groups, ev)
-                    continue
-                if ev.get("ev") == "app_error":
-                    message = str(ev.get("message") or "")[:200]
-                    summary = {
-                        "ts": str(ev.get("ts") or ""),
-                        "message": message,
-                    }
-                    if ev.get("where"):
-                        summary["where"] = str(ev.get("where"))[:120]
-                    if aid:
-                        app_errors_by_app[aid] = app_errors_by_app.get(aid, 0) + 1
-                        recent = recent_app_errors.setdefault(aid, [])
-                        recent.append(summary)
-                        del recent[:-5]
-                    else:
-                        shell_errors.append(summary)
-                        del shell_errors[:-5]
-                    continue
-                if ev.get("ev") == "app_open" and aid:
-                    opens_by_app[aid] = opens_by_app.get(aid, 0) + 1
-                    continue
-                if ev.get("ev") != "app_signal" or not aid:
-                    continue
-                signal_id = ev.get("id")
-                if not isinstance(signal_id, str) or not signal_id:
-                    continue
-                signal_key = (aid, signal_id)
-                if signal_key in seen_signal_ids:
-                    continue
-                occurred = ev.get("occurred_at", "")
-                try:
-                    occurred_at = datetime.datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-                    if occurred_at.tzinfo is None:
-                        occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
-                    if occurred_at < cutoff:
-                        continue
-                except (ValueError, TypeError, AttributeError):
-                    continue
-                seen_signal_ids.add(signal_key)
-                apps_with_signals.add(aid)
-                sname = ev.get("name", "")
-                if sname:
-                    counts = signal_counts_by_app.setdefault(aid, {})
-                    counts[sname] = counts.get(sname, 0) + 1
-                if sname == "error":
-                    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
-                    msg = payload.get("message") or payload.get("msg") or ""
-                    if msg:
-                        errors = error_signals_by_app.setdefault(aid, [])
-                        errors.append((occurred_at, str(msg)[:200]))
-                        errors.sort(key=lambda row: row[0])
-                        del errors[:-5]
-    except Exception as exc:
-        # A status/snapshot mismatch must fail closed; never return partially
-        # counted activity as though it represented the whole 24-hour window.
-        opens_by_app.clear()
-        signal_counts_by_app.clear()
-        error_signals_by_app.clear()
-        app_errors_by_app.clear()
-        recent_app_errors.clear()
-        shell_errors.clear()
-        request_errors_by_app.clear()
-        shell_request_errors.clear()
-        apps_with_signals.clear()
-        seen_signal_ids.clear()
-        activity_source = {
-            **activity_source,
-            "ok": False,
-            "error": f"validated activity snapshot unreadable: {exc}",
-        }
-
-# --- fetch app list ---
-try:
-    apps = api_get("/api/apps/")
-    if isinstance(apps, dict):
-        apps = apps.get("apps", [])
-except Exception as e:
-    # API unavailable — write an empty digest so the agent knows it failed
-    print(json.dumps({
-        "_error": str(e), "activity_source": activity_source, "apps": [],
-    }))
-    sys.exit(0)
-
-digests = []
-for app in apps:
-    app_id  = str(app.get("id", ""))
-    slug    = app.get("name") or app.get("slug") or app_id
-    name    = app.get("display_name") or slug
-    if not app_id:
-        continue
-
-    opens_24h = opens_by_app.get(app_id, 0)
-
-    # Parse signals.jsonl for this app from the storage API.
-    signal_counts = dict(signal_counts_by_app.get(app_id, {}))
-    error_signals = list(error_signals_by_app.get(app_id, []))
-    has_signals   = app_id in apps_with_signals
-    signals_error = None
-
-    # Migration path: older cached runtimes wrote one per-app signals.jsonl.
-    try:
-        raw = storage_get_text(app_id, "signals.jsonl")
-        if raw:
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    sig = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                # Count by name, limited to the last 24h
-                ts_str = sig.get("ts", "")
-                try:
-                    ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    # Make tz-aware for comparison
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=datetime.timezone.utc)
-                    if ts < cutoff:
-                        continue
-                except (ValueError, TypeError):
-                    continue
-                sname = sig.get("name", "")
-                if sname:
-                    has_signals = True
-                    signal_counts[sname] = signal_counts.get(sname, 0) + 1
-                # Collect last-5 error messages (newest last in file → reverse later)
-                if sname == "error":
-                    msg = sig.get("message") or sig.get("msg") or ""
-                    if msg:
-                        error_signals.append((ts, str(msg)[:200]))
-    except Exception as e:
-        signals_error = str(e)[:200]
-
-    entry = {
-        "app_id":      app_id,
-        "slug":        slug,
-        "name":        name,
-        "opens_24h":   opens_24h,
-        "has_signals": has_signals,
-        "signal_counts": signal_counts,
-        "last_5_errors": [msg for _, msg in sorted(error_signals, key=lambda row: row[0])[-5:]],
-        "app_errors_24h": app_errors_by_app.get(app_id, 0),
-        "recent_app_errors": recent_app_errors.get(app_id, []),
-        "request_errors_24h": sum(
-            group["count"] for group in request_errors_by_app.get(app_id, {}).values()
-        ),
-        "top_request_errors": top_request_errors(request_errors_by_app.get(app_id, {})),
-    }
-    if signals_error:
-        entry["signals_read_error"] = signals_error
-    digests.append(entry)
-
-print(json.dumps({
-    "generated_at": now_utc.isoformat(),
-    "activity_source": activity_source,
-    "shell_errors_24h": len(shell_errors),
-    "recent_shell_errors": shell_errors,
-    "shell_request_errors_24h": sum(
-        group["count"] for group in shell_request_errors.values()
-    ),
-    "top_shell_request_errors": top_request_errors(shell_request_errors),
-    "apps": digests,
-}, indent=2))
-PY
+    >"$DIGEST_TMP" 2>>"$LOG"
 then
   if python3 -m json.tool "$DIGEST_TMP" >/dev/null 2>>"$LOG"; then
     if mv -f -- "$DIGEST_TMP" "$INPUTS/per-app-digest.json"; then
@@ -1197,17 +807,6 @@ else
   fi
 fi
 
-# --- final safety-net commit ------------------------------------------
-# The agent commits as it goes (pm-commit per chunk). This is a backstop:
-# if the run was killed mid-chunk, sweep any agent-touched files into one
-# commit so nothing is left dirty + unreversible. pm-commit's denylist +
-# 50-file guard keep this honest; --allow-broad because a full night can
-# legitimately touch many files (skills, memory notes, app sources).
-if command -v pm-commit >/dev/null 2>&1; then
-  ( cd "$DATA_DIR" && pm-commit --allow-broad "reflection: nightly safety-net commit $DATE" \
-      >>"$LOG" 2>&1 ) || true
-fi
-
 # --- deterministic morning-brief push ---------------------------------
 # Delivery of the morning push is owned HERE, by the wrapper — NOT by the
 # agent. The agent composes the brief and writes state.json (streak +
@@ -1348,9 +947,6 @@ with tmp.open("w", encoding="utf-8") as handle:
     handle.flush(); os.fsync(handle.fileno())
 os.replace(tmp, target)
 PY
-
-# --- emit cron_outcome ------------------------------------------------
-emit_outcome "$RC"
 
 log "done (rc=$RC)"
 exit "$RC"

@@ -7,12 +7,12 @@ import { cronExitLabel } from '../domain.js'
 // ---------------------------------------------------------------------------
 //
 // Reads GET /api/admin/activity?since=<48h> (same auth pattern as other owner
-// calls in this app), filters to cron_outcome events with job=reflection, takes
-// the most-recent one, and renders a compact status line.
-// A failure outcome shows an "Investigate" button that posts moebius:new-chat
-// with a draft asking the agent to read /data/cron-logs/reflection.log.
+// calls in this app), filters to this app's supervisor-owned cron_outcome,
+// takes the most-recent one, and renders a compact status line.
+// A failure outcome opens an investigation draft that starts at the supervisor
+// boundary, then follows into Reflection's own log only if the child started.
 
-export function LastNightStatus({ token }) {
+export function LastNightStatus({ appId, token }) {
   const [state, setState] = React.useState({ phase: 'loading', exitCode: null, ts: null })
 
   React.useEffect(() => {
@@ -20,9 +20,12 @@ export function LastNightStatus({ token }) {
     ;(async () => {
       try {
         const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString()
-        const res = await fetch(`/api/admin/activity?since=${encodeURIComponent(since)}`, {
+        const res = await fetch(
+          `/api/admin/activity?since=${encodeURIComponent(since)}&app_id=${encodeURIComponent(appId)}`,
+          {
           headers: { Authorization: `Bearer ${token}` },
-        })
+          },
+        )
         if (!res.ok) { if (!cancelled) setState({ phase: 'unavailable' }); return }
         const text = await res.text()
         if (cancelled) return
@@ -37,9 +40,10 @@ export function LastNightStatus({ token }) {
             events.push(obj)
           } catch { continue }
         }
-        // Find the most-recent cron_outcome for reflection.
+        // Find the most-recent outcome for this installed app. Job basenames
+        // are supervisor data; app identity is the durable UI key.
         const reflection = events
-          .filter((e) => e.ev === 'cron_outcome' && e.job === 'reflection')
+          .filter((e) => e.ev === 'cron_outcome' && Number(e.app_id) === Number(appId))
           .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
         if (reflection.length === 0) {
           setState({ phase: 'none' })
@@ -52,15 +56,15 @@ export function LastNightStatus({ token }) {
       }
     })()
     return () => { cancelled = true }
-  }, [token])
+  }, [appId, token])
 
   const investigate = () => {
     const draft = [
       'Something went wrong with the Reflection cron job. Please investigate:',
       '',
-      '1. Check /data/cron-logs/reflection.log for the most recent error',
-      '2. Identify the root cause (lock, timeout, config, or agent error)',
-      '3. Propose a fix or next steps',
+      '1. Check the latest cron_outcome and /data/cron-logs/app-jobs.log',
+      '2. If the wrapper started, follow the same attempt in /data/cron-logs/reflection.log',
+      '3. Identify the owning root cause and propose a durable fix',
     ].join('\n')
     window.parent.postMessage({ type: 'moebius:new-chat', draft }, window.location.origin)
   }
