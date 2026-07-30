@@ -7,14 +7,15 @@ deterministic:
 
 * an exact reviewed head is recorded as merged with a public URL.
 
-It also classifies whether an unreferenced platform worktree has any patch
-absent from upstream, but that is evidence for Reflection rather than deletion
-authority: merge topology and worktree intent can still be ambiguous. Even an
-exact merged record is removed only when its checkout is clean, inactive,
-stable, and linked. Prepared or open records, dirty work, standalone clones,
-and ambiguous histories are reported rather than guessed at. A newly merged
-checkout waits one full nightly cycle before removal, so its originating chat
-can finish wrapping up without racing housekeeping.
+It also classifies whether an unreferenced platform worktree is an exact
+ancestor of upstream or has any patch absent from upstream, but that is
+evidence for Reflection rather than deletion authority: worktree intent can
+still be ambiguous. Even an exact merged record is removed only when its
+checkout is clean, inactive, stable, and linked. Prepared or open records,
+dirty work, standalone clones, and ambiguous histories are reported rather
+than guessed at. A newly merged checkout waits one full nightly cycle before
+removal, so its originating chat can finish wrapping up without racing
+housekeeping.
 
 Dry-run is the default. ``--apply`` enables the narrowly proven removals.
 The structured JSON output is the handoff to the nightly agent.
@@ -25,6 +26,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -139,6 +141,11 @@ def _load_records(contributions_dir: Path) -> tuple[list[dict], list[str]]:
       ),
       "repo_path": plan.get("repo_path") if isinstance(plan.get("repo_path"), str) else None,
       "head_sha": plan.get("head_sha") if isinstance(plan.get("head_sha"), str) else None,
+      "base_sha": plan.get("base_sha") if isinstance(plan.get("base_sha"), str) else None,
+      "diff_sha256": (
+        plan.get("diff_sha256")
+        if isinstance(plan.get("diff_sha256"), str) else None
+      ),
       "branch": (
         value.get("branch") if isinstance(value.get("branch"), str)
         else plan.get("branch") if isinstance(plan.get("branch"), str)
@@ -165,6 +172,7 @@ def _exact_merged_proof(
   records: Iterable[dict],
   head_sha: str | None,
   now: dt.datetime,
+  checkout: Path | None = None,
 ) -> tuple[dict | None, str | None]:
   exact = [
     record for record in records
@@ -172,8 +180,37 @@ def _exact_merged_proof(
     and record["url"]
     and record["head_sha"] == head_sha
   ]
+  if not exact and checkout is not None and head_sha:
+    # Older Contribute versions could amend commit attribution during Send
+    # without updating plan.head_sha. Recover that handoff only when the live
+    # checkout still produces the byte-exact reviewed diff recorded before
+    # publication. This proves reviewed content, not merely a similar patch.
+    for record in records:
+      base_sha = record.get("base_sha")
+      expected = record.get("diff_sha256")
+      if (
+        record["status"] != "merged"
+        or not record["url"]
+        or not isinstance(base_sha, str)
+        or not isinstance(expected, str)
+        or len(expected) != 64
+      ):
+        continue
+      for candidate_base in (base_sha, f"{head_sha}^"):
+        diff = _run(
+          "git", "-c", "core.quotePath=false", "-C", str(checkout),
+          "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index",
+          "--src-prefix=a/", "--dst-prefix=b/",
+          f"{candidate_base}..{head_sha}",
+        )
+        if (
+          diff.returncode == 0
+          and hashlib.sha256(diff.stdout.encode()).hexdigest() == expected
+        ):
+          exact.append({**record, "proof": "exact-reviewed-diff"})
+          break
   if not exact:
-    return None, "no-exact-merged-head"
+    return None, "no-exact-reviewed-head"
   timed = [(record, _record_time(record)) for record in exact]
   mature = [
     (record, observed)
@@ -302,6 +339,12 @@ def _all_patches_upstream(path: Path, upstream_ref: str) -> tuple[bool, str | No
   return True, None
 
 
+def _is_exact_upstream_ancestor(path: Path, upstream_ref: str) -> bool:
+  return _run(
+    "git", "-C", str(path), "merge-base", "--is-ancestor", "HEAD", upstream_ref,
+  ).returncode == 0
+
+
 def _directory_bytes(path: Path) -> int:
   result = _run("du", "-s", "-B1", str(path), timeout=60)
   if result.returncode or not result.stdout.strip():
@@ -359,7 +402,9 @@ def _remove_candidate(
     current["reasons"].append("actionable-record")
   proof = candidate["proof"]
   if proof == "exact-merged-record":
-    exact, proof_reason = _exact_merged_proof(matched, current["head_sha"], now)
+    exact, proof_reason = _exact_merged_proof(
+      matched, current["head_sha"], now, path,
+    )
     if exact is None:
       current["reasons"].append(proof_reason or "merged-proof-changed")
   if errors:
@@ -449,13 +494,20 @@ def run_housekeeping(
       preserved["actionable-checkout"] += 1
       continue
     exact, proof_reason = _exact_merged_proof(
-      matched, inspected["head_sha"], observed_at,
+      matched, inspected["head_sha"], observed_at, path,
     )
-    if exact is not None and not inspected["reasons"]:
+    if (
+      exact is not None
+      and exact.get("proof") != "exact-reviewed-diff"
+      and not inspected["reasons"]
+    ):
       candidates[path] = {
         **inspected,
         "proof": "exact-merged-record",
       }
+    elif exact is not None and exact.get("proof") == "exact-reviewed-diff":
+      inspected["reasons"].append("exact-reviewed-diff-proof-available")
+      exceptions.append(inspected)
     elif "merged" in statuses or statuses & {"closed", "abandoned"}:
       if exact is None:
         inspected["reasons"].append(proof_reason or "no-exact-merged-head")
@@ -488,7 +540,9 @@ def run_housekeeping(
     if row.get("locked"):
       inspected["reasons"].append("locked")
     represented, reason = _all_patches_upstream(path, upstream_ref)
-    if represented:
+    if represented and _is_exact_upstream_ancestor(path, upstream_ref):
+      inspected["reasons"].append("exact-upstream-ancestor-unreferenced")
+    elif represented:
       inspected["reasons"].append("all-patches-upstream-unreferenced")
     elif reason:
       inspected["reasons"].append(reason)
