@@ -264,6 +264,13 @@ async def run_codex_sdk_turn(**kwargs):
     await writeFile(join(skillDir, 'reflection.md'), 'Test reflection skill.\n')
     const fakeRunner = join(fakeScripts, 'reflection_runner.py')
     await copyFile(join(appRoot, 'reflection_runner.py'), fakeRunner)
+    // The runner resolves its operating contract beside itself and fails
+    // loudly without it (a contract-less home is a broken install). A
+    // relocated runner home must therefore carry the contract too.
+    await copyFile(
+      join(appRoot, 'operating-contract.md'),
+      join(fakeScripts, 'operating-contract.md'),
+    )
     let timeoutError
     try {
       await run({

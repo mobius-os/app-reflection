@@ -2,11 +2,19 @@
 """Standalone multi-turn runner for the nightly Reflection pass.
 
 This is the autonomous, unattended cousin of `app.claude_sdk_runner`.
-It runs ONE goal-driven Reflection session: the reflection skill becomes
-the system prompt, a short "reflection goal" becomes the first user
-message, and the SDK drives a long multi-turn loop with the FULL tool
-surface (Bash, Read, Write, Edit, WebSearch, agent-browser, ...) until
-the goal loop ends.
+It runs ONE goal-driven Reflection session: the system prompt is the
+agent-editable reflection skill (judgment) plus the app-owned operating
+contract (mechanism) appended fresh from app source, a short "reflection
+goal" becomes the first user message, and the SDK drives a long
+multi-turn loop with the FULL tool surface (Bash, Read, Write, Edit,
+WebSearch, agent-browser, ...) until the goal loop ends.
+
+One rule, one home: the skill may rewrite itself between runs and app
+updates never touch it, so any mechanic copied there (output paths,
+formats, push ownership) inevitably drifts from the code — that drift
+once double-announced a morning brief. The contract ships beside this
+runner and updates atomically with the app, so mechanism has exactly
+one current statement per night.
 
 Why this is its own runner (not `run_claude_sdk_turn`):
 
@@ -107,6 +115,12 @@ CODEX_HOME = DATA_DIR / "cli-auth" / "codex"
 CLI_PATH = "/usr/local/bin/claude"
 # The denylist-guarded `git add -A && git commit` helper baked into the image.
 PM_COMMIT = "/app/scripts/pm-commit"
+# The app-owned operating contract appended to the system prompt each run.
+# Resolved BESIDE this runner (not under a fixed /data path) so it works in
+# both of the runner's homes — the platform's backend/scripts tree and the
+# installed catalog app — and always matches the code version actually
+# running. Mechanism lives here; the agent-editable skill keeps judgment.
+CONTRACT_PATH = Path(__file__).resolve().parent / "operating-contract.md"
 
 # The brief template is baked into the image at /app/scripts; the agent runs
 # with cwd=/data and the SDK Read tool is scoped to that subtree, so a Read of
@@ -473,6 +487,33 @@ def load_skill() -> str:
   raise FileNotFoundError(
     f"reflection skill not found at {SKILL_PATH} or any baked fallback"
   )
+
+
+def load_operating_contract() -> str:
+  """Returns the app-owned operating contract — the mechanism half of the prompt.
+
+  The contract ships beside this runner and updates atomically with the
+  app, so mechanical rules (output paths, formats, push ownership) can
+  never drift from the code that enforces them the way skill-copied
+  mechanics once did. A missing file is a broken install, not a soft
+  state — fail loudly like a missing skill rather than silently running
+  a night without its output contract.
+  """
+  return CONTRACT_PATH.read_text(encoding="utf-8")
+
+
+def build_system_prompt() -> str:
+  """Composes the night's system prompt: judgment (skill) + mechanism (contract).
+
+  The agent-editable skill holds judgment and may rewrite itself between
+  runs; the app-owned contract holds mechanism and updates with the app.
+  The contract comes AFTER the skill, so if an evolved skill still
+  restates a stale mechanic, the authoritative current statement reads
+  last — and the contract's preamble instructs the agent to delete such
+  duplicates from its skill, so existing instances migrate themselves
+  without a forced notebook rewrite.
+  """
+  return load_skill().rstrip() + "\n\n" + load_operating_contract()
 
 
 def seed_brief_template() -> None:
@@ -1126,7 +1167,7 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
 async def _run_claude_session(
   *,
   goal: str,
-  skill_text: str,
+  system_prompt: str,
   env: dict[str, str],
   model: str | None,
   effort: str | None,
@@ -1136,7 +1177,7 @@ async def _run_claude_session(
   from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
   options_kwargs: dict = {
-    "system_prompt": skill_text,
+    "system_prompt": system_prompt,
     "cwd": str(DATA_DIR),
     "env": env,
     "setting_sources": None,
@@ -1208,7 +1249,7 @@ async def _run_claude_session(
 async def _run_codex_session(
   *,
   goal: str,
-  skill_text: str,
+  system_prompt: str,
   env: dict[str, str],
   model: str | None,
   effort: str | None,
@@ -1237,7 +1278,7 @@ async def _run_codex_session(
         "model": model,
         "effort": effort,
       },
-      system_prompt=skill_text,
+      system_prompt=system_prompt,
     )
   except Exception as exc:
     _log(f"ERROR codex runner failed: {exc!r}")
@@ -1264,7 +1305,7 @@ async def _run_agent_choice(
   choice: dict,
   *,
   goal: str,
-  skill_text: str,
+  system_prompt: str,
   env: dict[str, str],
   log_fh,
 ) -> int:
@@ -1274,11 +1315,11 @@ async def _run_agent_choice(
   effort = choice.get("effort")
   if provider == "codex":
     return await _run_codex_session(
-      goal=goal, skill_text=skill_text, env=env,
+      goal=goal, system_prompt=system_prompt, env=env,
       model=model, effort=effort, log_fh=log_fh,
     )
   return await _run_claude_session(
-    goal=goal, skill_text=skill_text, env=env, model=model,
+    goal=goal, system_prompt=system_prompt, env=env, model=model,
     effort=effort, log_fh=log_fh,
   )
 
@@ -1287,7 +1328,7 @@ async def _maybe_write_fallback_brief(
   rc: int,
   *,
   provider: str,
-  skill_text: str,
+  system_prompt: str,
   env: dict[str, str],
   model: str | None,
   effort: str | None,
@@ -1353,12 +1394,12 @@ async def _maybe_write_fallback_brief(
     goal = build_fallback_goal()
     if provider == "codex":
       fallback_rc = await _run_codex_session(
-        goal=goal, skill_text=skill_text, env=env,
+        goal=goal, system_prompt=system_prompt, env=env,
         model=model, effort=effort, log_fh=log_fh,
       )
     else:
       fallback_rc = await _run_claude_session(
-        goal=goal, skill_text=skill_text, env=env, model=model,
+        goal=goal, system_prompt=system_prompt, env=env, model=model,
         effort=effort, log_fh=log_fh,
       )
     wrote = brief is not None and brief.is_file()
@@ -1395,7 +1436,7 @@ async def run() -> int:
   provider = primary["provider"]
   model = primary.get("model")
   effort = primary.get("effort")
-  skill_text = load_skill()
+  system_prompt = build_system_prompt()
   seed_brief_template()
   goal = build_goal(settings)
   env = build_env()
@@ -1419,7 +1460,7 @@ async def run() -> int:
 
   try:
     rc = await _run_agent_choice(
-      primary, goal=goal, skill_text=skill_text, env=env,
+      primary, goal=goal, system_prompt=system_prompt, env=env,
       log_fh=log_fh,
     )
     if configured_fallback_needed(rc, fallback, todays_brief_path()):
@@ -1430,7 +1471,7 @@ async def run() -> int:
         f"effort={fallback.get('effort') or '(default)'}"
       )
       rc = await _run_agent_choice(
-        fallback, goal=goal, skill_text=skill_text, env=env,
+        fallback, goal=goal, system_prompt=system_prompt, env=env,
         log_fh=log_fh,
       )
       provider = fallback["provider"]
@@ -1440,7 +1481,7 @@ async def run() -> int:
       _log("done")
     else:
       await _maybe_write_fallback_brief(
-        rc, provider=provider, skill_text=skill_text, env=env,
+        rc, provider=provider, system_prompt=system_prompt, env=env,
         model=model, effort=effort, log_fh=log_fh,
       )
     return rc
