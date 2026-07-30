@@ -55,6 +55,25 @@ export function ChatPanel({ getContext }) {
         if (disposed) { try { h && h.destroy && h.destroy() } catch {} return }
         handle = h
         setPhase('live')
+        // The runtime reveals the embed only after its READY handshake. A
+        // frame that can never boot (an edge proxy stamping frame-ancestors
+        // over the opaque embed route, a blocked asset) used to leave this
+        // panel silently black: the mount resolves, then nothing. The runtime
+        // now emits a sticky 'error' from its bootstrap watchdog — surface
+        // the existing unavailable notice instead of the dead pane. Both
+        // 'ready' and 'error' are sticky, so listeners attached after the
+        // fact still observe them; a slow boot that completes after the
+        // notice flips the panel back to live.
+        let embedReady = false
+        if (h && typeof h.on === 'function') {
+          h.on('ready', () => {
+            embedReady = true
+            if (!disposed) setPhase('live')
+          })
+          h.on('error', () => {
+            if (!embedReady && !disposed) setPhase('unavailable')
+          })
+        }
       })
       .catch(() => { if (!disposed) setPhase('unavailable') })
     return () => {
