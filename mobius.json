@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "2.8.13",
+  "version": "2.8.14",
   "description": "While you sleep, Möbius learns from recent work, improves its own approach, anticipates what may help next, and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
@@ -51,6 +51,7 @@
   "embeds_agent": true,
   "source_files": [
     "reflection_runner.py",
+    "reflection_inputs.py",
     "housekeeping.py",
     "resource_monitor.py",
     "memory_health.py",

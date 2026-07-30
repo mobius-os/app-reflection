@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-VERSION = 1
+VERSION = 3
 DEFAULT_DB = "/data/db/ultimate.db"
 
 PRIMITIVES = {
@@ -68,10 +68,22 @@ def _failed(block: dict[str, Any]) -> bool:
   )
 
 
-def _command_signature(tool: str, text: str) -> tuple[str, str]:
+def _failure_class(block: dict[str, Any]) -> str | None:
+  """Classify mechanics without retaining potentially private tool output."""
+  if block.get("status") in {"error", "failed"}:
+    return "tool_reported_failure"
+  if block.get("output_exit_code") not in (None, 0):
+    return "nonzero_exit"
+  return None
+
+
+def _ratio(part: int | float, whole: int | float) -> float:
+  return round(float(part) / float(whole), 4) if whole else 0.0
+
+
+def _command_signature(tool: str, text: str) -> str:
   compact = " ".join(text.split())
-  digest = hashlib.sha256(f"{tool}\0{compact}".encode("utf-8")).hexdigest()[:16]
-  return digest, compact[:180]
+  return hashlib.sha256(f"{tool}\0{compact}".encode("utf-8")).hexdigest()[:16]
 
 
 def _empty_surface() -> dict[str, Any]:
@@ -85,13 +97,18 @@ def _empty_surface() -> dict[str, Any]:
 
 
 def _serialise_surface(value: dict[str, Any]) -> dict[str, Any]:
-  return {
+  result = {
     "tool_calls": value["tool_calls"],
     "failed_calls": value["failed_calls"],
     "truncated_calls": value["truncated_calls"],
     "output_bytes": value["output_bytes"],
     "chat_count": len(value["chat_ids"]),
   }
+  result["failure_rate"] = _ratio(result["failed_calls"], result["tool_calls"])
+  result["truncation_rate"] = _ratio(
+    result["truncated_calls"], result["tool_calls"],
+  )
+  return result
 
 
 def analyse_database(
@@ -115,7 +132,7 @@ def analyse_database(
   chat_ids: list[str] = []
   try:
     run_rows = list(con.execute(
-      "select chat_id, status, cost_usd, input_tokens, output_tokens, "
+      "select chat_id, status, cost_usd, started_at, input_tokens, output_tokens, "
       "cache_read_input_tokens, total_tokens from chat_runs "
       "where started_at >= ?",
       (cutoff.replace(tzinfo=None).isoformat(sep=" "),),
@@ -143,6 +160,12 @@ def analyse_database(
   repeated: dict[tuple[str, str], dict[str, Any]] = {}
   by_chat: dict[str, dict[str, Any]] = {}
   assistant_turns = 0
+  failure_classes: Counter[str] = Counter()
+  daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
+    "tool_calls": 0, "failed_calls": 0, "truncated_calls": 0,
+    "completed_runs": 0, "cost_usd": 0.0, "total_tokens": 0,
+    "input_tokens": 0, "cache_read_input_tokens": 0,
+  })
 
   for row in chat_rows:
     chat_id = str(row["id"])
@@ -171,12 +194,16 @@ def analyse_database(
         continue
       assistant_turns += 1
       chat["assistant_turns"] += 1
+      day = dt.datetime.fromtimestamp(
+        _message_time_ms(message) / 1000, tz=dt.timezone.utc,
+      ).date().isoformat()
       for block in message.get("blocks") or []:
         if not isinstance(block, dict) or block.get("type") != "tool":
           continue
         tool = str(block.get("tool") or "unknown")
         command = _tool_text(block.get("input"))
         failed = _failed(block)
+        failure_class = _failure_class(block)
         truncated = bool(block.get("output_truncated"))
         try:
           output_bytes = int(block.get("output_full_len") or 0)
@@ -193,6 +220,11 @@ def analyse_database(
         chat["failed_calls"] += int(failed)
         chat["truncated_calls"] += int(truncated)
         chat["output_bytes"] += output_bytes
+        daily[day]["tool_calls"] += 1
+        daily[day]["failed_calls"] += int(failed)
+        daily[day]["truncated_calls"] += int(truncated)
+        if failure_class:
+          failure_classes[failure_class] += 1
 
         for name, pattern in PRIMITIVES.items():
           if not pattern.search(command):
@@ -204,12 +236,11 @@ def analyse_database(
           surface["output_bytes"] += output_bytes
           surface["chat_ids"].add(chat_id)
 
-        signature, sample = _command_signature(tool, command)
+        signature = _command_signature(tool, command)
         key = (tool, signature)
         item = repeated.setdefault(key, {
           "tool": tool,
           "signature": signature,
-          "sample": sample,
           "count": 0,
           "chat_ids": set(),
           "failed_calls": 0,
@@ -221,6 +252,21 @@ def analyse_database(
       by_chat[chat_id] = chat
 
   completed_runs = [row for row in run_rows if row["status"] == "completed"]
+  for row in completed_runs:
+    try:
+      started = dt.datetime.fromisoformat(str(row["started_at"]))
+      if started.tzinfo is None:
+        started = started.replace(tzinfo=dt.timezone.utc)
+      day = started.astimezone(dt.timezone.utc).date().isoformat()
+    except (TypeError, ValueError):
+      continue
+    daily[day]["completed_runs"] += 1
+    daily[day]["cost_usd"] += float(row["cost_usd"] or 0)
+    daily[day]["total_tokens"] += int(row["total_tokens"] or 0)
+    daily[day]["input_tokens"] += int(row["input_tokens"] or 0)
+    daily[day]["cache_read_input_tokens"] += int(
+      row["cache_read_input_tokens"] or 0
+    )
   run_totals = {
     "completed_runs": len(completed_runs),
     "chat_count": len({str(row["chat_id"]) for row in completed_runs}),
@@ -232,6 +278,12 @@ def analyse_database(
     ),
     "total_tokens": sum(int(row["total_tokens"] or 0) for row in completed_runs),
   }
+  run_totals["cache_read_share"] = _ratio(
+    run_totals["cache_read_input_tokens"], run_totals["input_tokens"],
+  )
+  run_totals["cost_per_completed_run"] = round(
+    run_totals["cost_usd"] / run_totals["completed_runs"], 6,
+  ) if run_totals["completed_runs"] else 0.0
 
   top_chats = sorted(
     by_chat.values(),
@@ -251,7 +303,6 @@ def analyse_database(
     repeated_rows.append({
       "tool": item["tool"],
       "signature": item["signature"],
-      "sample": item["sample"],
       "count": item["count"],
       "chat_count": len(item["chat_ids"]),
       "failed_calls": item["failed_calls"],
@@ -269,6 +320,24 @@ def analyse_database(
     "overall": serial_overall,
     "run_totals": run_totals,
     "tool_types": dict(tool_types.most_common()),
+    "failure_classes": dict(failure_classes.most_common()),
+    "daily": [
+      {
+        "date": day,
+        **{
+          **values,
+          "cost_usd": round(values["cost_usd"], 6),
+          "failure_rate": _ratio(values["failed_calls"], values["tool_calls"]),
+          "truncation_rate": _ratio(
+            values["truncated_calls"], values["tool_calls"],
+          ),
+          "cache_read_share": _ratio(
+            values["cache_read_input_tokens"], values["input_tokens"],
+          ),
+        },
+      }
+      for day, values in sorted(daily.items())
+    ],
     "primitives": {
       name: _serialise_surface(surfaces[name]) for name in PRIMITIVES
     },
@@ -292,6 +361,12 @@ def format_report(data: dict[str, Any]) -> str:
     (
       f"  completed_runs={runs['completed_runs']}  "
       f"recorded_cost=${runs['cost_usd']:.2f}  total_tokens={runs['total_tokens']}"
+    ),
+    (
+      f"  failure_rate={overall['failure_rate']:.1%}  "
+      f"truncation_rate={overall['truncation_rate']:.1%}  "
+      f"cache_read_share={runs['cache_read_share']:.1%}  "
+      f"cost/run=${runs['cost_per_completed_run']:.2f}"
     ),
     "  recurring mechanical surfaces:",
   ]
