@@ -145,11 +145,12 @@ button.rf-card { cursor: pointer; }
 
 /* mobius-ui:Segmented v1 — keep in sync; library candidate. Diverge below the marker only. */
 .rf-seg {
-  display: flex; gap: 2px; padding: 3px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  display: flex; gap: 2px; height: 44px;
+  background: var(--surface); border: 0; border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .rf-seg-btn {
-  min-height: 44px; padding: 6px 15px; border: none; border-radius: 7px;
+  box-sizing: border-box; min-height: 44px; padding: 6px 15px; border: none; border-radius: 7px;
   background: transparent; color: var(--muted); font-family: var(--font);
   font-size: 13px; font-weight: 650; cursor: pointer; transition: background .15s, color .15s;
   touch-action: manipulation; user-select: none;
