@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import housekeeping
 
@@ -128,6 +129,47 @@ class HousekeepingTests(unittest.TestCase):
       and "exact-reviewed-diff-proof-available" in item["reasons"]
       for item in result["needs_reasoning"]
     ))
+
+  def test_reviewed_binary_diff_is_hashed_without_text_decoding(self):
+    raw_diff = b"diff --git a/image b/image\n\xff\xfe\x00binary\n"
+    record = {
+      "status": "merged",
+      "url": "https://example.test/pr/binary",
+      "head_sha": "reviewed-head",
+      "base_sha": "base",
+      "diff_sha256": hashlib.sha256(raw_diff).hexdigest(),
+      "updated_at": "2026-07-27T00:00:00Z",
+    }
+    completed = subprocess.CompletedProcess(
+      ("git", "diff"), 0, raw_diff, b"",
+    )
+
+    with mock.patch.object(housekeeping, "_run_bytes", return_value=completed):
+      proof, reason = housekeeping._exact_merged_proof(
+        [record], "rewritten-head", self.now, self.platform,
+      )
+
+    self.assertEqual(proof["proof"], "exact-reviewed-diff")
+    self.assertIsNone(reason)
+
+  def test_unexpected_failure_replaces_success_with_unavailable_payload(self):
+    self.output.parent.mkdir(parents=True, exist_ok=True)
+    self.output.write_text('{"status":"ok"}\n', encoding="utf-8")
+    argv = [
+      "housekeeping.py",
+      "--data-dir", str(self.data),
+      "--contributions-dir", str(self.records),
+      "--output", str(self.output),
+    ]
+
+    with mock.patch("sys.argv", argv), mock.patch.object(
+      housekeeping, "run_housekeeping", side_effect=RuntimeError("boom"),
+    ):
+      self.assertEqual(housekeeping.main(), 0)
+
+    payload = json.loads(self.output.read_text())
+    self.assertEqual(payload["status"], "unavailable")
+    self.assertIn("housekeeping-failed:RuntimeError:boom", payload["source"]["error"])
 
   def test_different_post_review_content_is_not_treated_as_exact(self):
     path, reviewed_head = self.add_worktree("changed-after-review")

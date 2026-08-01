@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,68 @@ class ReflectionInputsTests(unittest.TestCase):
 
   def tearDown(self):
     self._temporary_directory.cleanup()
+
+  def test_input_manifest_rejects_retained_and_failed_evidence(self):
+    started = datetime.datetime.now(
+      datetime.timezone.utc,
+    ) - datetime.timedelta(seconds=2)
+    activity = '{"ev":"app_open","ts":"2026-07-31T00:00:00Z"}\n'
+    (self.tmp_path / "activity.jsonl").write_text(activity, encoding="utf-8")
+    reflection_inputs.write_activity_status(
+      self.tmp_path / "activity-status.json",
+      ok=False,
+      error="fetch failed",
+      event_count=None,
+      since="2026-07-30T00:00:00Z",
+      sha256=None,
+    )
+    (self.tmp_path / "housekeeping.json").write_text(
+      json.dumps({"status": "ok"}), encoding="utf-8",
+    )
+    stale = (started - datetime.timedelta(hours=24)).timestamp()
+    os.utime(self.tmp_path / "housekeeping.json", (stale, stale))
+
+    manifest = reflection_inputs.build_input_manifest(
+      self.tmp_path,
+      run_id="run-one",
+      started_at=started.isoformat(),
+    )
+    by_path = {item["path"]: item for item in manifest["items"]}
+
+    self.assertEqual(manifest["status"], "partial")
+    self.assertEqual(by_path["activity-status.json"]["status"], "unavailable")
+    self.assertEqual(by_path["activity.jsonl"]["status"], "stale")
+    self.assertEqual(by_path["housekeeping.json"]["status"], "stale")
+    self.assertEqual(by_path["prev-report.html"]["status"], "absent")
+    self.assertEqual(
+      json.loads((self.tmp_path / "input-manifest.json").read_text()),
+      manifest,
+    )
+
+  def test_input_manifest_promotes_only_current_validated_activity(self):
+    started = datetime.datetime.now(
+      datetime.timezone.utc,
+    ) - datetime.timedelta(seconds=2)
+    activity = '{"ev":"app_open","ts":"2026-07-31T00:00:00Z"}\n'
+    (self.tmp_path / "activity.jsonl").write_text(activity, encoding="utf-8")
+    reflection_inputs.write_activity_status(
+      self.tmp_path / "activity-status.json",
+      ok=True,
+      error="",
+      event_count=1,
+      since="2026-07-30T00:00:00Z",
+      sha256=hashlib.sha256(activity.encode()).hexdigest(),
+    )
+
+    manifest = reflection_inputs.build_input_manifest(
+      self.tmp_path,
+      run_id="run-two",
+      started_at=started.isoformat(),
+    )
+    by_path = {item["path"]: item for item in manifest["items"]}
+
+    self.assertEqual(by_path["activity-status.json"]["status"], "complete")
+    self.assertEqual(by_path["activity.jsonl"]["status"], "complete")
 
   def test_activity_status_and_snapshot_share_one_verified_contract(self):
     snapshot = self.tmp_path / "activity.jsonl"
