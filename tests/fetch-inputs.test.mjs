@@ -78,6 +78,13 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       id: chatId, title: 'Useful session', provider: 'codex',
       updated_at: now, message_count: 7,
     }])
+    if (url.pathname === '/api/chat-logs') return json(response, 200, {
+      items: [{
+        id: 'deleted-chat', title: 'Deleted but useful',
+        updated_at: now, recency_at: now, deleted_at: now, message_count: 3,
+      }],
+      next_before: null,
+    })
     if (url.pathname === '/api/apps/') {
       return json(response, 200, [{ id: 1, name: 'reflection', display_name: 'Reflection' }])
     }
@@ -167,6 +174,10 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       'complete',
     )
     assert.equal(
+      manifest.items.find((item) => item.path === 'chats.md').status,
+      'complete',
+    )
+    assert.equal(
       manifest.items.find((item) => item.path === 'housekeeping.json').status,
       'unavailable',
     )
@@ -186,6 +197,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(metaStateStatus.first_run_seed, true)
     assert.equal(metaLearning, '')
     assert.match(chats, /messages=7, note_bytes=13/)
+    assert.match(chats, /\[deleted\].*Deleted but useful/)
 
     const learning = JSON.stringify({
       ts: '2026-07-17T00:00:00Z',

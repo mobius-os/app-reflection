@@ -12,7 +12,7 @@
   "permissions": {
     "cross_app_access": "read",
     "share_with_apps": "none",
-    "chat_log_access": "summary"
+    "chat_log_access": "summary_with_deleted"
   },
   "storage_seeds": {
     "settings.json": {

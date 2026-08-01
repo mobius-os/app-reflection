@@ -82,6 +82,25 @@ class ReflectionInputsTests(unittest.TestCase):
     self.assertEqual(by_path["activity-status.json"]["status"], "complete")
     self.assertEqual(by_path["activity.jsonl"]["status"], "complete")
 
+  def test_input_manifest_marks_missing_deleted_chat_view_partial(self):
+    started = datetime.datetime.now(
+      datetime.timezone.utc,
+    ) - datetime.timedelta(seconds=2)
+    (self.tmp_path / "chats.md").write_text(
+      "# deleted_chat_summaries: unavailable (HTTPError)\n",
+      encoding="utf-8",
+    )
+
+    manifest = reflection_inputs.build_input_manifest(
+      self.tmp_path,
+      run_id="run-three",
+      started_at=started.isoformat(),
+    )
+    by_path = {item["path"]: item for item in manifest["items"]}
+
+    self.assertEqual(by_path["chats.md"]["status"], "partial")
+    self.assertIn("not staged", by_path["chats.md"]["reason"])
+
   def test_activity_status_and_snapshot_share_one_verified_contract(self):
     snapshot = self.tmp_path / "activity.jsonl"
     status = self.tmp_path / "activity-status.json"
@@ -115,7 +134,7 @@ class ReflectionInputsTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "lacks string ev/ts"):
       reflection_inputs.validate_activity(path)
 
-  def test_app_digest_groups_errors_and_ignores_expected_storage_misses(self):
+  def test_app_digest_separates_expected_storage_misses_from_real_errors(self):
     since = "2026-07-29T00:00:00Z"
     now = datetime.datetime(
       2026, 7, 30, tzinfo=datetime.timezone.utc,
@@ -147,7 +166,6 @@ class ReflectionInputsTests(unittest.TestCase):
       since=since,
       sha256=hashlib.sha256(content.encode()).hexdigest(),
     )
-
     with (
       mock.patch.object(
         reflection_inputs,
@@ -167,6 +185,67 @@ class ReflectionInputsTests(unittest.TestCase):
     self.assertEqual(app["signal_counts"], {"item_created": 1})
     self.assertEqual(app["request_errors_24h"], 2)
     self.assertEqual(app["top_request_errors"][0]["status"], 500)
+    self.assertEqual(app["storage_misses_24h"], 100)
+
+  def test_legacy_signal_reads_are_limited_to_apps_that_wrote_the_file(self):
+    since = "2026-07-29T00:00:00Z"
+    now = datetime.datetime(
+      2026, 7, 30, tzinfo=datetime.timezone.utc,
+    ).isoformat()
+    events = [
+      {
+        "ev": "storage_write", "ts": now, "app_id": 2,
+        "path": "signals.jsonl",
+      },
+      {
+        "ev": "storage_write", "ts": now, "app_id": 3,
+        "path": "signals.jsonl",
+      },
+      {
+        "ev": "app_signal", "ts": now, "app_id": 3, "id": "canonical",
+        "occurred_at": now, "name": "canonical_event", "payload": {},
+      },
+    ]
+    content = "".join(json.dumps(event) + "\n" for event in events)
+    (self.tmp_path / "activity.jsonl").write_text(content, encoding="utf-8")
+    reflection_inputs.write_activity_status(
+      self.tmp_path / "activity-status.json",
+      ok=True,
+      error="",
+      event_count=len(events),
+      since=since,
+      sha256=hashlib.sha256(content.encode()).hexdigest(),
+    )
+    reads = []
+
+    def storage(_base, _token, app_id, path):
+      reads.append((app_id, path))
+      return json.dumps({"ts": now, "name": "legacy_event"}) + "\n"
+
+    with (
+      mock.patch.object(
+        reflection_inputs,
+        "_api_json",
+        return_value=[
+          {"id": 1, "slug": "quiet"},
+          {"id": 2, "slug": "legacy"},
+          {"id": 3, "slug": "canonical"},
+        ],
+      ),
+      mock.patch.object(reflection_inputs, "_storage_text", side_effect=storage),
+    ):
+      digest = reflection_inputs.build_app_digest(
+        "http://example.test", "token", self.tmp_path, since,
+      )
+
+    self.assertEqual(reads, [("2", "signals.jsonl")])
+    by_slug = {app["slug"]: app for app in digest["apps"]}
+    self.assertEqual(by_slug["legacy"]["signal_counts"], {"legacy_event": 1})
+    self.assertEqual(
+      by_slug["canonical"]["signal_counts"], {"canonical_event": 1},
+    )
+    self.assertIs(by_slug["quiet"]["has_signals"], False)
+
 
 if __name__ == "__main__":
   unittest.main()
