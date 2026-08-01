@@ -56,6 +56,20 @@ def _run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args, 127, "", str(exc))
 
 
+def _run_bytes(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[bytes]:
+  """Run a command whose output is part of a byte-exact proof."""
+  try:
+    return subprocess.run(
+      args,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      timeout=timeout,
+      check=False,
+    )
+  except (OSError, subprocess.TimeoutExpired) as exc:
+    return subprocess.CompletedProcess(args, 127, b"", str(exc).encode())
+
+
 def _atomic_json(path: Path, payload: dict) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   fd, raw_tmp = tempfile.mkstemp(
@@ -197,7 +211,7 @@ def _exact_merged_proof(
       ):
         continue
       for candidate_base in (base_sha, f"{head_sha}^"):
-        diff = _run(
+        diff = _run_bytes(
           "git", "-c", "core.quotePath=false", "-C", str(checkout),
           "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index",
           "--src-prefix=a/", "--dst-prefix=b/",
@@ -205,7 +219,7 @@ def _exact_merged_proof(
         )
         if (
           diff.returncode == 0
-          and hashlib.sha256(diff.stdout.encode()).hexdigest() == expected
+          and hashlib.sha256(diff.stdout).hexdigest() == expected
         ):
           exact.append({**record, "proof": "exact-reviewed-diff"})
           break
@@ -671,13 +685,20 @@ def main() -> int:
     except BlockingIOError:
       _unavailable_payload(args.output, "housekeeping-already-running", args.apply)
       return 0
-    run_housekeeping(
-      data_dir=data_dir,
-      contributions_dir=contributions_dir,
-      output=args.output,
-      apply=args.apply,
-      upstream_ref=args.upstream_ref,
-    )
+    try:
+      run_housekeeping(
+        data_dir=data_dir,
+        contributions_dir=contributions_dir,
+        output=args.output,
+        apply=args.apply,
+        upstream_ref=args.upstream_ref,
+      )
+    except Exception as exc:
+      _unavailable_payload(
+        args.output,
+        f"housekeeping-failed:{type(exc).__name__}:{exc}",
+        args.apply,
+      )
   return 0
 
 

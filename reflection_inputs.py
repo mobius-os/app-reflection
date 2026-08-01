@@ -14,6 +14,29 @@ import urllib.request
 from pathlib import Path
 
 
+_MANIFEST_INPUTS = (
+  ("activity-status.json", True),
+  ("activity.jsonl", True),
+  ("chats.md", True),
+  ("app-feedback.md", True),
+  ("per-app-digest.json", True),
+  ("tool-friction.json", True),
+  ("housekeeping.json", True),
+  ("memory-health.json", True),
+  ("resource-snapshot.json", True),
+  ("resource-history.jsonl", True),
+  ("resource-decisions.jsonl", True),
+  ("meta-state.md", True),
+  ("meta-state-status.json", True),
+  ("meta-learning.jsonl", True),
+  ("reflection-run-history.txt", True),
+  ("app_id", True),
+  ("prev-report-name.txt", False),
+  ("prev-report.html", False),
+  ("prev-question-answers.json", False),
+)
+
+
 def _atomic_json(path: Path, value: dict) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -23,6 +46,115 @@ def _atomic_json(path: Path, value: dict) -> None:
     handle.flush()
     os.fsync(handle.fileno())
   os.replace(temp, path)
+
+
+def _manifest_time(value: str) -> datetime.datetime:
+  parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+  if parsed.tzinfo is None:
+    raise ValueError("manifest run start must include a timezone")
+  return parsed.astimezone(datetime.timezone.utc)
+
+
+def _json_object(path: Path) -> dict:
+  value = json.loads(path.read_text(encoding="utf-8"))
+  if not isinstance(value, dict):
+    raise ValueError("expected a JSON object")
+  return value
+
+
+def _manifest_status(inputs: Path, name: str, current: bool) -> tuple[str, str | None]:
+  """Classify one staged item without treating retained bytes as fresh evidence."""
+  path = inputs / name
+  if not current:
+    return "stale", "file predates this run"
+  try:
+    if name == "activity-status.json":
+      if not _json_object(path).get("ok"):
+        return "unavailable", "current activity fetch did not validate"
+    elif name == "activity.jsonl":
+      status = _json_object(inputs / "activity-status.json")
+      if not status.get("ok"):
+        return "stale", "retained snapshot is not this run's activity window"
+      content = path.read_bytes()
+      if hashlib.sha256(content).hexdigest() != status.get("sha256"):
+        return "unavailable", "snapshot hash does not match activity status"
+    elif name == "per-app-digest.json":
+      source = _json_object(path).get("activity_source")
+      if not isinstance(source, dict) or not source.get("ok"):
+        return "partial", "digest has no validated current activity window"
+    elif name == "housekeeping.json":
+      state = str(_json_object(path).get("status") or "unavailable")
+      if state != "ok":
+        return ("partial" if state == "partial" else "unavailable"), (
+          f"housekeeping status is {state}"
+        )
+    elif name == "memory-health.json":
+      if not _json_object(path).get("available"):
+        return "unavailable", "Memory health handoff is unavailable"
+    elif name == "meta-state-status.json":
+      if not _json_object(path).get("exists"):
+        return "unavailable", "canonical operating model is unavailable"
+  except (OSError, UnicodeError, ValueError) as exc:
+    return "unavailable", f"could not validate staged item: {exc}"
+  return "complete", None
+
+
+def build_input_manifest(
+  inputs: Path,
+  *,
+  run_id: str,
+  started_at: str,
+) -> dict:
+  """Atomically describe the one evidence bundle Reflection may trust tonight."""
+  started = _manifest_time(started_at)
+  items = []
+  for name, required in _MANIFEST_INPUTS:
+    path = inputs / name
+    entry: dict = {"path": name, "required": required}
+    try:
+      stat = path.stat()
+      if not path.is_file() or path.is_symlink():
+        raise OSError("not a regular file")
+    except OSError as exc:
+      entry["status"] = "unavailable" if required else "absent"
+      if required:
+        entry["reason"] = f"not staged: {exc}"
+      items.append(entry)
+      continue
+    modified = datetime.datetime.fromtimestamp(
+      stat.st_mtime, datetime.timezone.utc,
+    )
+    status, reason = _manifest_status(inputs, name, modified >= started)
+    raw = path.read_bytes()
+    entry.update({
+      "status": status,
+      "bytes": len(raw),
+      "sha256": hashlib.sha256(raw).hexdigest(),
+      "modified_at": modified.isoformat(),
+    })
+    if reason:
+      entry["reason"] = reason[:500]
+    items.append(entry)
+  required_items = [item for item in items if item["required"]]
+  counts = {
+    state: sum(item["status"] == state for item in items)
+    for state in ("complete", "partial", "unavailable", "stale", "absent")
+  }
+  payload = {
+    "schema": 1,
+    "run_id": run_id[:160],
+    "started_at": started.isoformat(),
+    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "status": (
+      "complete"
+      if all(item["status"] == "complete" for item in required_items)
+      else "partial"
+    ),
+    "counts": counts,
+    "items": items,
+  }
+  _atomic_json(inputs / "input-manifest.json", payload)
+  return payload
 
 
 def write_activity_status(
@@ -376,6 +508,10 @@ def _main(argv: list[str]) -> int:
   digest.add_argument("token")
   digest.add_argument("inputs", type=Path)
   digest.add_argument("since")
+  manifest = subparsers.add_parser("manifest")
+  manifest.add_argument("inputs", type=Path)
+  manifest.add_argument("run_id")
+  manifest.add_argument("started_at")
   args = parser.parse_args(argv)
   try:
     if args.command == "activity-status":
@@ -389,11 +525,17 @@ def _main(argv: list[str]) -> int:
       )
     elif args.command == "validate-activity":
       print(validate_activity(args.path))
-    else:
+    elif args.command == "app-digest":
       print(json.dumps(
         build_app_digest(args.base, args.token, args.inputs, args.since),
         indent=2,
       ))
+    else:
+      build_input_manifest(
+        args.inputs,
+        run_id=args.run_id,
+        started_at=args.started_at,
+      )
   except (OSError, ValueError) as exc:
     print(str(exc), file=sys.stderr)
     return 1

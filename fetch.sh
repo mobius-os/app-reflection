@@ -51,6 +51,7 @@ LOG_MAX_BYTES="${REFLECTION_LOG_MAX_BYTES:-1048576}"
 RUN_METRICS="$DATA_DIR/apps/reflection/reflection-run-metrics.jsonl"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 RUN_STARTED_EPOCH="$(date +%s)"
+RUN_ID="${REFLECTION_RUN_ID:-${RUN_STARTED_AT}.$$}"
 RUN_DISK_BEFORE="$(python3 - "$DATA_DIR" <<'PY' 2>/dev/null || echo 0
 import shutil, sys
 print(shutil.disk_usage(sys.argv[1]).used)
@@ -469,6 +470,10 @@ fi
 # audits without mutating so plumbing tests never remove fixtures.
 HOUSEKEEPING="$SCRIPT_DIR/housekeeping.py"
 HOUSEKEEPING_OUTPUT="$INPUTS/housekeeping.json"
+# A producer crash must not leave yesterday's success available under today's
+# path. The manifest below will record absence if even the failure payload
+# cannot be written.
+rm -f -- "$HOUSEKEEPING_OUTPUT"
 if [[ -r "$HOUSEKEEPING" ]]; then
   housekeeping_args=(
     --data-dir "$DATA_DIR"
@@ -746,7 +751,12 @@ PY
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
-log "gathered inputs (meta model, activity, chats, feedback, app digest, tool friction, housekeeping, resource evidence) into $INPUTS/"
+if ! python3 "$INPUT_HELPER" manifest \
+    "$INPUTS" "$RUN_ID" "$RUN_STARTED_AT" 2>>"$LOG"; then
+  rm -f -- "$INPUTS/input-manifest.json"
+  log "WARN could not write the Reflection input manifest"
+fi
+log "gathered one manifested input bundle (meta model, activity, chats, feedback, app digest, tool friction, housekeeping, resource evidence) into $INPUTS/"
 
 # --- heartbeat: prove liveness while the long run is in flight --------
 # A background loop touches the heartbeat file every 60s. A monitor (or a

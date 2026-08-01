@@ -121,6 +121,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const resources = JSON.parse(await readFile(join(inputs, 'resource-snapshot.json'), 'utf8'))
     const memoryHealth = JSON.parse(await readFile(join(inputs, 'memory-health.json'), 'utf8'))
     const housekeeping = JSON.parse(await readFile(join(inputs, 'housekeeping.json'), 'utf8'))
+    const manifest = JSON.parse(await readFile(join(inputs, 'input-manifest.json'), 'utf8'))
     const resourceHistory = await readFile(join(dataDir, 'apps', 'reflection', 'resource-history.jsonl'), 'utf8')
     const stagedResourceHistory = await readFile(join(inputs, 'resource-history.jsonl'), 'utf8')
     const runHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
@@ -159,6 +160,16 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(housekeeping.status, 'unavailable')
     assert.equal(housekeeping.applied, false)
     assert.match(housekeeping.source.error, /contribute-not-installed/)
+    assert.equal(manifest.run_id.length > 0, true)
+    assert.equal(manifest.status, 'partial')
+    assert.equal(
+      manifest.items.find((item) => item.path === 'activity.jsonl').status,
+      'complete',
+    )
+    assert.equal(
+      manifest.items.find((item) => item.path === 'housekeeping.json').status,
+      'unavailable',
+    )
     assert.equal(resources.deep_scan.ran, true)
     assert.equal(resourceHistory.trim().split('\n').length, 1)
     assert.equal(stagedResourceHistory, resourceHistory)
@@ -190,6 +201,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const retained = await readFile(join(inputs, 'activity.jsonl'), 'utf8')
     const failedStatus = JSON.parse(await readFile(join(inputs, 'activity-status.json'), 'utf8'))
     const failedDigest = JSON.parse(await readFile(join(inputs, 'per-app-digest.json'), 'utf8'))
+    const failedManifest = JSON.parse(await readFile(join(inputs, 'input-manifest.json'), 'utf8'))
     const nextResources = JSON.parse(await readFile(join(inputs, 'resource-snapshot.json'), 'utf8'))
     const nextRunHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
     const nextMetaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
@@ -201,6 +213,14 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(failedDigest.apps[0].opens_24h, 0)
     assert.equal(failedDigest.apps[0].app_errors_24h, 0)
     assert.equal(failedDigest.apps[0].request_errors_24h, 0)
+    assert.equal(
+      failedManifest.items.find((item) => item.path === 'activity.jsonl').status,
+      'stale',
+    )
+    assert.equal(
+      failedManifest.items.find((item) => item.path === 'per-app-digest.json').status,
+      'partial',
+    )
     assert.equal(nextResources.deep_scan.ran, false)
     assert.equal(nextResources.deep_scan.reason, 'not-due')
     assert.match(nextRunHistory, /"exit_code":0/)
