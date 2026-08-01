@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowLeft } from '@openai/apps-sdk-ui/components/Icon'
 import { CHAT_PANE_MIN_PX } from '../constants.js'
 import {
   clampChatRatio,
@@ -244,7 +245,7 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
           className="rf-back-btn rf-pressable"
           onClick={onBack} aria-label="Back to reports"
         >
-          <span aria-hidden="true" className="rf-back-glyph">‹</span> Briefs
+          <ArrowLeft aria-hidden="true" className="rf-back-glyph" /> Briefs
         </button>
         <div className="rf-detail-title">
           <span className="rf-detail-title-main">{relativeLabel(dateStr)}’s brief</span>

@@ -12,6 +12,7 @@
 // Only App lives here: it owns top-level tab/detail state, persistence wiring,
 // app-ready/dead-letter signals, and mounts the report/settings UI.
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { X } from '@openai/apps-sdk-ui/components/Icon'
 import { CSS } from './theme.js'
 import { makeStorage, useOnline } from './storage.js'
 import { LastNightStatus } from './ui/LastNightStatus.jsx'
@@ -226,7 +227,7 @@ export default function App({ appId, token }) {
               aria-label="Dismiss"
               onClick={() => setDeadLetter(null)}
             >
-              ×
+              <X width="1em" height="1em" aria-hidden="true" />
             </button>
           </div>
         )}
