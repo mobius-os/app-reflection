@@ -11,6 +11,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -78,6 +79,10 @@ def _manifest_status(inputs: Path, name: str, current: bool) -> tuple[str, str |
       content = path.read_bytes()
       if hashlib.sha256(content).hexdigest() != status.get("sha256"):
         return "unavailable", "snapshot hash does not match activity status"
+    elif name == "chats.md":
+      content = path.read_text(encoding="utf-8")
+      if "# deleted_chat_summaries: complete" not in content:
+        return "partial", "recoverable-deleted chat summaries were not staged"
     elif name == "per-app-digest.json":
       source = _json_object(path).get("activity_source")
       if not isinstance(source, dict) or not source.get("ok"):
@@ -281,6 +286,162 @@ def _top_request_errors(groups: dict) -> list[dict]:
   )[:5]
 
 
+@dataclass
+class ActivityDigest:
+  opens: dict[str, int] = field(default_factory=dict)
+  signal_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+  signal_errors: dict[str, list[tuple[datetime.datetime, str]]] = field(
+    default_factory=dict,
+  )
+  app_errors: dict[str, int] = field(default_factory=dict)
+  recent_app_errors: dict[str, list[dict]] = field(default_factory=dict)
+  shell_errors: list[dict] = field(default_factory=list)
+  request_errors: dict[str, dict] = field(default_factory=dict)
+  shell_request_errors: dict = field(default_factory=dict)
+  storage_misses: dict[str, int] = field(default_factory=dict)
+  shell_storage_misses: int = 0
+  apps_with_signals: set[str] = field(default_factory=set)
+  legacy_signal_apps: set[str] = field(default_factory=set)
+
+
+def _event_count(event: dict) -> int:
+  try:
+    return max(1, int(event.get("count", 1)))
+  except (TypeError, ValueError):
+    return 1
+
+
+def _parse_activity_snapshot(
+  source: dict,
+  snapshot: bytes,
+  cutoff: datetime.datetime,
+) -> tuple[dict, ActivityDigest]:
+  """Parse canonical activity once into the bounded digest state."""
+  digest = ActivityDigest()
+  if not source.get("ok"):
+    return source, digest
+  seen_signal_ids: set[tuple[str, str]] = set()
+  try:
+    for raw_line in snapshot.decode("utf-8").splitlines():
+      if not raw_line.strip():
+        continue
+      event = json.loads(raw_line)
+      raw_app_id = event.get("app_id")
+      app_id = str(raw_app_id) if raw_app_id is not None else ""
+      event_name = event.get("ev")
+      if event_name == "request_error":
+        if _expected_storage_miss(event):
+          count = _event_count(event)
+          if app_id:
+            digest.storage_misses[app_id] = (
+              digest.storage_misses.get(app_id, 0) + count
+            )
+          else:
+            digest.shell_storage_misses += count
+          continue
+        groups = (
+          digest.request_errors.setdefault(app_id, {})
+          if app_id else digest.shell_request_errors
+        )
+        _add_request_error(groups, event)
+      elif event_name == "app_error":
+        summary = {
+          "ts": str(event.get("ts") or ""),
+          "message": str(event.get("message") or "")[:200],
+        }
+        if event.get("where"):
+          summary["where"] = str(event.get("where"))[:120]
+        if app_id:
+          digest.app_errors[app_id] = digest.app_errors.get(app_id, 0) + 1
+          recent = digest.recent_app_errors.setdefault(app_id, [])
+          recent.append(summary)
+          del recent[:-5]
+        else:
+          digest.shell_errors.append(summary)
+          del digest.shell_errors[:-5]
+      elif event_name == "app_open" and app_id:
+        digest.opens[app_id] = digest.opens.get(app_id, 0) + 1
+      elif (
+        event_name == "storage_write"
+        and app_id
+        and event.get("path") == "signals.jsonl"
+      ):
+        # A legacy file can contain an in-window signal only when it was
+        # written in this same activity window. This turns an all-app probe
+        # into a targeted migration read without losing current evidence.
+        digest.legacy_signal_apps.add(app_id)
+      elif event_name == "app_signal" and app_id:
+        signal_id = event.get("id")
+        if not isinstance(signal_id, str) or not signal_id:
+          continue
+        signal_key = (app_id, signal_id)
+        if signal_key in seen_signal_ids:
+          continue
+        occurred = event.get("occurred_at", "")
+        try:
+          occurred_at = datetime.datetime.fromisoformat(
+            occurred.replace("Z", "+00:00")
+          )
+          if occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
+          if occurred_at < cutoff:
+            continue
+        except (ValueError, TypeError, AttributeError):
+          continue
+        seen_signal_ids.add(signal_key)
+        digest.apps_with_signals.add(app_id)
+        signal_name = event.get("name", "")
+        if signal_name:
+          counts = digest.signal_counts.setdefault(app_id, {})
+          counts[signal_name] = counts.get(signal_name, 0) + 1
+        if signal_name == "error":
+          payload = event.get("payload")
+          payload = payload if isinstance(payload, dict) else {}
+          message = payload.get("message") or payload.get("msg") or ""
+          if message:
+            errors = digest.signal_errors.setdefault(app_id, [])
+            errors.append((occurred_at, str(message)[:200]))
+            errors.sort(key=lambda row: row[0])
+            del errors[:-5]
+  except Exception as exc:
+    return {
+      **source,
+      "ok": False,
+      "error": f"validated activity snapshot unreadable: {exc}",
+    }, ActivityDigest()
+  return source, digest
+
+
+def _merge_legacy_signals(
+  raw: str | None,
+  cutoff: datetime.datetime,
+  counts: dict[str, int],
+  errors: list[tuple[datetime.datetime, str]],
+) -> bool:
+  found = False
+  for line in raw.splitlines() if raw else ():
+    try:
+      signal = json.loads(line)
+      occurred_at = datetime.datetime.fromisoformat(
+        str(signal.get("ts", "")).replace("Z", "+00:00")
+      )
+      if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
+      if occurred_at < cutoff:
+        continue
+    except (json.JSONDecodeError, ValueError, TypeError):
+      continue
+    signal_name = signal.get("name", "")
+    if signal_name:
+      found = True
+      counts[signal_name] = counts.get(signal_name, 0) + 1
+    if signal_name == "error":
+      message = signal.get("message") or signal.get("msg") or ""
+      if message:
+        errors.append((occurred_at, str(message)[:200]))
+  return found
+
+
 def _activity_source(inputs: Path, expected_since: str) -> tuple[dict, bytes]:
   status_path = inputs / "activity-status.json"
   activity_path = inputs / "activity.jsonl"
@@ -322,96 +483,7 @@ def build_app_digest(
   now = datetime.datetime.now(datetime.timezone.utc)
   cutoff = datetime.datetime.fromisoformat(expected_since.replace("Z", "+00:00"))
   source, snapshot = _activity_source(inputs, expected_since)
-  opens: dict[str, int] = {}
-  signal_counts: dict[str, dict[str, int]] = {}
-  signal_errors: dict[str, list[tuple[datetime.datetime, str]]] = {}
-  app_errors: dict[str, int] = {}
-  recent_app_errors: dict[str, list[dict]] = {}
-  shell_errors: list[dict] = []
-  request_errors: dict[str, dict] = {}
-  shell_request_errors: dict = {}
-  apps_with_signals: set[str] = set()
-  seen_signal_ids: set[tuple[str, str]] = set()
-
-  if source.get("ok"):
-    try:
-      for raw_line in snapshot.decode("utf-8").splitlines():
-        if not raw_line.strip():
-          continue
-        event = json.loads(raw_line)
-        raw_app_id = event.get("app_id")
-        app_id = str(raw_app_id) if raw_app_id is not None else ""
-        event_name = event.get("ev")
-        if event_name == "request_error":
-          if _expected_storage_miss(event):
-            continue
-          groups = request_errors.setdefault(app_id, {}) if app_id else shell_request_errors
-          _add_request_error(groups, event)
-        elif event_name == "app_error":
-          summary = {
-            "ts": str(event.get("ts") or ""),
-            "message": str(event.get("message") or "")[:200],
-          }
-          if event.get("where"):
-            summary["where"] = str(event.get("where"))[:120]
-          if app_id:
-            app_errors[app_id] = app_errors.get(app_id, 0) + 1
-            recent = recent_app_errors.setdefault(app_id, [])
-            recent.append(summary)
-            del recent[:-5]
-          else:
-            shell_errors.append(summary)
-            del shell_errors[:-5]
-        elif event_name == "app_open" and app_id:
-          opens[app_id] = opens.get(app_id, 0) + 1
-        elif event_name == "app_signal" and app_id:
-          signal_id = event.get("id")
-          if not isinstance(signal_id, str) or not signal_id:
-            continue
-          signal_key = (app_id, signal_id)
-          if signal_key in seen_signal_ids:
-            continue
-          occurred = event.get("occurred_at", "")
-          try:
-            occurred_at = datetime.datetime.fromisoformat(
-              occurred.replace("Z", "+00:00")
-            )
-            if occurred_at.tzinfo is None:
-              occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
-            if occurred_at < cutoff:
-              continue
-          except (ValueError, TypeError, AttributeError):
-            continue
-          seen_signal_ids.add(signal_key)
-          apps_with_signals.add(app_id)
-          signal_name = event.get("name", "")
-          if signal_name:
-            counts = signal_counts.setdefault(app_id, {})
-            counts[signal_name] = counts.get(signal_name, 0) + 1
-          if signal_name == "error":
-            payload = event.get("payload")
-            payload = payload if isinstance(payload, dict) else {}
-            message = payload.get("message") or payload.get("msg") or ""
-            if message:
-              errors = signal_errors.setdefault(app_id, [])
-              errors.append((occurred_at, str(message)[:200]))
-              errors.sort(key=lambda row: row[0])
-              del errors[:-5]
-    except Exception as exc:
-      opens.clear()
-      signal_counts.clear()
-      signal_errors.clear()
-      app_errors.clear()
-      recent_app_errors.clear()
-      shell_errors.clear()
-      request_errors.clear()
-      shell_request_errors.clear()
-      apps_with_signals.clear()
-      source = {
-        **source,
-        "ok": False,
-        "error": f"validated activity snapshot unreadable: {exc}",
-      }
+  source, activity = _parse_activity_snapshot(source, snapshot, cutoff)
 
   try:
     apps = _api_json(base, token, "/api/apps/")
@@ -431,49 +503,34 @@ def build_app_digest(
       continue
     slug = str(app.get("slug") or app_id)
     name = str(app.get("name") or slug)
-    counts = dict(signal_counts.get(app_id, {}))
-    errors = list(signal_errors.get(app_id, []))
-    has_signals = app_id in apps_with_signals
+    counts = dict(activity.signal_counts.get(app_id, {}))
+    errors = list(activity.signal_errors.get(app_id, []))
+    has_signals = app_id in activity.apps_with_signals
     signals_error = None
-    try:
-      raw = _storage_text(base, token, app_id, "signals.jsonl")
-      for line in raw.splitlines() if raw else ():
-        try:
-          signal = json.loads(line)
-          occurred_at = datetime.datetime.fromisoformat(
-            str(signal.get("ts", "")).replace("Z", "+00:00")
-          )
-          if occurred_at.tzinfo is None:
-            occurred_at = occurred_at.replace(tzinfo=datetime.timezone.utc)
-          if occurred_at < cutoff:
-            continue
-        except (json.JSONDecodeError, ValueError, TypeError):
-          continue
-        signal_name = signal.get("name", "")
-        if signal_name:
-          has_signals = True
-          counts[signal_name] = counts.get(signal_name, 0) + 1
-        if signal_name == "error":
-          message = signal.get("message") or signal.get("msg") or ""
-          if message:
-            errors.append((occurred_at, str(message)[:200]))
-    except Exception as exc:
-      signals_error = str(exc)[:200]
-    groups = request_errors.get(app_id, {})
+    if app_id in activity.legacy_signal_apps and not has_signals:
+      try:
+        raw = _storage_text(base, token, app_id, "signals.jsonl")
+        has_signals = _merge_legacy_signals(
+          raw, cutoff, counts, errors,
+        )
+      except Exception as exc:
+        signals_error = str(exc)[:200]
+    groups = activity.request_errors.get(app_id, {})
     entry = {
       "app_id": app_id,
       "slug": slug,
       "name": name,
-      "opens_24h": opens.get(app_id, 0),
+      "opens_24h": activity.opens.get(app_id, 0),
       "has_signals": has_signals,
       "signal_counts": counts,
       "last_5_errors": [
         message for _, message in sorted(errors, key=lambda row: row[0])[-5:]
       ],
-      "app_errors_24h": app_errors.get(app_id, 0),
-      "recent_app_errors": recent_app_errors.get(app_id, []),
+      "app_errors_24h": activity.app_errors.get(app_id, 0),
+      "recent_app_errors": activity.recent_app_errors.get(app_id, []),
       "request_errors_24h": sum(group["count"] for group in groups.values()),
       "top_request_errors": _top_request_errors(groups),
+      "storage_misses_24h": activity.storage_misses.get(app_id, 0),
     }
     if signals_error:
       entry["signals_read_error"] = signals_error
@@ -481,12 +538,15 @@ def build_app_digest(
   return {
     "generated_at": now.isoformat(),
     "activity_source": source,
-    "shell_errors_24h": len(shell_errors),
-    "recent_shell_errors": shell_errors,
+    "shell_errors_24h": len(activity.shell_errors),
+    "recent_shell_errors": activity.shell_errors,
     "shell_request_errors_24h": sum(
-      group["count"] for group in shell_request_errors.values()
+      group["count"] for group in activity.shell_request_errors.values()
     ),
-    "top_shell_request_errors": _top_request_errors(shell_request_errors),
+    "top_shell_request_errors": _top_request_errors(
+      activity.shell_request_errors,
+    ),
+    "shell_storage_misses_24h": activity.shell_storage_misses,
     "apps": digests,
   }
 
