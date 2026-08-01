@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -18,6 +19,7 @@ from pathlib import Path
 _MANIFEST_INPUTS = (
   ("activity-status.json", True),
   ("activity.jsonl", True),
+  ("chats-status.json", True),
   ("chats.md", True),
   ("app-feedback.md", True),
   ("per-app-digest.json", True),
@@ -44,6 +46,16 @@ def _atomic_json(path: Path, value: dict) -> None:
   with temp.open("w", encoding="utf-8") as handle:
     json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
     handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+  os.replace(temp, path)
+
+
+def _atomic_text(path: Path, value: str) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+  with temp.open("w", encoding="utf-8") as handle:
+    handle.write(value)
     handle.flush()
     os.fsync(handle.fileno())
   os.replace(temp, path)
@@ -79,9 +91,20 @@ def _manifest_status(inputs: Path, name: str, current: bool) -> tuple[str, str |
       content = path.read_bytes()
       if hashlib.sha256(content).hexdigest() != status.get("sha256"):
         return "unavailable", "snapshot hash does not match activity status"
+    elif name == "chats-status.json":
+      status = _json_object(path)
+      if not status.get("active_ok"):
+        return "unavailable", "current active chat summaries were not staged"
+      if not status.get("deleted_complete"):
+        return "partial", "recoverable-deleted chat summaries were not staged"
     elif name == "chats.md":
-      content = path.read_text(encoding="utf-8")
-      if "# deleted_chat_summaries: complete" not in content:
+      status = _json_object(inputs / "chats-status.json")
+      if not status.get("active_ok"):
+        return "stale", "retained chat digest is not this run's active view"
+      content = path.read_bytes()
+      if hashlib.sha256(content).hexdigest() != status.get("sha256"):
+        return "unavailable", "chat digest hash does not match chat status"
+      if not status.get("deleted_complete"):
         return "partial", "recoverable-deleted chat summaries were not staged"
     elif name == "per-app-digest.json":
       source = _json_object(path).get("activity_source")
@@ -222,6 +245,127 @@ def _api_json(base: str, token: str, path: str, timeout: int = 20):
     return json.loads(response.read().decode("utf-8"))
 
 
+def _chat_rows(value) -> list[dict]:
+  if isinstance(value, dict):
+    value = value.get("chats")
+  if not isinstance(value, list):
+    raise ValueError("chat discovery returned an invalid payload")
+  return [row for row in value if isinstance(row, dict)]
+
+
+def _one_line(value, fallback: str = "") -> str:
+  text = " ".join(str(value or fallback).split())
+  return text.replace("\\", "\\\\").replace("`", "\\`")
+
+
+def stage_chat_digest(
+  base: str,
+  token: str,
+  data_dir: Path,
+  target: Path,
+  status_target: Path,
+) -> dict:
+  """Stage recent active/deleted chat facts with a structured trust receipt."""
+  base = base.rstrip("/")
+  active_ok = False
+  deleted_complete = False
+  error = None
+  chats: list[dict] = []
+
+  try:
+    active = _chat_rows(_api_json(
+      base, token, "/api/chats?include_app_chats=1",
+    ))
+    active_ok = True
+    by_id = {
+      row["id"]: row
+      for row in active
+      if isinstance(row.get("id"), str)
+    }
+    try:
+      deleted = _api_json(
+        base, token, "/api/chat-logs?include_deleted=true&limit=100",
+      )
+      if not isinstance(deleted, dict) or not isinstance(deleted.get("items"), list):
+        raise ValueError("deleted chat discovery returned an invalid payload")
+      for row in deleted["items"]:
+        if not isinstance(row, dict) or not row.get("deleted_at"):
+          continue
+        chat_id = row.get("id")
+        if not isinstance(chat_id, str) or chat_id in by_id:
+          continue
+        by_id[chat_id] = {
+          **row,
+          "updated_at": row.get("recency_at") or row.get("updated_at"),
+          "provider": "unknown",
+        }
+      deleted_complete = True
+    except Exception as exc:
+      error = f"deleted chat discovery failed ({type(exc).__name__})"
+    chats = sorted(
+      by_id.values(),
+      key=lambda row: str(row.get("recency_at") or row.get("updated_at") or ""),
+      reverse=True,
+    )[:20]
+  except Exception as exc:
+    error = f"active chat discovery failed ({type(exc).__name__})"
+
+  lines = [
+    "# Recent chats (fork + interview the ones with activity)",
+    "",
+    "`[app]` rows are app-driven chats: hidden from the owner's drawer but",
+    "useful for the system-improvement brief. `[deleted]` rows remain evidence",
+    "during their recovery window, but must be read directly rather than forked.",
+    "",
+  ]
+  for row in chats:
+    chat_id = row.get("id")
+    if not isinstance(chat_id, str):
+      continue
+    display_id = _one_line(chat_id)
+    title = _one_line(row.get("title"), "(untitled)")
+    provider = _one_line(row.get("provider"), "claude")
+    updated = _one_line(row.get("updated_at"))
+    tags = []
+    if row.get("created_by_app_id"):
+      tags.append("app")
+    if row.get("deleted_at"):
+      tags.append("deleted")
+    tag = "".join(f"  [{item}]" for item in tags)
+    message_count = row.get("message_count", row.get("messages_count"))
+    if message_count is None and isinstance(row.get("messages"), list):
+      message_count = len(row["messages"])
+    metrics = []
+    if isinstance(message_count, int) and not isinstance(message_count, bool):
+      metrics.append(f"messages={message_count}")
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", chat_id):
+      note = data_dir / "shared" / "memory" / "chats" / chat_id / "index.md"
+      try:
+        metrics.append(f"note_bytes={note.stat().st_size}")
+      except OSError:
+        metrics.append("note=absent")
+    metric_text = ", ".join(metrics) if metrics else "size unavailable"
+    lines.append(
+      f"- `{display_id}`  [{provider}]{tag}  {title}  "
+      f"(updated {updated}; {metric_text})"
+    )
+  if not chats:
+    lines.append("(no chats available)" if not active_ok else "(no chats)")
+  content = "\n".join(lines) + "\n"
+  _atomic_text(target, content)
+  status = {
+    "schema": 1,
+    "active_ok": active_ok,
+    "deleted_complete": deleted_complete,
+    "chat_count": len(chats),
+    "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+  }
+  if error:
+    status["error"] = error
+  _atomic_json(status_target, status)
+  return status
+
+
 def _storage_text(
   base: str, token: str, app_id: str, path: str, timeout: int = 15,
 ) -> str | None:
@@ -302,6 +446,7 @@ class ActivityDigest:
   shell_storage_misses: int = 0
   apps_with_signals: set[str] = field(default_factory=set)
   legacy_signal_apps: set[str] = field(default_factory=set)
+  ignored_events: int = 0
 
 
 def _event_count(event: dict) -> int:
@@ -326,6 +471,9 @@ def _parse_activity_snapshot(
       if not raw_line.strip():
         continue
       event = json.loads(raw_line)
+      if not isinstance(event, dict) or not isinstance(event.get("ev"), str):
+        digest.ignored_events += 1
+        continue
       raw_app_id = event.get("app_id")
       app_id = str(raw_app_id) if raw_app_id is not None else ""
       event_name = event.get("ev")
@@ -373,6 +521,7 @@ def _parse_activity_snapshot(
       elif event_name == "app_signal" and app_id:
         signal_id = event.get("id")
         if not isinstance(signal_id, str) or not signal_id:
+          digest.ignored_events += 1
           continue
         signal_key = (app_id, signal_id)
         if signal_key in seen_signal_ids:
@@ -387,10 +536,14 @@ def _parse_activity_snapshot(
           if occurred_at < cutoff:
             continue
         except (ValueError, TypeError, AttributeError):
+          digest.ignored_events += 1
+          continue
+        signal_name = event.get("name", "")
+        if not isinstance(signal_name, str):
+          digest.ignored_events += 1
           continue
         seen_signal_ids.add(signal_key)
         digest.apps_with_signals.add(app_id)
-        signal_name = event.get("name", "")
         if signal_name:
           counts = digest.signal_counts.setdefault(app_id, {})
           counts[signal_name] = counts.get(signal_name, 0) + 1
@@ -409,6 +562,8 @@ def _parse_activity_snapshot(
       "ok": False,
       "error": f"validated activity snapshot unreadable: {exc}",
     }, ActivityDigest()
+  if digest.ignored_events:
+    source = {**source, "ignored_event_count": digest.ignored_events}
   return source, digest
 
 
@@ -563,6 +718,12 @@ def _main(argv: list[str]) -> int:
   status.add_argument("sha256")
   validate = subparsers.add_parser("validate-activity")
   validate.add_argument("path", type=Path)
+  chats = subparsers.add_parser("chats")
+  chats.add_argument("base")
+  chats.add_argument("token")
+  chats.add_argument("data_dir", type=Path)
+  chats.add_argument("target", type=Path)
+  chats.add_argument("status_target", type=Path)
   digest = subparsers.add_parser("app-digest")
   digest.add_argument("base")
   digest.add_argument("token")
@@ -585,6 +746,14 @@ def _main(argv: list[str]) -> int:
       )
     elif args.command == "validate-activity":
       print(validate_activity(args.path))
+    elif args.command == "chats":
+      print(json.dumps(stage_chat_digest(
+        args.base,
+        args.token,
+        args.data_dir,
+        args.target,
+        args.status_target,
+      )))
     elif args.command == "app-digest":
       print(json.dumps(
         build_app_digest(args.base, args.token, args.inputs, args.since),

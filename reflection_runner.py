@@ -739,6 +739,8 @@ def build_goal(settings: dict) -> str:
     "  - chats.md              recent-chat digest with update/note-size signals;",
     "                          triage it first, then open/fork only the sessions",
     "                          whose activity can change tonight's conclusions",
+    "  - chats-status.json     structured active/deleted completeness + digest",
+    "                          hash for chats.md; trust this instead of prose",
     "  - prev-report.html      yesterday's brief (don't repeat yourself)",
     "  - prev-report-name.txt  filename/date of that brief. Engagement is",
     "                          report-aligned: classify non-response only if",
