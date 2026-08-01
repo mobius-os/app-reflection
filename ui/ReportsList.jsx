@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { ChevronRight } from '@openai/apps-sdk-ui/components/Icon'
 import { dayOfMonth, relativeLabel, subLabel, weekdayInitial } from '../domain.js'
 import { StreakBar } from './StreakBar.jsx'
 
@@ -163,7 +164,7 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
                 <span className="rf-card-tldr">{lastSummary}</span>
               )}
             </div>
-            <span className="rf-card-chevron" aria-hidden="true">›</span>
+            <ChevronRight className="rf-card-chevron" aria-hidden="true" />
           </button>
         ))}
       </div>

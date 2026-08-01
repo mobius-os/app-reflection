@@ -261,7 +261,7 @@ button.rf-card { cursor: pointer; }
   font-size: 13px; color: var(--muted); line-height: 1.5; margin-top: 5px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.rf-card-chevron { align-self: center; font-size: 20px; color: var(--muted); flex-shrink: 0; line-height: 1; opacity: 0.7; }
+.rf-card-chevron { align-self: center; width: 20px; height: 20px; color: var(--muted); flex-shrink: 0; opacity: 0.7; }
 .rf-latest-pill {
   font-size: 11px; font-weight: 750; letter-spacing: 0;
   color: var(--accent-fg);
@@ -324,7 +324,7 @@ button.rf-card { cursor: pointer; }
   cursor: pointer; font-family: var(--font); flex-shrink: 0;
   touch-action: manipulation; user-select: none;
 }
-.rf-back-glyph { font-size: 16px; }
+.rf-back-glyph { width: 16px; height: 16px; }
 .rf-detail-title { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; flex: 1; }
 .rf-detail-title-main { font-size: 15px; font-weight: 700; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rf-detail-title-sub { font-size: 12px; color: var(--muted); font-weight: 500; }
