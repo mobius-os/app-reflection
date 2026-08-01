@@ -219,92 +219,13 @@ fi
 [[ -z "${ACTIVITY_TMP:-}" ]] || rm -f -- "$ACTIVITY_TMP"
 
 # chats.md — recent active and recoverable-deleted chats plus cheap
-# note/message-size signals, so the agent can triage from a digest before
-# opening transcripts or notes.
-python3 - "$API_BASE_URL" "$SERVICE_TOKEN" "$DATA_DIR" >"$INPUTS/chats.md" 2>>"$LOG" <<'PY' || true
-import json, pathlib, re, sys, urllib.request
-base, token, data_dir = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
-def get(path):
-    req = urllib.request.Request(base+path, headers={"Authorization": "Bearer "+token})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
-print("# Recent chats (fork + interview the ones with activity)\n")
-print("# `[app]` rows are app-driven chats (created_by_app_id set): hidden from")
-print("# the user's drawer but useful for the system-improvement brief. `updated` is the")
-print("# cadence signal — interview the most recently/often active first.")
-print("# `[deleted]` rows remain evidence during their recovery window, but must")
-print("# be read directly rather than forked or linked back to.\n")
-try:
-    # include_app_chats=1 surfaces app-created chats too — they're excluded from
-    # the owner's drawer history but are relevant to system-improvement review.
-    chats = get("/api/chats?include_app_chats=1")
-    chats = chats if isinstance(chats, list) else chats.get("chats", [])
-    by_id = {
-        chat.get("id"): chat
-        for chat in chats
-        if isinstance(chat, dict) and isinstance(chat.get("id"), str)
-    }
-    # The owner/service token may request the same structurally-redacted
-    # recoverable-deleted view that the app manifest declares. Active rows stay
-    # sourced from /api/chats because that richer owner surface carries
-    # provider/app-attribution fields used by triage.
-    try:
-        logs = get("/api/chat-logs?include_deleted=true&limit=100")
-        if not isinstance(logs, dict) or not isinstance(logs.get("items"), list):
-            raise ValueError("chat-log discovery returned an invalid payload")
-        for item in logs["items"]:
-            if not isinstance(item, dict) or not item.get("deleted_at"):
-                continue
-            chat_id = item.get("id")
-            if not isinstance(chat_id, str) or chat_id in by_id:
-                continue
-            by_id[chat_id] = {
-                **item,
-                "updated_at": item.get("recency_at") or item.get("updated_at"),
-                "provider": "unknown",
-            }
-    except Exception as exc:
-        print(
-            "# deleted_chat_summaries: unavailable "
-            f"({type(exc).__name__})"
-        )
-    else:
-        print("# deleted_chat_summaries: complete")
-    chats = sorted(
-        by_id.values(),
-        key=lambda c: c.get("recency_at") or c.get("updated_at", ""),
-        reverse=True,
-    )[:20]
-    for c in chats:
-        cid = c.get("id"); title = c.get("title") or "(untitled)"
-        prov = c.get("provider") or "claude"
-        updated = c.get("updated_at","")
-        tags = []
-        if c.get("created_by_app_id"):
-            tags.append("app")
-        if c.get("deleted_at"):
-            tags.append("deleted")
-        tag = "".join(f"  [{item}]" for item in tags)
-        message_count = c.get("message_count", c.get("messages_count"))
-        if message_count is None and isinstance(c.get("messages"), list):
-            message_count = len(c["messages"])
-        metrics = []
-        if isinstance(message_count, int):
-            metrics.append(f"messages={message_count}")
-        if isinstance(cid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", cid):
-            note = data_dir / "shared" / "memory" / "chats" / cid / "index.md"
-            try:
-                metrics.append(f"note_bytes={note.stat().st_size}")
-            except OSError:
-                metrics.append("note=absent")
-        metric_text = ", ".join(metrics) if metrics else "size unavailable"
-        print(f"- `{cid}`  [{prov}]{tag}  {title}  (updated {updated}; {metric_text})")
-    if not chats:
-        print("(no chats)")
-except Exception as e:
-    print("# deleted_chat_summaries: unavailable (active chat list unavailable)")
-    print(f"(could not list chats: {e})")
-PY
+# note/message-size signals. The helper writes a structured status receipt next
+# to the human-readable digest so titles can never masquerade as fetch state.
+if ! python3 "$INPUT_HELPER" chats \
+  "$API_BASE_URL" "$SERVICE_TOKEN" "$DATA_DIR" \
+  "$INPUTS/chats.md" "$INPUTS/chats-status.json" >>"$LOG" 2>&1; then
+  log "WARN chat digest staging failed"
+fi
 
 # app-feedback.md — cross-app feedback forms written under
 # shared/app-feedback/<app-slug>/. Reflection can use these as durable

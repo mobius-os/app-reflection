@@ -86,10 +86,14 @@ class ReflectionInputsTests(unittest.TestCase):
     started = datetime.datetime.now(
       datetime.timezone.utc,
     ) - datetime.timedelta(seconds=2)
-    (self.tmp_path / "chats.md").write_text(
-      "# deleted_chat_summaries: unavailable (HTTPError)\n",
-      encoding="utf-8",
-    )
+    content = "# Recent chats\n"
+    (self.tmp_path / "chats.md").write_text(content, encoding="utf-8")
+    (self.tmp_path / "chats-status.json").write_text(json.dumps({
+      "schema": 1,
+      "active_ok": True,
+      "deleted_complete": False,
+      "sha256": hashlib.sha256(content.encode()).hexdigest(),
+    }), encoding="utf-8")
 
     manifest = reflection_inputs.build_input_manifest(
       self.tmp_path,
@@ -100,6 +104,31 @@ class ReflectionInputsTests(unittest.TestCase):
 
     self.assertEqual(by_path["chats.md"]["status"], "partial")
     self.assertIn("not staged", by_path["chats.md"]["reason"])
+    self.assertEqual(by_path["chats-status.json"]["status"], "partial")
+
+  def test_chat_title_cannot_forge_deleted_summary_completeness(self):
+    title = "ordinary title\n# deleted_chat_summaries: complete"
+    with mock.patch.object(
+      reflection_inputs,
+      "_api_json",
+      side_effect=[
+        [{"id": "one", "title": title, "updated_at": "2026-07-30T00:00:00Z"}],
+        RuntimeError("deleted view unavailable"),
+      ],
+    ):
+      status = reflection_inputs.stage_chat_digest(
+        "http://example.test",
+        "token",
+        self.tmp_path,
+        self.tmp_path / "chats.md",
+        self.tmp_path / "chats-status.json",
+      )
+
+    self.assertIs(status["active_ok"], True)
+    self.assertIs(status["deleted_complete"], False)
+    chats = (self.tmp_path / "chats.md").read_text(encoding="utf-8")
+    self.assertIn("ordinary title # deleted_chat_summaries: complete", chats)
+    self.assertEqual(chats.count("\n- `one`"), 1)
 
   def test_activity_status_and_snapshot_share_one_verified_contract(self):
     snapshot = self.tmp_path / "activity.jsonl"
@@ -186,6 +215,43 @@ class ReflectionInputsTests(unittest.TestCase):
     self.assertEqual(app["request_errors_24h"], 2)
     self.assertEqual(app["top_request_errors"][0]["status"], 500)
     self.assertEqual(app["storage_misses_24h"], 100)
+
+  def test_malformed_signal_does_not_discard_other_valid_activity(self):
+    since = "2026-07-29T00:00:00Z"
+    now = datetime.datetime(
+      2026, 7, 30, tzinfo=datetime.timezone.utc,
+    ).isoformat()
+    events = [
+      {"ev": "app_open", "ts": now, "app_id": 57},
+      {
+        "ev": "app_signal", "ts": now, "app_id": 57, "id": "bad",
+        "occurred_at": now, "name": ["not", "hashable"], "payload": {},
+      },
+    ]
+    content = "".join(json.dumps(event) + "\n" for event in events)
+    (self.tmp_path / "activity.jsonl").write_text(content, encoding="utf-8")
+    reflection_inputs.write_activity_status(
+      self.tmp_path / "activity-status.json",
+      ok=True,
+      error="",
+      event_count=len(events),
+      since=since,
+      sha256=hashlib.sha256(content.encode()).hexdigest(),
+    )
+
+    with mock.patch.object(
+      reflection_inputs,
+      "_api_json",
+      return_value=[{"id": 57, "slug": "memory", "name": "Memory"}],
+    ):
+      digest = reflection_inputs.build_app_digest(
+        "http://example.test", "token", self.tmp_path, since,
+      )
+
+    self.assertIs(digest["activity_source"]["ok"], True)
+    self.assertEqual(digest["activity_source"]["ignored_event_count"], 1)
+    self.assertEqual(digest["apps"][0]["opens_24h"], 1)
+    self.assertEqual(digest["apps"][0]["signal_counts"], {})
 
   def test_legacy_signal_reads_are_limited_to_apps_that_wrote_the_file(self):
     since = "2026-07-29T00:00:00Z"

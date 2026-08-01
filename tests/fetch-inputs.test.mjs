@@ -138,6 +138,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const metaStateStatus = JSON.parse(await readFile(join(inputs, 'meta-state-status.json'), 'utf8'))
     const metaLearning = await readFile(join(inputs, 'meta-learning.jsonl'), 'utf8')
     const chats = await readFile(join(inputs, 'chats.md'), 'utf8')
+    const chatsStatus = JSON.parse(await readFile(join(inputs, 'chats-status.json'), 'utf8'))
     assert.equal(snapshot, activity)
     assert.equal(status.ok, true)
     assert.equal(status.event_count, 5)
@@ -198,6 +199,9 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(metaLearning, '')
     assert.match(chats, /messages=7, note_bytes=13/)
     assert.match(chats, /\[deleted\].*Deleted but useful/)
+    assert.equal(chatsStatus.active_ok, true)
+    assert.equal(chatsStatus.deleted_complete, true)
+    assert.equal(chatsStatus.sha256, createHash('sha256').update(chats).digest('hex'))
 
     const learning = JSON.stringify({
       ts: '2026-07-17T00:00:00Z',
