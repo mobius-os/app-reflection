@@ -69,7 +69,15 @@ def test_recent_tool_friction_is_bounded_and_grouped(tmp_path):
   assert result["run_totals"]["cost_per_completed_run"] == 1.25
   assert result["run_totals"]["cache_read_share"] == 0.8
   assert result["failure_classes"] == {"nonzero_exit": 1}
+  assert result["failure_families"] == {"authenticated screenshot": 1}
   assert "sample" not in result["repeated_calls"][0]
+  assert result["repeated_calls"][0]["family"] == "source search"
+  source_family = next(
+    item for item in result["command_families"]
+    if item["family"] == "source search"
+  )
+  assert source_family["count"] == 2
+  assert source_family["chat_count"] == 1
   assert result["daily"] == [{
     "date": "2026-07-28",
     "tool_calls": 3,
