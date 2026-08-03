@@ -126,7 +126,7 @@ def _command_family(tool: str, text: str) -> str:
     executable = Path(words[0]).name
     if executable in {"bash", "sh", "zsh"}:
       return "shell command"
-    if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", executable):
+    if executable in {"cat", "curl", "find", "python", "python3", "sed"}:
       return executable
   return tool
 

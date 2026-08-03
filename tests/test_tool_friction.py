@@ -18,6 +18,13 @@ def _db(path):
   return con
 
 
+def test_command_family_does_not_expose_an_unknown_script_name():
+  family = tool_friction._command_family("Bash", "/private/deploy-acme-prod.sh --force")
+
+  assert family == "Bash"
+  assert "acme" not in family
+
+
 def test_recent_tool_friction_is_bounded_and_grouped(tmp_path):
   db = tmp_path / "test.db"
   con = _db(db)
