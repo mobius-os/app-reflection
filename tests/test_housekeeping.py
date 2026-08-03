@@ -350,6 +350,33 @@ class HousekeepingTests(unittest.TestCase):
       for item in result["needs_reasoning"]
     ))
 
+  def test_live_main_marks_patch_equivalent_work_as_settled(self):
+    path, _ = self.add_worktree("equivalent")
+    (self.platform / "equivalent.txt").write_text(
+      "equivalent\n", encoding="utf-8",
+    )
+    git(self.platform, "add", "equivalent.txt")
+    git(self.platform, "commit", "-m", "same change on main")
+
+    result = self.run_helper(apply=False)
+
+    item = next(
+      row for row in result["needs_reasoning"] if row["path"] == str(path)
+    )
+    self.assertTrue(item["live_main"]["patch_equivalent"])
+    self.assertFalse(item["live_main"]["actionable"])
+
+  def test_live_main_keeps_unique_branch_work_actionable(self):
+    path, _ = self.add_worktree("unique-live-main")
+
+    result = self.run_helper(apply=False)
+
+    item = next(
+      row for row in result["needs_reasoning"] if row["path"] == str(path)
+    )
+    self.assertFalse(item["live_main"]["patch_equivalent"])
+    self.assertTrue(item["live_main"]["actionable"])
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -471,6 +471,18 @@ else
   log "WARN Memory health helper missing at $MEMORY_HEALTH"
 fi
 
+# Memory owns this profile. Reflection receives a bounded read-only snapshot
+# for relevance ranking and never writes it back.
+PROFILE_HANDOFF="$SCRIPT_DIR/personalization_profile.py"
+if [[ -r "$PROFILE_HANDOFF" ]]; then
+  if ! python3 "$PROFILE_HANDOFF" --api-base-url "$API_BASE_URL" \
+      --token-file "$TOKEN_FILE" --output "$INPUTS/personalization-profile.json" 2>>"$LOG"; then
+    log "WARN personalization profile handoff failed"
+  fi
+else
+  log "WARN personalization profile helper missing at $PROFILE_HANDOFF"
+fi
+
 # resource-snapshot.json — a cheap daily filesystem/cgroup pulse plus an
 # adaptive deep /data inventory. The helper remembers its last complete deep
 # scan and only walks the tree weekly, under pressure, or after unusual growth.

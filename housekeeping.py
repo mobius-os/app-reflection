@@ -37,7 +37,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
-VERSION = 1
+VERSION = 2
 ACTIONABLE_STATUSES = {"prepared", "draft", "open", "submitting"}
 MERGED_QUARANTINE = dt.timedelta(hours=24)
 
@@ -359,6 +359,63 @@ def _is_exact_upstream_ancestor(path: Path, upstream_ref: str) -> bool:
   ).returncode == 0
 
 
+def _live_main_reconciliation(platform: Path, items: list[dict]) -> dict:
+  """Attach one current-local-main verdict to the existing worktree inventory."""
+  main_ref = next(
+    (
+      candidate for candidate in ("main", "origin/main")
+      if _run("git", "-C", str(platform), "rev-parse", "--verify", candidate).returncode == 0
+    ),
+    "HEAD",
+  )
+  main_head = _run("git", "-C", str(platform), "rev-parse", main_ref).stdout.strip()
+  already_represented = 0
+  for item in items:
+    head = item.get("head_sha")
+    path = Path(str(item.get("path") or ""))
+    if not isinstance(head, str) or not head or not path.is_dir():
+      item["live_main"] = {"status": "unavailable", "actionable": None}
+      continue
+    branches = _run(
+      "git", "-C", str(platform), "branch", "--all", "--contains", head,
+      "--format=%(refname:short)",
+    )
+    contained = _run(
+      "git", "-C", str(platform), "merge-base", "--is-ancestor", head, main_ref,
+    ).returncode == 0
+    patch_equivalent, patch_error = _all_patches_upstream(path, main_ref)
+    if patch_error and patch_error.startswith("upstream-check-failed:"):
+      item["live_main"] = {
+        "status": "unavailable",
+        "actionable": None,
+        "reason": patch_error,
+      }
+      continue
+    represented = contained or patch_equivalent
+    already_represented += int(represented)
+    item["live_main"] = {
+      "status": "complete",
+      "branches_containing_head": sorted({
+        line.strip() for line in branches.stdout.splitlines() if line.strip()
+      })[:40] if branches.returncode == 0 else [],
+      "contained": contained,
+      "patch_equivalent": patch_equivalent,
+      "actionable": not represented,
+      "verdict": (
+        "already represented on local main"
+        if represented
+        else "branch-specific; verify behavior before proposing action"
+      ),
+    }
+  return {
+    "ref": main_ref,
+    "head": main_head,
+    "checked": sum(item.get("live_main", {}).get("status") == "complete" for item in items),
+    "already_represented": already_represented,
+    "actionable": sum(item.get("live_main", {}).get("actionable") is True for item in items),
+  }
+
+
 def _directory_bytes(path: Path) -> int:
   result = _run("du", "-s", "-B1", str(path), timeout=60)
   if result.returncode or not result.stdout.strip():
@@ -602,6 +659,7 @@ def run_housekeeping(
   status = "ok"
   if ledger_errors:
     status = "partial"
+  live_main = _live_main_reconciliation(platform, exceptions)
   payload = {
     "version": VERSION,
     "status": status,
@@ -625,6 +683,7 @@ def run_housekeeping(
       "preserved": dict(sorted(preserved.items())),
       "bytes_reclaimed": max(0, disk_before - disk_after) if apply else 0,
     },
+    "live_main": live_main,
     "cleaned": cleaned,
     "would_clean": [] if apply else list(candidates.values()),
     "needs_reasoning": exceptions,
