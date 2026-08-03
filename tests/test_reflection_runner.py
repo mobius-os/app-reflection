@@ -311,7 +311,6 @@ class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
         mock.patch.object(reflection_runner, "seed_brief_template"),
         mock.patch.object(reflection_runner, "build_goal", return_value="goal"),
         mock.patch.object(reflection_runner, "build_env", return_value={}),
-        mock.patch.object(reflection_runner, "_safety_snapshot"),
         mock.patch.object(reflection_runner, "_log"),
         mock.patch.object(reflection_runner, "todays_brief_path", return_value=Path(raw) / "missing.html"),
         mock.patch.object(reflection_runner, "_run_agent_choice", runner),
