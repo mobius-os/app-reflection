@@ -27,10 +27,9 @@ stays here.
   and schedule choices) are read from `/data/apps/$APP_ID/settings.json` —
   the numeric-storage path, not the source tree.
 - `inputs/personalization-profile.json` is a bounded read-only snapshot owned
-  by Memory. Use confirmed facts and explicit priorities to rank relevance;
-  treat hypotheses as tentative and boundaries as constraints. It is never
-  authorization to change data, contact people, spend money, or redefine the
-  partner, and Reflection never writes it back.
+  by Memory. Use its confirmed, evidence-backed facts to rank relevance. It is
+  never authorization to change data, contact people, spend money, or redefine
+  the partner, and Reflection never writes it back.
 - `inputs/housekeeping.json` includes a `live_main` verdict on every branch
   exception. Before the brief describes work as open, unapplied, or awaiting a
   decision, consult it and verify the behavior on current local main.
