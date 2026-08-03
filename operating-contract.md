@@ -23,8 +23,8 @@ stays here.
   before you start). Reports, `state.json`, `settings.json`, and
   `question-answers/` live in numeric storage only — a report written to the
   source dir is invisible to the app.
-- Owner settings (`verbosity`, `focus`/`avoid` lists, `exclude_apps`, agent
-  and schedule choices) are read from `/data/apps/$APP_ID/settings.json` —
+- Owner settings (`exclude_apps`, agent and schedule choices) are read from
+  `/data/apps/$APP_ID/settings.json` —
   the numeric-storage path, not the source tree.
 - `inputs/personalization-profile.json` is a bounded read-only snapshot owned
   by Memory. Use its confirmed, evidence-backed facts to rank relevance. It is
@@ -34,6 +34,9 @@ stays here.
   exception. Before the brief describes work as open, unapplied, or awaiting a
   decision, consult it and verify the behavior on current local main.
   Branch-local absence is not proof that the change is absent.
+- Finish actions and their commits before finalizing the brief. Recheck
+  volatile claims against their owning live source/status, then write the brief
+  and header state last; afterward only verify and commit those outputs.
 
 ## The brief
 
@@ -92,6 +95,8 @@ also hard-blocks the harness push tools.
   the app extracts the payload, strips it, and renders native tap cards
   below the brief. Malformed JSON is silently dropped and the brief still
   ships.
+- Multi-select options must be independently combinable. If one choice negates
+  another (for example, an action beside “leave everything”), use single-select.
 - Answers arrive on your NEXT run: the app saves taps to
   `question-answers/<date>.json` in numeric storage and the wrapper stages
   them at `inputs/prev-question-answers.json` before the runner starts.
@@ -101,7 +106,6 @@ also hard-blocks the harness push tools.
 
 ## Committing
 
-- `pm-commit '<area>: <what and why>'` is the commit helper for `/data` (a
-  guarded add + commit). The runner also commits a pre-run safety snapshot of
-  `/data` before you start, so "git is the undo" holds even before your first
-  own commit.
+- Record `/data`'s revision before each change, then use
+  `pm-commit --from <revision> '<area>: <what and why>' -- <exact paths>`.
+  Exact-path commits keep unrelated owner and agent work out of your undo unit.

@@ -72,7 +72,6 @@ import json
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -113,8 +112,6 @@ LOG_PATH = DATA_DIR / "cron-logs" / "reflection.log"
 CLAUDE_CONFIG_DIR = DATA_DIR / "cli-auth" / "claude"
 CODEX_HOME = DATA_DIR / "cli-auth" / "codex"
 CLI_PATH = "/usr/local/bin/claude"
-# The denylist-guarded `git add -A && git commit` helper baked into the image.
-PM_COMMIT = "/app/scripts/pm-commit"
 # The app-owned operating contract appended to the system prompt each run.
 # Resolved BESIDE this runner (not under a fixed /data path) so it works in
 # both of the runner's homes — the platform's backend/scripts tree and the
@@ -404,39 +401,6 @@ def write_static_timeout_brief(brief_path: Path) -> bool:
     "<p>Tonight's reflection reached its wall-clock safety boundary. "
     "Any completed work was kept, but the remaining areas were not assessed.</p>",
   )
-
-
-def _safety_snapshot(label: str) -> None:
-  """Best-effort git snapshot of /data BEFORE Reflection mutates anything.
-
-  The nightly run rewrites skills, fixes apps, and writes reports — edits to
-  agent-owned files under /data that the "git is the undo" contract promises are
-  recoverable. Until now that promise rested entirely on the agent's own
-  `pm-commit` discipline MID-run, so an early edit before the first commit had
-  no pre-state restore point beyond LAST night's. Committing the current tree as
-  the very first thing the run does guarantees one.
-
-  `--allow-broad` so a full day's accumulated changes aren't refused by
-  pm-commit's 50-file guard; a no-op (nothing changed) exits 0. Any failure is
-  logged and swallowed — a snapshot must NEVER block the night's run.
-  """
-  try:
-    proc = subprocess.run(
-      [PM_COMMIT, "--allow-broad", label],
-      cwd=str(DATA_DIR),
-      capture_output=True,
-      text=True,
-      timeout=120,
-    )
-    if proc.returncode == 0:
-      _log("pre-run safety snapshot committed (or no-op)")
-    else:
-      _log(
-        f"WARN pre-run snapshot rc={proc.returncode}: "
-        f"{(proc.stderr or '').strip()[:200]}"
-      )
-  except Exception as exc:
-    _log(f"WARN pre-run snapshot failed: {exc!r}")
 
 
 def _log(message: str) -> None:
@@ -754,7 +718,10 @@ def build_goal(settings: dict) -> str:
     "  - memory-health.json   content-free Memory run/publish health, retry",
     "                          backlog, graph counts, and writer contract. Treat",
     "                          one recovered failure as advisory; diagnose a",
-    "                          current/repeated failure. Memory is the sole writer.",
+    "                          current/repeated failure. `last_run` may be a",
+    "                          newer in-progress attempt; assess",
+    "                          `latest_terminal_run` as the completed outcome.",
+    "                          Memory is the sole writer.",
     "  - personalization-profile.json  Memory-owned, evidence-backed context for",
     "                          relevance ranking. Use it to choose what matters, never",
     "                          as permission, hidden truth, or a reason to rewrite Memory.",
@@ -816,9 +783,8 @@ def build_goal(settings: dict) -> str:
     "Memory owns graph consolidation; Reflection reviews Memory's update "
     "log for system-improvement signals but does not drain or rewrite the "
     "graph. Diagnose through memory-health.json; never take shared write authority. "
-    "The floor deliverable is the brief (phase 6). Keep it current while you "
-    "work, and complete tonight's mandatory assessment gates before optional "
-    "investigations. If a gate did not run, report that area as not assessed.",
+    "Complete tonight's mandatory assessment gates before optional work. If a "
+    "gate did not run, report that area as not assessed.",
     "",
     f"Your working directory is {DATA_DIR}. You have a real token "
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
@@ -1519,12 +1485,6 @@ async def run() -> int:
     f"start provider={provider} model={model or '(default)'} "
     f"effort={effort or '(default)'} cwd={DATA_DIR}"
   )
-
-  # Guaranteed pre-run restore point: commit /data BEFORE the agent rewrites
-  # skills or apps, so "git is the undo" holds even if tonight's run edits a
-  # file before its own first pm-commit. Best-effort; never blocks.
-  from datetime import date
-  _safety_snapshot(f"reflection: pre-run safety snapshot {date.today().isoformat()}")
 
   try:
     rc = await _run_agent_choice(

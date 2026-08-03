@@ -315,10 +315,6 @@ async def run_codex_sdk_turn(**kwargs):
     try {
       await run({
         REFLECTION_DRY: '0',
-        // The real runner takes a best-effort pre-run safety snapshot before
-        // it starts the provider. Leave enough headroom for that unrelated
-        // host work so this test deterministically reaches the fake provider
-        // and exercises cancellation of its in-flight tool.
         REFLECTION_TIMEOUT: '3',
         REFLECTION_LOG_MAX_BYTES: '1048576',
         REFLECTION_RUNNER: fakeRunner,
