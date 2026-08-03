@@ -101,7 +101,6 @@ also hard-blocks the harness push tools.
 
 ## Committing
 
-- `pm-commit '<area>: <what and why>'` is the commit helper for `/data` (a
-  guarded add + commit). The runner also commits a pre-run safety snapshot of
-  `/data` before you start, so "git is the undo" holds even before your first
-  own commit.
+- Record `/data`'s revision before each change, then use
+  `pm-commit --from <revision> '<area>: <what and why>' -- <exact paths>`.
+  Exact-path commits keep unrelated owner and agent work out of your undo unit.
