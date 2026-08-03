@@ -34,6 +34,9 @@ stays here.
   exception. Before the brief describes work as open, unapplied, or awaiting a
   decision, consult it and verify the behavior on current local main.
   Branch-local absence is not proof that the change is absent.
+- Finish actions and their commits before finalizing the brief. Recheck
+  volatile claims against their owning live source/status, then write the brief
+  and header state last; afterward only verify and commit those outputs.
 
 ## The brief
 
@@ -92,6 +95,8 @@ also hard-blocks the harness push tools.
   the app extracts the payload, strips it, and renders native tap cards
   below the brief. Malformed JSON is silently dropped and the brief still
   ships.
+- Multi-select options must be independently combinable. If one choice negates
+  another (for example, an action beside “leave everything”), use single-select.
 - Answers arrive on your NEXT run: the app saves taps to
   `question-answers/<date>.json` in numeric storage and the wrapper stages
   them at `inputs/prev-question-answers.json` before the runner starts.

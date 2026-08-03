@@ -12,6 +12,7 @@ from typing import Any
 
 
 VERSION = 1
+_TERMINAL_STATUSES = {"published", "failed", "degraded", "abandoned"}
 _RUN_FIELDS = (
   "status", "started_at", "finished_at", "app_id", "run_id", "commit",
   "new_commit", "provider", "model", "error_class", "error_code",
@@ -113,24 +114,38 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
   app_state = memory_root / "app-state"
   runs = [
     row for row in _read_runs(app_state / "run-log")
-    if row.get("status") in {"published", "failed", "degraded"}
+    if row.get("status") in _TERMINAL_STATUSES
   ]
   current = _read_json(app_state / "run-status.json")
   latest_terminal = runs[-1] if runs else None
-  latest = latest_terminal
-  if isinstance(current, dict) and (
+  current_is_newer = isinstance(current, dict) and (
     latest_terminal is None
     or (_run_time(current) or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
     >= (_run_time(latest_terminal) or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
-  ):
-    latest = current
-  published = [row for row in runs if row.get("status") == "published"]
-  failed = [row for row in runs if row.get("status") in {"failed", "degraded"}]
+  )
+  latest = current if current_is_newer else latest_terminal
+
+  # run-status is written before the append-only receipt. If that final append
+  # fails, fold the canonical terminal status into the same sequence that owns
+  # every publish/failure metric instead of overriding only the headline.
+  terminal_runs = list(runs)
+  if current_is_newer and current.get("status") in _TERMINAL_STATUSES:
+    run_id = current.get("run_id")
+    if run_id:
+      terminal_runs = [row for row in terminal_runs if row.get("run_id") != run_id]
+    elif current in terminal_runs:
+      terminal_runs.remove(current)
+    terminal_runs.append(current)
+  latest_terminal = terminal_runs[-1] if terminal_runs else None
+  published = [row for row in terminal_runs if row.get("status") == "published"]
+  failed = [
+    row for row in terminal_runs if row.get("status") in {"failed", "degraded"}
+  ]
   latest_publish = published[-1] if published else None
   latest_failure = failed[-1] if failed else None
 
   consecutive_unsuccessful = 0
-  for row in reversed(runs):
+  for row in reversed(terminal_runs):
     if row.get("status") == "published":
       break
     consecutive_unsuccessful += 1
@@ -188,6 +203,7 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
     "pending_chat_capacity": pending_capacity,
     "recovered_after_failure": recovered_after_failure,
     "last_run": _safe_run(latest),
+    "latest_terminal_run": _safe_run(latest_terminal),
     "last_rejection_codes": _rejection_codes(latest),
     "last_failure": _safe_run(latest_failure),
     "latest_graph": graph,

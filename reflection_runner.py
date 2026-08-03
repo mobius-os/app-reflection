@@ -754,7 +754,10 @@ def build_goal(settings: dict) -> str:
     "  - memory-health.json   content-free Memory run/publish health, retry",
     "                          backlog, graph counts, and writer contract. Treat",
     "                          one recovered failure as advisory; diagnose a",
-    "                          current/repeated failure. Memory is the sole writer.",
+    "                          current/repeated failure. `last_run` may be a",
+    "                          newer in-progress attempt; assess",
+    "                          `latest_terminal_run` as the completed outcome.",
+    "                          Memory is the sole writer.",
     "  - personalization-profile.json  Memory-owned, evidence-backed context for",
     "                          relevance ranking. Use it to choose what matters, never",
     "                          as permission, hidden truth, or a reason to rewrite Memory.",
@@ -816,9 +819,8 @@ def build_goal(settings: dict) -> str:
     "Memory owns graph consolidation; Reflection reviews Memory's update "
     "log for system-improvement signals but does not drain or rewrite the "
     "graph. Diagnose through memory-health.json; never take shared write authority. "
-    "The floor deliverable is the brief (phase 6). Keep it current while you "
-    "work, and complete tonight's mandatory assessment gates before optional "
-    "investigations. If a gate did not run, report that area as not assessed.",
+    "Complete tonight's mandatory assessment gates before optional work. If a "
+    "gate did not run, report that area as not assessed.",
     "",
     f"Your working directory is {DATA_DIR}. You have a real token "
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
