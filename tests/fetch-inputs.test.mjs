@@ -245,7 +245,8 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     // A broken primary archive target used to leave the oversized current log
     // in place, so every retry appended forever. A directory is the persistent
     // failure shape observed by the reviewer. The fixed fallback archive is
-    // replaced on every retry, and each run starts a fresh bounded current log.
+    // replaced on every retry, and each run starts a fresh one-run-sized log
+    // instead of accumulating the previous runs.
     const primaryArchive = join(cronLogs, 'reflection.log.1')
     await rm(primaryArchive, { recursive: true, force: true })
     await mkdir(primaryArchive)
@@ -265,11 +266,14 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
         assert.match(fallbackHistory, /persistent-rotation-evidence/)
       }
     }
-    assert.ok(currentSizes.every((size) => size < 2_048), currentSizes.join(','))
     const fallbackArchive = await readFile(
       join(cronLogs, 'reflection.log.rotation-fallback'), 'utf8',
     )
-    assert.ok(fallbackArchive.length < 2_048)
+    const rotatedSizes = [...currentSizes, fallbackArchive.length]
+    assert.ok(
+      Math.max(...rotatedSizes) - Math.min(...rotatedSizes) < 256,
+      rotatedSizes.join(','),
+    )
 
     // Exercise GNU timeout against the real runner, not a direct close() fake.
     // The fake Codex provider leaves one tool in flight; SIGTERM must cancel

@@ -26,6 +26,7 @@ _MANIFEST_INPUTS = (
   ("tool-friction.json", True),
   ("housekeeping.json", True),
   ("memory-health.json", True),
+  ("personalization-profile.json", True),
   ("resource-snapshot.json", True),
   ("resource-history.jsonl", True),
   ("resource-decisions.jsonl", True),
@@ -119,6 +120,9 @@ def _manifest_status(inputs: Path, name: str, current: bool) -> tuple[str, str |
     elif name == "memory-health.json":
       if not _json_object(path).get("available"):
         return "unavailable", "Memory health handoff is unavailable"
+    elif name == "personalization-profile.json":
+      if not _json_object(path).get("available"):
+        return "unavailable", "Memory personalization profile is unavailable"
     elif name == "meta-state-status.json":
       if not _json_object(path).get("exists"):
         return "unavailable", "canonical operating model is unavailable"
