@@ -14,13 +14,14 @@ import datetime as dt
 import hashlib
 import json
 import re
+import shlex
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 
-VERSION = 3
+VERSION = 4
 DEFAULT_DB = "/data/db/ultimate.db"
 
 PRIMITIVES = {
@@ -84,6 +85,50 @@ def _ratio(part: int | float, whole: int | float) -> float:
 def _command_signature(tool: str, text: str) -> str:
   compact = " ".join(text.split())
   return hashlib.sha256(f"{tool}\0{compact}".encode("utf-8")).hexdigest()[:16]
+
+
+def _command_family(tool: str, text: str) -> str:
+  """Return a useful command family without retaining arguments or paths."""
+  command = text
+  try:
+    value = json.loads(text)
+    if isinstance(value, dict):
+      command = str(value.get("cmd") or value.get("command") or "")
+  except (TypeError, ValueError):
+    pass
+  compact = " ".join(command.split())
+  patterns = (
+    (r"\bwt-pytest\.sh\b", "backend focused tests"),
+    (r"\bscripts/test\.sh\b|(?:^|\s)test\.sh\b", "platform test wrapper"),
+    (r"\bpytest\b", "pytest"),
+    (r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|vitest)\b", "frontend tests"),
+    (r"\bagent-screenshot\.sh\b", "authenticated screenshot"),
+    (r"\bagent-browser\b", "browser interaction"),
+    (r"\b(?:rg|grep)\b", "source search"),
+    (r"\bpm-commit\b", "scoped commit"),
+    (r"\bgh\s+(pr|run|api)\b", None),
+    (r"\bgit(?:\s+-C\s+\S+)?\s+(commit|cherry-pick|rebase|merge|status|diff|log)\b", None),
+  )
+  for pattern, label in patterns:
+    match = re.search(pattern, compact, re.I)
+    if not match:
+      continue
+    if label:
+      return label
+    verb = match.group(1).lower()
+    owner = "GitHub" if pattern.startswith("\\bgh") else "git"
+    return f"{owner} {verb}"
+  try:
+    words = shlex.split(compact)
+  except ValueError:
+    words = compact.split()
+  if words:
+    executable = Path(words[0]).name
+    if executable in {"bash", "sh", "zsh"}:
+      return "shell command"
+    if executable in {"cat", "curl", "find", "python", "python3", "sed"}:
+      return executable
+  return tool
 
 
 def _empty_surface() -> dict[str, Any]:
@@ -158,9 +203,11 @@ def analyse_database(
   tool_types: Counter[str] = Counter()
   surfaces = defaultdict(_empty_surface)
   repeated: dict[tuple[str, str], dict[str, Any]] = {}
+  command_families: dict[str, dict[str, Any]] = {}
   by_chat: dict[str, dict[str, Any]] = {}
   assistant_turns = 0
   failure_classes: Counter[str] = Counter()
+  failure_families: Counter[str] = Counter()
   daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
     "tool_calls": 0, "failed_calls": 0, "truncated_calls": 0,
     "completed_runs": 0, "cost_usd": 0.0, "total_tokens": 0,
@@ -225,6 +272,7 @@ def analyse_database(
         daily[day]["truncated_calls"] += int(truncated)
         if failure_class:
           failure_classes[failure_class] += 1
+          failure_families[_command_family(tool, command)] += 1
 
         for name, pattern in PRIMITIVES.items():
           if not pattern.search(command):
@@ -237,10 +285,18 @@ def analyse_database(
           surface["chat_ids"].add(chat_id)
 
         signature = _command_signature(tool, command)
+        family = _command_family(tool, command)
+        family_item = command_families.setdefault(family, {
+          "family": family, "count": 0, "chat_ids": set(), "failed_calls": 0,
+        })
+        family_item["count"] += 1
+        family_item["chat_ids"].add(chat_id)
+        family_item["failed_calls"] += int(failed)
         key = (tool, signature)
         item = repeated.setdefault(key, {
           "tool": tool,
           "signature": signature,
+          "family": family,
           "count": 0,
           "chat_ids": set(),
           "failed_calls": 0,
@@ -303,6 +359,7 @@ def analyse_database(
     repeated_rows.append({
       "tool": item["tool"],
       "signature": item["signature"],
+      "family": item["family"],
       "count": item["count"],
       "chat_count": len(item["chat_ids"]),
       "failed_calls": item["failed_calls"],
@@ -321,6 +378,7 @@ def analyse_database(
     "run_totals": run_totals,
     "tool_types": dict(tool_types.most_common()),
     "failure_classes": dict(failure_classes.most_common()),
+    "failure_families": dict(failure_families.most_common(12)),
     "daily": [
       {
         "date": day,
@@ -343,6 +401,19 @@ def analyse_database(
     },
     "top_chats": top_chats,
     "repeated_calls": repeated_rows,
+    "command_families": [
+      {
+        "family": item["family"],
+        "count": item["count"],
+        "chat_count": len(item["chat_ids"]),
+        "failed_calls": item["failed_calls"],
+      }
+      for item in sorted(
+        command_families.values(),
+        key=lambda value: (len(value["chat_ids"]), value["count"]),
+        reverse=True,
+      )[:max(1, repeated_limit)]
+    ],
   }
 
 
@@ -385,6 +456,19 @@ def format_report(data: dict[str, Any]) -> str:
         f"    {item['chat_id'][:8]}  calls={item['tool_calls']:4}  "
         f"failed={item['failed_calls']:3}  truncated={item['truncated_calls']:3}  {title}"
       )
+  families = data.get("command_families") or []
+  if families:
+    lines.append("  most-used command families:")
+    for item in families[:8]:
+      lines.append(
+        f"    {item['family'][:28]:28} calls={item['count']:3}  "
+        f"failed={item['failed_calls']:3}  chats={item['chat_count']:3}"
+      )
+  failures = data.get("failure_families") or {}
+  if failures:
+    lines.append("  most common failed command families:")
+    for family, count in list(failures.items())[:8]:
+      lines.append(f"    {family[:36]:36} failures={count:3}")
   return "\n".join(lines)
 
 
