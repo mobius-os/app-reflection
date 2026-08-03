@@ -87,6 +87,9 @@ class MemoryHealthTests(unittest.TestCase):
     )
 
     self.assertEqual(health["last_run"]["status"], "running")
+    self.assertEqual(
+      health["latest_terminal_run"]["run_id"], "yesterday",
+    )
     self.assertTrue(health["needs_attention"])
     self.assertIn("latest_run_still_running", health["reasons"])
 
@@ -107,6 +110,69 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertEqual(health["last_run"]["run_id"], "newer")
     self.assertFalse(health["needs_attention"])
+
+  def test_current_terminal_status_wins_when_log_append_is_missing(self):
+    self._runs({
+      "status": "published", "run_id": "yesterday",
+      "finished_at": "2026-07-19T05:35:00+00:00",
+    })
+    status_path = self.root / "app-state" / "run-status.json"
+
+    for terminal_status in ("failed", "abandoned"):
+      with self.subTest(terminal_status=terminal_status):
+        status_path.write_text(json.dumps({
+          "status": terminal_status, "run_id": f"today-{terminal_status}",
+          "finished_at": "2026-07-20T05:35:00+00:00",
+        }))
+
+        health = memory_health.build_health(
+          self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(
+          health["latest_terminal_run"]["run_id"], f"today-{terminal_status}",
+        )
+        self.assertEqual(health["consecutive_unsuccessful_runs"], 1)
+        self.assertIn("latest_run_unsuccessful", health["reasons"])
+        if terminal_status == "failed":
+          self.assertEqual(health["last_failure"]["run_id"], "today-failed")
+
+  def test_current_publish_supplies_all_metrics_when_log_append_is_missing(self):
+    self._runs({
+      "status": "failed", "run_id": "yesterday",
+      "finished_at": "2026-07-19T05:35:00+00:00",
+    })
+    (self.root / "app-state" / "run-status.json").write_text(json.dumps({
+      "status": "published", "run_id": "today",
+      "finished_at": "2026-07-20T05:35:00+00:00",
+    }))
+
+    health = memory_health.build_health(
+      self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+    )
+
+    self.assertEqual(health["latest_terminal_run"]["run_id"], "today")
+    self.assertEqual(health["consecutive_unsuccessful_runs"], 0)
+    self.assertNotIn("no_published_run_observed", health["reasons"])
+    self.assertNotIn("publish_stale", health["reasons"])
+    self.assertFalse(health["needs_attention"])
+
+  def test_current_terminal_receipt_replaces_same_run_in_log(self):
+    self._runs({
+      "status": "failed", "run_id": "same-run",
+      "finished_at": "2026-07-20T05:34:00+00:00",
+    })
+    (self.root / "app-state" / "run-status.json").write_text(json.dumps({
+      "status": "failed", "run_id": "same-run", "error_code": "latest",
+      "finished_at": "2026-07-20T05:35:00+00:00",
+    }))
+
+    health = memory_health.build_health(
+      self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+    )
+
+    self.assertEqual(health["consecutive_unsuccessful_runs"], 1)
+    self.assertEqual(health["last_failure"]["error_code"], "latest")
 
   def test_full_retry_queue_requires_attention(self):
     self._runs({
