@@ -29,14 +29,6 @@ def bounded_profile(value: object) -> dict:
   )
   confirmed = source.get("confirmed") if isinstance(source.get("confirmed"), list) else []
 
-  def texts(name: str) -> list[str]:
-    raw = source.get(name) if isinstance(source.get(name), list) else []
-    return [
-      " ".join(str(item).split())[:300]
-      for item in raw[:24]
-      if str(item).strip()
-    ]
-
   safe_confirmed = []
   for item in confirmed[:48]:
     if isinstance(item, dict):
@@ -54,9 +46,6 @@ def bounded_profile(value: object) -> dict:
     "generated_at": str(source.get("generated_at") or "")[:80],
     "source_commit": str(source.get("source_commit") or "")[:80],
     "confirmed": safe_confirmed,
-    "priorities": texts("priorities"),
-    "boundaries": texts("boundaries"),
-    "hypotheses": texts("hypotheses"),
   }
 
 
