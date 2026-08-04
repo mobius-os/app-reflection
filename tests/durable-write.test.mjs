@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { makeStorage } from '../storage.js'
+import { makeStorage } from '../storage-core.js'
 
 // A faithful stand-in for the runtime's DurableWriteError: a fatal refusal the
 // app catches via `catch` (it never branches on `instanceof`, treating any
