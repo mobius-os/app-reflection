@@ -137,17 +137,32 @@ export default function App({ appId, token }) {
     try { detailNavRef.current?.close?.() } catch {}
     detailNavRef.current = null
     if (window.mobius?.nav?.open) {
-      const handle = window.mobius.nav.open('reflection-report', () => {
-        detailNavRef.current = null
-        setOpenDate(null)
+      let handle = null
+      handle = window.mobius.nav.open('reflection-report', {
+        onBack: () => {
+          if (detailNavRef.current !== handle) return
+          detailNavRef.current = null
+          setOpenDate(null)
+        },
+        onForward: () => {
+          detailNavRef.current = handle
+          setOpenDate(dateStr)
+        },
       })
       detailNavRef.current = handle
-      await handle.ready?.catch(() => false)
-      if (detailNavRef.current !== handle) return
+      const { status } = await handle.outcome
+      if (detailNavRef.current !== handle) {
+        handle.close()
+        return
+      }
+      if (status !== 'owned' && status !== 'standalone') {
+        detailNavRef.current = null
+        return
+      }
     }
     window.mobius?.signal?.('brief_opened', { date: dateStr })
     setOpenDate(dateStr)
-  }, [appId, token])
+  }, [])
 
   useEffect(() => () => {
     try { detailNavRef.current?.close?.() } catch {}
