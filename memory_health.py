@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,52 @@ def _rejection_codes(row: dict[str, Any] | None) -> list[str]:
     attempt.get("rejection_code") for attempt in attempts
     if isinstance(attempt, dict) and isinstance(attempt.get("rejection_code"), str)
   ))
+
+
+def _recall_activity(app_state: Path, now: dt.datetime) -> dict[str, Any]:
+  """Count how many chats recalled per day, so a silent collapse becomes visible.
+
+  The nightly audit grades the reads that happened; nothing watches whether reads
+  happen at all, so a recall regression can run for a day or more before someone
+  notices it by hand.
+
+  Count DISTINCT chats, not read lines: one chat recalling ten times is a single
+  agent deciding once, and raw volume lets a burst on either side of a quiet
+  window hide a broad collapse. A day far below its own trailing baseline is the
+  signal; the guards at the call site keep a young or genuinely quiet log from
+  crying regression.
+  """
+  per_day: dict[str, set[str]] = {}
+  try:
+    logs = sorted((app_state / "read-log").glob("*.jsonl"))
+  except OSError:
+    logs = []
+  for item in logs:
+    chats = per_day.setdefault(item.stem, set())
+    try:
+      lines = item.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+      continue
+    for line in lines:
+      try:
+        row = json.loads(line)
+      except ValueError:
+        continue
+      chat_id = row.get("chat_id") if isinstance(row, dict) else None
+      if isinstance(chat_id, str) and chat_id:
+        chats.add(chat_id)
+
+  last_full_day = now.date() - dt.timedelta(days=1)
+  baseline = [
+    len(per_day.get((last_full_day - dt.timedelta(days=offset)).isoformat(), ()))
+    for offset in range(1, 8)
+  ]
+  return {
+    "last_full_day": last_full_day.isoformat(),
+    "chats_recalling_last_full_day": len(per_day.get(last_full_day.isoformat(), ())),
+    "baseline_median": statistics.median(baseline),
+    "days_observed": len(per_day),
+  }
 
 
 def _graph_counts(path: Path) -> dict[str, Any] | None:
@@ -183,6 +230,16 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
     reasons.append("blocking_graph_problems")
   if isinstance(pending_capacity, int) and pending_count >= pending_capacity:
     reasons.append("pending_chat_queue_at_capacity")
+  # One signal, not a severity tier: zero recalls and one-out-of-twenty are the
+  # same failure, and a collapse only means anything against a baseline the log
+  # is long enough to support.
+  recall = _recall_activity(app_state, now)
+  if (
+    recall["days_observed"] >= 4
+    and recall["baseline_median"] >= 3
+    and recall["chats_recalling_last_full_day"] * 4 < recall["baseline_median"]
+  ):
+    reasons.append("recall_collapsed")
   if graph and graph["warnings"]:
     advisories.append("graph_warnings_present")
   if recovered_after_failure:
@@ -202,6 +259,7 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
     "pending_chat_count": pending_count,
     "pending_chat_capacity": pending_capacity,
     "recovered_after_failure": recovered_after_failure,
+    "recall_activity": recall,
     "last_run": _safe_run(latest),
     "latest_terminal_run": _safe_run(latest_terminal),
     "last_rejection_codes": _rejection_codes(latest),
