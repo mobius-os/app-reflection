@@ -1,34 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdir, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import test from 'node:test'
-import { buildEnv, esbuildPath } from './test-deps.mjs'
+import {
+  extractReportQuestions,
+  hardenReportHtml,
+  reportThemeStyle,
+  sanitizeQuestions,
+} from '../domain.js'
 
-const execFileAsync = promisify(execFile)
-const root = dirname(fileURLToPath(import.meta.url))
-const buildDir = join(root, '.build')
-const bundled = join(buildDir, 'index.mjs')
-
-async function bundle() {
-  await rm(buildDir, { recursive: true, force: true })
-  await mkdir(buildDir, { recursive: true })
-  await execFileAsync(esbuildPath, [
-    join(root, '..', 'index.jsx'),
-    '--bundle',
-    '--format=esm',
-    '--platform=node',
-    '--jsx=automatic',
-    `--outfile=${bundled}`,
-  ], { env: buildEnv() })
-  return import(pathToFileURL(bundled))
-}
-
-test('hardenReportHtml injects a restrictive CSP into full reports', async () => {
-  const { hardenReportHtml } = await bundle()
-
+test('hardenReportHtml injects a restrictive CSP into full reports', () => {
   const html = '<!doctype html><html><head><title>Brief</title></head><body><h1>Morning</h1></body></html>'
   const hardened = hardenReportHtml(html)
 
@@ -40,18 +19,14 @@ test('hardenReportHtml injects a restrictive CSP into full reports', async () =>
   assert.ok(hardened.indexOf('Content-Security-Policy') < hardened.indexOf('<title>Brief</title>'))
 })
 
-test('hardenReportHtml wraps fragments in a complete document', async () => {
-  const { hardenReportHtml } = await bundle()
-
+test('hardenReportHtml wraps fragments in a complete document', () => {
   const hardened = hardenReportHtml('<main>hello</main>')
 
   assert.match(hardened, /^<!doctype html>/i)
   assert.match(hardened, /<body><main>hello<\/main><\/body>/)
 })
 
-test('hardenReportHtml injects height-reporter script that postMessages reflection:brief-height', async () => {
-  const { hardenReportHtml } = await bundle()
-
+test('hardenReportHtml injects height-reporter script that postMessages reflection:brief-height', () => {
   const html = '<!doctype html><html><head><title>Brief</title></head><body><p>hi</p></body></html>'
   const hardened = hardenReportHtml(html)
 
@@ -75,8 +50,7 @@ test('hardenReportHtml injects height-reporter script that postMessages reflecti
   )
 })
 
-test('hardenReportHtml injects overflow guards so a brief never scrolls horizontally', async () => {
-  const { hardenReportHtml } = await bundle()
+test('hardenReportHtml injects overflow guards so a brief never scrolls horizontally', () => {
 
   const html = '<!doctype html><html><head><title>Brief</title></head><body><h1>Morning</h1></body></html>'
   const hardened = hardenReportHtml(html)
@@ -101,8 +75,7 @@ test('hardenReportHtml injects overflow guards so a brief never scrolls horizont
   )
 })
 
-test('hardenReportHtml styles details/summary drill-down and the questions card', async () => {
-  const { hardenReportHtml } = await bundle()
+test('hardenReportHtml styles details/summary drill-down and the questions card', () => {
 
   const hardened = hardenReportHtml('<main>hi</main>')
 
@@ -115,8 +88,7 @@ test('hardenReportHtml styles details/summary drill-down and the questions card'
   assert.match(hardened, /\.brief-questions\s*\{/)
 })
 
-test('lean brief styling survives a missing root class on semantic report elements', async () => {
-  const { hardenReportHtml } = await bundle()
+test('lean brief styling survives a missing root class on semantic report elements', () => {
 
   const hardened = hardenReportHtml(
     '<article><section><div class="sec-head"><span class="sec-num">2</span><h2>What I did</h2></div></section></article>',
@@ -151,8 +123,7 @@ const CARRIER_BRIEF = [
   '</body></html>',
 ].join('\n')
 
-test('extractReportQuestions parses the carrier into the exact QuestionCard shape', async () => {
-  const { extractReportQuestions } = await bundle()
+test('extractReportQuestions parses the carrier into the exact QuestionCard shape', () => {
   const { questions } = extractReportQuestions(CARRIER_BRIEF)
 
   assert.equal(questions.length, 2)
@@ -167,8 +138,7 @@ test('extractReportQuestions parses the carrier into the exact QuestionCard shap
   assert.deepEqual(questions[1].options, [{ label: 'Short' }, { label: 'Detailed' }])
 })
 
-test('extractReportQuestions strips the carrier BEFORE srcDoc (no data-report-questions left)', async () => {
-  const { extractReportQuestions, hardenReportHtml } = await bundle()
+test('extractReportQuestions strips the carrier BEFORE srcDoc (no data-report-questions left)', () => {
   const { html } = extractReportQuestions(CARRIER_BRIEF)
 
   // The visible section shell AND the inert carrier script must be gone so
@@ -183,8 +153,7 @@ test('extractReportQuestions strips the carrier BEFORE srcDoc (no data-report-qu
   assert.doesNotMatch(hardenReportHtml(html), /data-report-questions/i)
 })
 
-test('extractReportQuestions strips a bare carrier script with no wrapping section', async () => {
-  const { extractReportQuestions } = await bundle()
+test('extractReportQuestions strips a bare carrier script with no wrapping section', () => {
   const bare = '<main><h1>Hi</h1></main>\n'
     + '<script type="application/mobius-questions+json">'
     + '{"questions":[{"question":"Q?","options":[{"label":"A"}]}]}</script>'
@@ -195,8 +164,7 @@ test('extractReportQuestions strips a bare carrier script with no wrapping secti
   assert.match(html, /Hi/)
 })
 
-test('a malformed carrier yields no cards and leaves the brief intact', async () => {
-  const { extractReportQuestions } = await bundle()
+test('a malformed carrier yields no cards and leaves the brief intact', () => {
   const bad = '<!doctype html><body><main><h1>Morning</h1></main>'
     + '<section data-report-questions>'
     + '<script type="application/mobius-questions+json">{ this is not json }</script>'
@@ -210,8 +178,7 @@ test('a malformed carrier yields no cards and leaves the brief intact', async ()
   assert.match(html, /Morning/)
 })
 
-test('strips a carrier on a non-section/div tag (aside/article)', async () => {
-  const { extractReportQuestions } = await bundle()
+test('strips a carrier on a non-section/div tag (aside/article)', () => {
   const html0 = '<!doctype html><body><main><h1>Morning</h1></main>'
     + '<aside class="report-questions" data-report-questions>'
     + '<h2>One more thing</h2>'
@@ -227,8 +194,7 @@ test('strips a carrier on a non-section/div tag (aside/article)', async () => {
   assert.match(html, /Morning/)
 })
 
-test('an absent carrier returns no questions and the HTML unchanged', async () => {
-  const { extractReportQuestions } = await bundle()
+test('an absent carrier returns no questions and the HTML unchanged', () => {
   const plain = '<!doctype html><body><main><h1>Just a brief</h1></main></body>'
   const { html, questions } = extractReportQuestions(plain)
 
@@ -236,8 +202,7 @@ test('an absent carrier returns no questions and the HTML unchanged', async () =
   assert.equal(html, plain)
 })
 
-test('sanitizeQuestions drops half-formed entries and caps at 3 questions / 6 options', async () => {
-  const { sanitizeQuestions } = await bundle()
+test('sanitizeQuestions drops half-formed entries and caps at 3 questions / 6 options', () => {
   const out = sanitizeQuestions([
     { question: '', options: [{ label: 'x' }] },     // empty question -> drop
     { question: 'no opts', options: [] },            // no options -> drop
@@ -256,8 +221,7 @@ test('sanitizeQuestions drops half-formed entries and caps at 3 questions / 6 op
   assert.equal(capped[0].options.length, 6)
 })
 
-test('extractReportQuestions never throws on non-string input', async () => {
-  const { extractReportQuestions, sanitizeQuestions } = await bundle()
+test('extractReportQuestions never throws on non-string input', () => {
   assert.deepEqual(extractReportQuestions(null), { html: '', questions: [] })
   assert.deepEqual(extractReportQuestions(undefined), { html: '', questions: [] })
   assert.deepEqual(sanitizeQuestions('nope'), [])
@@ -269,8 +233,7 @@ test('extractReportQuestions never throws on non-string input', async () => {
 // question set must carry unique texts (Codex review).
 // ---------------------------------------------------------------------------
 
-test('a literal </section> inside an option label does not leak the carrier', async () => {
-  const { extractReportQuestions } = await bundle()
+test('a literal </section> inside an option label does not leak the carrier', () => {
   // An option label that contains the literal string "</section>" — a naive
   // non-greedy <section>…</section> strip would stop here and leak the rest.
   const tricky = [
@@ -302,8 +265,7 @@ test('a literal </section> inside an option label does not leak the carrier', as
   ])
 })
 
-test('a whitespace-padded type attribute (type = "…") is still extracted and stripped', async () => {
-  const { extractReportQuestions } = await bundle()
+test('a whitespace-padded type attribute (type = "…") is still extracted and stripped', () => {
   const padded = [
     '<main><h1>Hi</h1></main>',
     '<section data-report-questions>',
@@ -321,8 +283,7 @@ test('a whitespace-padded type attribute (type = "…") is still extracted and s
   assert.match(html, /Hi/)
 })
 
-test('two carriers in one html are BOTH fully stripped', async () => {
-  const { extractReportQuestions } = await bundle()
+test('two carriers in one html are BOTH fully stripped', () => {
   const two = [
     '<main><h1>Hi</h1></main>',
     '<section data-report-questions>',
@@ -346,8 +307,7 @@ test('two carriers in one html are BOTH fully stripped', async () => {
   assert.match(html, /Hi/)
 })
 
-test('sanitizeQuestions dedupes questions with identical text', async () => {
-  const { sanitizeQuestions } = await bundle()
+test('sanitizeQuestions dedupes questions with identical text', () => {
   const out = sanitizeQuestions([
     { question: 'Same text', options: [{ label: 'A' }] },
     { question: 'Same text', options: [{ label: 'B' }] },
@@ -357,8 +317,7 @@ test('sanitizeQuestions dedupes questions with identical text', async () => {
   assert.deepEqual(out[0].options, [{ label: 'A' }])
 })
 
-test('reportThemeStyle re-declares resolved theme tokens for the null-origin iframe', async () => {
-  const { reportThemeStyle } = await bundle()
+test('reportThemeStyle re-declares resolved theme tokens for the null-origin iframe', () => {
   const map = { '--bg': '#0c0c0c', '--text': '#f0f0f0', '--surface': '#1a1a1a', '--accent': '#7c6cf0' }
   const style = reportThemeStyle({ getPropertyValue: (t) => map[t] || '' })
   assert.match(style, /--bg: #0c0c0c;/)
@@ -367,19 +326,16 @@ test('reportThemeStyle re-declares resolved theme tokens for the null-origin ifr
   assert.match(style, /html, body \{ background: var\(--bg\); color: var\(--text\); \}/)
 })
 
-test('reportThemeStyle picks a light color-scheme for a light --bg', async () => {
-  const { reportThemeStyle } = await bundle()
+test('reportThemeStyle picks a light color-scheme for a light --bg', () => {
   const root = { getPropertyValue: (t) => (t === '--bg' ? '#ffffff' : t === '--text' ? '#111' : '') }
   assert.match(reportThemeStyle(root), /color-scheme: light;/)
 })
 
-test('reportThemeStyle returns empty when no tokens resolve', async () => {
-  const { reportThemeStyle } = await bundle()
+test('reportThemeStyle returns empty when no tokens resolve', () => {
   assert.equal(reportThemeStyle({ getPropertyValue: () => '' }), '')
 })
 
-test('hardenReportHtml places the theme style before the base style so var() lookups resolve', async () => {
-  const { hardenReportHtml } = await bundle()
+test('hardenReportHtml places the theme style before the base style so var() lookups resolve', () => {
   const themed = hardenReportHtml('<article>hi</article>', '<style>:root{--bg:#0c0c0c;}</style>')
   assert.ok(themed.indexOf('--bg:#0c0c0c') < themed.indexOf('var(--surface'),
     'theme block must precede REPORT_BASE_STYLE so its var() lookups resolve')
