@@ -52,7 +52,6 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
   // reader reaches the bottom of the brief — a "read complete" analytics signal
   // that separates a real read from a bounce.
   const scrollRef = useRef(null)
-  const readSizedRef = useRef(false)  // iframe has reported its real height ≥ once
   const readFiredRef = useRef(false)  // brief_read_complete already fired this open
 
   // Persist chat open + split ratio per app (mirrors app-latex).
@@ -147,7 +146,6 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
     setQuestions([])
     setBriefHeight(360)
     setBriefMeasured(false)
-    readSizedRef.current = false
     readFiredRef.current = false
     ;(async () => {
       const res = await storage.getReportHtml(`${dateStr}.html`)
@@ -186,7 +184,6 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
       if (ev.source !== iframeRef.current?.contentWindow) return
       const h = Number(ev.data.height)
       if (Number.isFinite(h) && h > 0) {
-        readSizedRef.current = true
         // The reported height is applied as-is (no buffer): the reporter
         // sends Math.ceil of an exact content metric, and re-applying a
         // buffer per emit would creep the height upward. Clamp to a sane
@@ -209,17 +206,17 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
 
   // "Read complete" analytics: fire once when the reader reaches the bottom of
   // the brief. Gated on the iframe having reported its real height at least once
-  // (readSizedRef) so a short pre-sizing layout doesn't count as a read. Fire-
+  // so a short pre-sizing layout doesn't count as a read. Fire-
   // and-forget — a signal failure never affects the read.
   const maybeFireReadComplete = useCallback(() => {
-    if (readFiredRef.current || !readSizedRef.current) return
+    if (readFiredRef.current || !briefMeasured) return
     const el = scrollRef.current
     if (!el) return
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) {
       readFiredRef.current = true
       window.mobius?.signal?.('brief_read_complete', { date: dateStr })
     }
-  }, [dateStr])
+  }, [briefMeasured, dateStr])
 
   // Re-check on scroll and whenever the brief resizes: a just-sized short brief
   // that fits without scrolling counts as read on sizing; a tall one waits for
@@ -231,12 +228,6 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
     return () => el.removeEventListener('scroll', maybeFireReadComplete)
   }, [maybeFireReadComplete])
   useEffect(() => { maybeFireReadComplete() }, [briefHeight, maybeFireReadComplete])
-
-  const onIframeLoad = useCallback(() => {
-    // The height reporter inside the iframe fires on DOMContentLoaded and
-    // on ResizeObserver changes. Nothing to do here from the parent side,
-    // but we keep the onLoad prop in case subclasses need it later.
-  }, [])
 
   return (
     <div className="rf-detail rf-rise">
@@ -316,7 +307,6 @@ export function ReportDetail({ dateStr, storage, online, onBack, appId, token })
                   style={{ height: `${briefHeight}px` }}
                   title={`Morning brief for ${dateStr}`}
                   srcDoc={state.html}
-                  onLoad={onIframeLoad}
                   // allow-scripts lets the injected height-reporter run.
                   // allow-same-origin is intentionally absent: without it the
                   // iframe gets a null origin, so its scripts cannot reach the

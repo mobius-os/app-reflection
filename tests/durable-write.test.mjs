@@ -12,32 +12,8 @@
 // (resolve vs reject) without a browser or a real outbox.
 
 import assert from 'node:assert/strict'
-import { mkdir, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import test from 'node:test'
-import { buildEnv, esbuildPath } from './test-deps.mjs'
-
-const execFileAsync = promisify(execFile)
-const root = dirname(fileURLToPath(import.meta.url))
-const buildDir = join(root, '.build-dw')
-const bundled = join(buildDir, 'index.mjs')
-
-async function bundle() {
-  await rm(buildDir, { recursive: true, force: true })
-  await mkdir(buildDir, { recursive: true })
-  await execFileAsync(esbuildPath, [
-    join(root, '..', 'index.jsx'),
-    '--bundle',
-    '--format=esm',
-    '--platform=node',
-    '--jsx=automatic',
-    `--outfile=${bundled}`,
-  ], { env: buildEnv() })
-  return import(pathToFileURL(bundled))
-}
+import { makeStorage } from '../storage-core.js'
 
 // A faithful stand-in for the runtime's DurableWriteError: a fatal refusal the
 // app catches via `catch` (it never branches on `instanceof`, treating any
@@ -69,7 +45,6 @@ function installMobius(impl) {
 }
 
 test('putJSON rejects when durableWrite fatally refuses (413) - the call site shows an error, not "Saved"', async () => {
-  const { makeStorage } = await bundle()
   installMobius(() => {
     throw new FakeDurableWriteError('refused (413)', { code: 'dead_letter', status: 413, path: 'x', retryable: false })
   })
@@ -85,7 +60,6 @@ test('putJSON rejects when durableWrite fatally refuses (413) - the call site sh
 })
 
 test('putJSON resolves on a synced write - the call site shows "Saved"', async () => {
-  const { makeStorage } = await bundle()
   const calls = installMobius(() => ({ durability: 'synced', path: 'p', writeId: 'w1' }))
   const storage = makeStorage('reflection', 'tok')
 
@@ -97,7 +71,6 @@ test('putJSON resolves on a synced write - the call site shows "Saved"', async (
 })
 
 test('putJSON treats a queued (offline) write as durable success - it does NOT throw', async () => {
-  const { makeStorage } = await bundle()
   installMobius(() => ({ durability: 'queued', path: 'p', writeId: 'w2' }))
   const storage = makeStorage('reflection', 'tok')
 
@@ -110,7 +83,6 @@ test('putJSON treats a queued (offline) write as durable success - it does NOT t
 })
 
 test('a "superseded"/"conflict" DurableWriteError also rejects putJSON (any fatal reject -> error, never "Saved")', async () => {
-  const { makeStorage } = await bundle()
   installMobius(() => {
     throw new FakeDurableWriteError('superseded', { code: 'superseded', path: 'p', retryable: false })
   })
