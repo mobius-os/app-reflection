@@ -714,13 +714,18 @@ button.rf-card { cursor: pointer; }
 .rf-rq__opt--on { background: ${ACCENT}; color: var(--accent-fg); border-color: ${ACCENT}; }
 .rf-rq__opt--dim { opacity: 0.4; border-color: transparent; }
 .rf-rq__opt:disabled { cursor: default; }
+.rf-rq__actions { display: flex; gap: 8px; margin-top: 14px; }
 .rf-rq__submit {
-  display: block; width: 100%; margin-top: 14px; min-height: 44px;
-  padding: 11px; border-radius: 11px; border: none;
+  flex: 1 1 0; min-width: 0; min-height: 44px;
+  padding: 11px 8px; border-radius: 11px; border: none;
   background: ${ACCENT}; color: var(--accent-fg);
-  font-size: 14px; font-weight: 700; cursor: pointer;
+  font-size: 13.5px; font-weight: 700; cursor: pointer;
   font-family: var(--font); touch-action: manipulation; user-select: none;
   box-shadow: 0 4px 8px -4px ${ACCENT};
+}
+.rf-rq__submit--ghost {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); box-shadow: none; font-weight: 600;
 }
 .rf-rq__submit:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 .rf-rq--answered .rf-rq__done {

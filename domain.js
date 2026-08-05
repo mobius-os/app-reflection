@@ -192,6 +192,32 @@ export function extractReportQuestions(html) {
   return { html: out, questions }
 }
 
+// The message "Do it now" sends into the fresh conversation, written in the
+// partner's voice (it is sent as them). Self-contained on purpose: the
+// receiving agent may know nothing about this brief, so each line carries the
+// question, the chosen label(s), and the chosen option's description — the
+// description is where the brief agent packed the context needed to act.
+// `picks` is keyed by question INDEX (label | [labels]), matching the card's
+// selection state. Pure — unit-testable.
+export function buildNowDraft(questions, picks, dateStr) {
+  const lines = questions.map((q, qi) => {
+    const p = picks[qi]
+    const chosen = (Array.isArray(p) ? p : [p]).filter(Boolean)
+    const parts = chosen.map((label) => {
+      const opt = (q.options || []).find((o) => o.label === label)
+      return opt && opt.description ? `${label} (${opt.description})` : label
+    })
+    return `- ${q.question}\n  → ${parts.join('; ')}`
+  })
+  return [
+    `From my Reflection brief (${dateStr}): I answered its questions and want them acted on now rather than waiting for tonight's run.`,
+    '',
+    ...lines,
+    '',
+    'Please start on whatever is actionable right away; anything that is purely guidance for the night run just needs a note. These answers are already saved for tonight, so the night run will treat them as settled.',
+  ].join('\n')
+}
+
 // "0 6 * * *" -> "06:00" for the <input type="time"> value.
 export function hourToTimeValue(hour) {
   return `${String(hour).padStart(2, '0')}:00`

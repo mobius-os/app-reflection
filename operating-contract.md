@@ -100,6 +100,12 @@ also hard-blocks the harness push tools.
 - Answers arrive on your NEXT run: the app saves taps to
   `question-answers/<date>.json` in numeric storage and the wrapper stages
   them at `inputs/prev-question-answers.json` before the runner starts.
+- The record's `mode` field says how the partner finished the cards:
+  `"tonight"` (or absent, on legacy records) means the answers wait for you;
+  `"now"` means the partner tapped "Do it now" and the app immediately opened
+  a live daytime chat that acted on the answers. A `now` batch still stages
+  so you can see what was decided, but its decisions are already settled —
+  do not re-apply them.
 - Do NOT create a morning chat. The partner opens the conversation about a
   brief from the Reflection app; the platform injects that brief into the new
   chat's first turn on its own.
