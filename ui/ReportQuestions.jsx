@@ -1,22 +1,41 @@
 import { useEffect, useState } from 'react'
+import { buildNowDraft } from '../domain.js'
+import { useOnline } from '../storage.js'
 
 // Native tap-card UI for the brief's in-report questions. Mirrors the shell
 // QuestionCard's shape ({question, header, multiSelect, options:[{label,
 // description}]}) but is a single-file, install-safe copy — no sibling
-// imports, no streaming/answeredMap plumbing. Collects an answer per question;
-// on submit it persists { "<question text>": "<chosen label(s)>" } to
-// question-answers/<date>.json for the NEXT run (not a live agent) and flips to
-// "answered" only once durableWrite resolves a durable outcome (synced or
-// queued); a fatal server refusal rejects, so it never claims "Saved" falsely.
-// It also
-// pre-seeds the answered state from the same record on open, so a reopened
-// brief shows the done state rather than a fresh re-submittable form. Mirrors
-// the News app's ReportQuestions (app-news/index.jsx) so the two apps read the same.
+// imports, no streaming/answeredMap plumbing. Collects an answer per question,
+// then offers TWO finishes:
+//
+//   - "Save for tonight" (mode 'tonight') — the original flow: persists
+//     { "<question text>": "<chosen label(s)>" } to
+//     question-answers/<date>.json for the NEXT nightly run (not a live
+//     agent).
+//   - "Do it now" (mode 'now') — persists the SAME record (flagged
+//     mode:'now' so the nightly run treats the batch as settled), then hands
+//     the decisions to a live agent via the shell's new-chat bridge
+//     (moebius:new-chat + autoSend): a fresh conversation opens already
+//     working on the answers. The postMessage fires only AFTER the durable
+//     write resolves — the record is what keeps tonight's run consistent, so
+//     no record means no kick-off. Requires the network (a live turn can't
+//     start offline), so the button disables while offline; "tonight" still
+//     queues through the outbox as before.
+//
+// Either way it flips to "answered" only once durableWrite resolves a durable
+// outcome (synced or queued); a fatal server refusal rejects, so it never
+// claims "Saved" falsely. It also pre-seeds the answered state (and which
+// mode) from the same record on open, so a reopened brief shows the done
+// state rather than a fresh re-submittable form. Mirrors the News app's
+// ReportQuestions (app-news/index.jsx) — News still has the single-finish
+// form; keep the shared shape recognizable if porting this there.
 export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
   const [picks, setPicks] = useState({})        // question INDEX -> label | [labels]
   const [answered, setAnswered] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [answeredMode, setAnsweredMode] = useState('tonight')
+  const [saving, setSaving] = useState(false)   // false | 'tonight' | 'now'
   const [error, setError] = useState('')
+  const online = useOnline()
   // `answered` cannot start false-then-flip-on-read: a fresh form briefly
   // visible before the pre-seed lands invites a duplicate submit. Gate the
   // form behind a one-time seed check so a reopened, already-answered card
@@ -37,6 +56,7 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
         const res = await storage.getJSON(`question-answers/${dateStr}.json`)
         if (live && res && res.data && typeof res.data === 'object') {
           setAnswered(true)
+          setAnsweredMode(res.data.mode === 'now' ? 'now' : 'tonight')
         }
       } finally {
         if (live) setSeeding(false)
@@ -70,8 +90,9 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
     })
   }
 
-  const submit = async () => {
+  const submit = async (mode) => {
     if (!allAnswered || answered || saving) return
+    if (mode === 'now' && !online) return
     const answers = {}
     questions.forEach((q, qi) => {
       const p = picks[qi]
@@ -80,10 +101,14 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
     const body = {
       report_date: dateStr,
       answered_at: new Date().toISOString(),
+      // 'tonight' (guides the next nightly run, the original behavior) or
+      // 'now' (a live daytime chat is acting on it — the nightly run treats
+      // the batch as settled). Absent on legacy records == 'tonight'.
+      mode,
       answers,
       questions,
     }
-    setSaving(true)
+    setSaving(mode)
     setError('')
     const path = `question-answers/${dateStr}.json`
     try {
@@ -96,8 +121,24 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
       // write the server threw away. This is the honest signal the old re-read
       // gate had to reconstruct, now built into the write itself.
       await storage.putJSON(path, body)
+      if (mode === 'now') {
+        // Record is durable — now hand the decisions to a live agent. The
+        // shell opens a fresh conversation and sends this message
+        // immediately (autoSend), so the agent starts working while the
+        // partner watches. Works in the workspace and the standalone host;
+        // outside any shell the message is harmlessly ignored.
+        window.parent.postMessage(
+          {
+            type: 'moebius:new-chat',
+            draft: buildNowDraft(questions, picks, dateStr),
+            autoSend: true,
+          },
+          window.location.origin,
+        )
+      }
       setAnswered(true)
-      window.mobius?.signal?.('feedback_given', { date: dateStr, signal: 'questions' })
+      setAnsweredMode(mode)
+      window.mobius?.signal?.('feedback_given', { date: dateStr, signal: 'questions', mode })
     } catch {
       // A fatal DurableWriteError lands here. Keep the form interactive and
       // surface retry — never claim "Saved" on a write the server refused. (An
@@ -114,9 +155,10 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
 
   return (
     <div className={`rf-rq${answered ? ' rf-rq--answered' : ''}`}>
-      <p className="rf-rq__title">A few questions for tomorrow night</p>
+      <p className="rf-rq__title">A few questions from last night</p>
       <p className="rf-rq__note">
-        Your answers guide my next run — they won’t change this brief.
+        Answer, then save them for tonight’s run — or have me start on them
+        right away.
       </p>
       {questions.map((q, qi) => {
         const isMulti = q.multiSelect
@@ -160,17 +202,32 @@ export function ReportQuestions({ questions, storage, dateStr, appId, token }) {
         )
       })}
       {answered ? (
-        <div className="rf-rq__done">Saved — I’ll use this for tomorrow night’s run.</div>
+        <div className="rf-rq__done">
+          {answeredMode === 'now'
+            ? 'On it — a conversation is working through these now.'
+            : 'Saved — I’ll use this for tomorrow night’s run.'}
+        </div>
       ) : (
         <>
-          <button
-            type="button"
-            className="rf-rq__submit rf-pressable"
-            onClick={submit}
-            disabled={!allAnswered || saving || seeding}
-          >
-            {saving ? 'Saving…' : 'Save for next time'}
-          </button>
+          <div className="rf-rq__actions">
+            <button
+              type="button"
+              className="rf-rq__submit rf-rq__submit--ghost rf-pressable"
+              onClick={() => submit('tonight')}
+              disabled={!allAnswered || !!saving || seeding}
+            >
+              {saving === 'tonight' ? 'Saving…' : 'Save for tonight'}
+            </button>
+            <button
+              type="button"
+              className="rf-rq__submit rf-pressable"
+              onClick={() => submit('now')}
+              disabled={!allAnswered || !!saving || seeding || !online}
+              title={online ? 'Start a conversation that acts on these answers right away' : 'You’re offline — reconnect to run these now.'}
+            >
+              {saving === 'now' ? 'Starting…' : 'Do it now'}
+            </button>
+          </div>
           {error && <div className="rf-rq__error" role="alert">{error}</div>}
         </>
       )}
