@@ -145,6 +145,28 @@ class MemoryHealthTests(unittest.TestCase):
       health["last_rejection_codes"], ["unverified_chat_provenance"],
     )
 
+  def test_queue_progress_is_a_validated_content_free_outcome(self):
+    self._runs({
+      "status": "published",
+      "finished_at": "2026-07-20T05:30:00+00:00",
+      "chat_queue_progress": {
+        "pending_before_ack": 10,
+        "acknowledged": 4,
+        "remaining": 6,
+      },
+    })
+
+    health = memory_health.build_health(
+      self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+    )
+
+    self.assertEqual(health["queue_progress"], {
+      "pending_before_ack": 10,
+      "acknowledged": 4,
+      "remaining": 6,
+    })
+    self.assertNotIn("chat_queue_progress", health["last_run"])
+
   def test_canonical_running_status_is_not_hidden_by_prior_publish_history(self):
     self._runs({
       "status": "published", "run_id": "yesterday",

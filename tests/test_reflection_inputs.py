@@ -130,6 +130,40 @@ class ReflectionInputsTests(unittest.TestCase):
     self.assertIn("ordinary title # deleted_chat_summaries: complete", chats)
     self.assertEqual(chats.count("\n- `one`"), 1)
 
+  def test_chat_digest_ranks_active_chats_by_activity_not_publication(self):
+    with mock.patch.object(
+      reflection_inputs, "_api_json", side_effect=[[
+        {"id": "new", "title": "new", "activity_at": "2026-08-09T10:00:00Z",
+         "updated_at": "2026-08-09T10:01:00Z"},
+        {"id": "old", "title": "old", "activity_at": "2026-08-08T10:00:00Z",
+         "updated_at": "2026-08-09T11:00:00Z"},
+      ], {"items": []}],
+    ):
+      reflection_inputs.stage_chat_digest(
+        "http://example.test", "token", self.tmp_path,
+        self.tmp_path / "chats.md", self.tmp_path / "chats-status.json",
+      )
+    chats = (self.tmp_path / "chats.md").read_text(encoding="utf-8")
+    self.assertLess(chats.index("`new`"), chats.index("`old`"))
+    self.assertIn("updated 2026-08-09T10:00:00Z", chats)
+
+  def test_deleted_and_active_chats_share_one_recency_shape(self):
+    with mock.patch.object(
+      reflection_inputs, "_api_json", side_effect=[[
+        {"id": "active", "title": "active", "activity_at": "2026-08-08T10:00:00Z"},
+      ], {"items": [{
+        "id": "deleted", "title": "deleted", "deleted_at": "2026-08-09T00:00:00Z",
+        "recency_at": "2026-08-09T10:00:00Z",
+      }]}],
+    ):
+      reflection_inputs.stage_chat_digest(
+        "http://example.test", "token", self.tmp_path,
+        self.tmp_path / "chats.md", self.tmp_path / "chats-status.json",
+      )
+    chats = (self.tmp_path / "chats.md").read_text(encoding="utf-8")
+    self.assertLess(chats.index("`deleted`"), chats.index("`active`"))
+    self.assertIn("updated 2026-08-09T10:00:00Z", chats)
+
   def test_activity_status_and_snapshot_share_one_verified_contract(self):
     snapshot = self.tmp_path / "activity.jsonl"
     status = self.tmp_path / "activity-status.json"

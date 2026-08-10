@@ -53,12 +53,12 @@ class ToolFrictionTests(unittest.TestCase):
       },
       {
         "type": "tool", "tool": "Bash",
-        "input": "rg -n capture frontend/src", "output_exit_code": 0,
+        "input": {"cmd": "rg -n capture frontend/src"}, "output_exit_code": 0,
         "output_truncated": True, "output_full_len": 5_000,
       },
       {
         "type": "tool", "tool": "Bash",
-        "input": "rg -n capture frontend/src", "output_exit_code": 0,
+        "input": {"cmd": "rg -n capture frontend/src"}, "output_exit_code": 0,
         "output_truncated": True, "output_full_len": 5_000,
       },
     ],

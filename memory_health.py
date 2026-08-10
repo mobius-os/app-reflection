@@ -73,6 +73,18 @@ def _safe_run(row: dict[str, Any] | None) -> dict[str, Any] | None:
   return {key: row[key] for key in _RUN_FIELDS if key in row}
 
 
+def _safe_queue_progress(row: dict[str, Any] | None) -> dict[str, int] | None:
+  value = row.get("chat_queue_progress") if isinstance(row, dict) else None
+  if not isinstance(value, dict):
+    return None
+  result = {
+    key: value[key]
+    for key in ("pending_before_ack", "acknowledged", "remaining")
+    if isinstance(value.get(key), int) and not isinstance(value.get(key), bool)
+  }
+  return result if len(result) == 3 else None
+
+
 def _run_time(row: dict[str, Any] | None) -> dt.datetime | None:
   if not row:
     return None
@@ -258,6 +270,7 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
     "days_since_last_publish": days_since_publish,
     "pending_chat_count": pending_count,
     "pending_chat_capacity": pending_capacity,
+    "queue_progress": _safe_queue_progress(latest_terminal),
     "recovered_after_failure": recovered_after_failure,
     "recall_activity": recall,
     "last_run": _safe_run(latest),
