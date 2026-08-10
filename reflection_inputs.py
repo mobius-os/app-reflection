@@ -282,7 +282,13 @@ def stage_chat_digest(
     ))
     active_ok = True
     by_id = {
-      row["id"]: row
+      row["id"]: {
+        **row,
+        # The active-chat API is already ordered by owner-visible activity.
+        # Preserve that timestamp explicitly; summary publication may update
+        # updated_at in a later bookkeeping pass.
+        "recency_at": row.get("activity_at") or row.get("updated_at"),
+      }
       for row in active
       if isinstance(row.get("id"), str)
     }
@@ -300,7 +306,7 @@ def stage_chat_digest(
           continue
         by_id[chat_id] = {
           **row,
-          "updated_at": row.get("recency_at") or row.get("updated_at"),
+          "recency_at": row.get("recency_at") or row.get("updated_at"),
           "provider": "unknown",
         }
       deleted_complete = True
@@ -329,7 +335,7 @@ def stage_chat_digest(
     display_id = _one_line(chat_id)
     title = _one_line(row.get("title"), "(untitled)")
     provider = _one_line(row.get("provider"), "claude")
-    updated = _one_line(row.get("updated_at"))
+    updated = _one_line(row.get("recency_at") or row.get("updated_at"))
     tags = []
     if row.get("created_by_app_id"):
       tags.append("app")

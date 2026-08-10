@@ -62,6 +62,18 @@ def _tool_text(value: Any) -> str:
     return str(value)
 
 
+def _command_text(text: str) -> str:
+  """Extract a shell command from serialized tool input once for all metrics."""
+  try:
+    value = json.loads(text)
+  except json.JSONDecodeError:
+    return text
+  if isinstance(value, dict):
+    command = value.get("cmd") or value.get("command")
+    return str(command) if command is not None else ""
+  return text
+
+
 def _failed(block: dict[str, Any]) -> bool:
   return (
     block.get("status") in {"error", "failed"}
@@ -89,13 +101,7 @@ def _command_signature(tool: str, text: str) -> str:
 
 def _command_family(tool: str, text: str) -> str:
   """Return a useful command family without retaining arguments or paths."""
-  command = text
-  try:
-    value = json.loads(text)
-    if isinstance(value, dict):
-      command = str(value.get("cmd") or value.get("command") or "")
-  except (TypeError, ValueError):
-    pass
+  command = _command_text(text)
   compact = " ".join(command.split())
   patterns = (
     (r"\bwt-pytest\.sh\b", "backend focused tests"),
@@ -249,6 +255,7 @@ def analyse_database(
           continue
         tool = str(block.get("tool") or "unknown")
         command = _tool_text(block.get("input"))
+        searchable_command = _command_text(command)
         failed = _failed(block)
         failure_class = _failure_class(block)
         truncated = bool(block.get("output_truncated"))
@@ -275,7 +282,7 @@ def analyse_database(
           failure_families[_command_family(tool, command)] += 1
 
         for name, pattern in PRIMITIVES.items():
-          if not pattern.search(command):
+          if not pattern.search(searchable_command):
             continue
           surface = surfaces[name]
           surface["tool_calls"] += 1
