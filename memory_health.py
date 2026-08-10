@@ -102,18 +102,26 @@ def _recall_activity(app_state: Path, now: dt.datetime) -> dict[str, Any]:
   signal. Use a bounded nonzero baseline so several silent days cannot redefine
   a collapse as normal, and require three active days so a lone burst cannot
   become the baseline for a young or genuinely quiet log.
+
+  Read only the 15 days the metric uses so this health check stays constant-time
+  as the append-only recall history grows.
   """
-  per_day: dict[str, set[str]] = {}
-  try:
-    logs = sorted((app_state / "read-log").glob("*.jsonl"))
-  except OSError:
-    logs = []
-  for item in logs:
-    chats = per_day.setdefault(item.stem, set())
+  last_full_day = now.date() - dt.timedelta(days=1)
+  recent_days = [
+    (last_full_day - dt.timedelta(days=offset)).isoformat()
+    for offset in range(15)
+  ]
+  recent_counts = []
+  days_observed = 0
+  for day in recent_days:
+    item = app_state / "read-log" / f"{day}.jsonl"
     try:
       lines = item.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
+      recent_counts.append(0)
       continue
+    days_observed += 1
+    chats = set()
     for line in lines:
       try:
         row = json.loads(line)
@@ -122,19 +130,15 @@ def _recall_activity(app_state: Path, now: dt.datetime) -> dict[str, Any]:
       chat_id = row.get("chat_id") if isinstance(row, dict) else None
       if isinstance(chat_id, str) and chat_id:
         chats.add(chat_id)
+    recent_counts.append(len(chats))
 
-  last_full_day = now.date() - dt.timedelta(days=1)
-  recent_counts = [
-    len(per_day.get((last_full_day - dt.timedelta(days=offset)).isoformat(), ()))
-    for offset in range(1, 15)
-  ]
-  baseline = [count for count in recent_counts if count > 0]
-  baseline_median = statistics.median(baseline) if len(baseline) >= 3 else 0
+  active_counts = [count for count in recent_counts[1:] if count > 0]
+  baseline_median = statistics.median(active_counts) if len(active_counts) >= 3 else 0
   return {
     "last_full_day": last_full_day.isoformat(),
-    "chats_recalling_last_full_day": len(per_day.get(last_full_day.isoformat(), ())),
+    "chats_recalling_last_full_day": recent_counts[0],
     "baseline_median": baseline_median,
-    "days_observed": len(per_day),
+    "days_observed": days_observed,
   }
 
 

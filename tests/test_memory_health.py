@@ -76,7 +76,7 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertIn("recall_collapsed", health["reasons"])
     self.assertTrue(health["needs_attention"])
-    self.assertGreaterEqual(health["recall_activity"]["baseline_median"], 3)
+    self.assertEqual(health["recall_activity"]["baseline_median"], 21)
 
   def test_steady_recall_volume_raises_nothing(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
@@ -91,25 +91,14 @@ class MemoryHealthTests(unittest.TestCase):
     self.assertNotIn("recall_collapsed", health["reasons"])
     self.assertEqual(health["recall_activity"]["baseline_median"], 21)
 
-  def test_young_or_quiet_read_log_never_cries_regression(self):
+  def test_two_active_days_do_not_form_a_recall_baseline(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
-    self._reads(**{"2026_07_18": 30, "2026_07_19": 0})
+    self._reads(**{"2026_07_17": 30, "2026_07_18": 24})
 
     health = self._health_on_20th()
 
     self.assertNotIn("recall_collapsed", health["reasons"])
     self.assertEqual(health["recall_activity"]["days_observed"], 2)
-    self.assertEqual(health["recall_activity"]["baseline_median"], 0)
-
-  def test_two_busy_days_are_not_enough_to_form_a_baseline(self):
-    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
-    self._reads(**{
-      "2026_07_16": 20, "2026_07_17": 24,
-    })
-
-    health = self._health_on_20th()
-
-    self.assertNotIn("recall_collapsed", health["reasons"])
     self.assertEqual(health["recall_activity"]["baseline_median"], 0)
 
   def test_missing_read_log_reports_zeroes_without_failing(self):
@@ -119,6 +108,15 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertEqual(health["recall_activity"]["days_observed"], 0)
     self.assertNotIn("recall_collapsed", health["reasons"])
+
+  def test_read_history_outside_the_health_window_is_ignored(self):
+    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
+    self._reads(**{"2026_06_01": 30})
+
+    health = self._health_on_20th()
+
+    self.assertEqual(health["recall_activity"]["days_observed"], 0)
+    self.assertEqual(health["recall_activity"]["baseline_median"], 0)
 
   def test_recovered_failure_is_visible_without_triggering_shared_writes(self):
     self._runs(
