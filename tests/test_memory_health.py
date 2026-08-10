@@ -65,6 +65,19 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertIn("recall_collapsed", health["reasons"])
 
+  def test_prolonged_collapse_does_not_rewrite_its_own_baseline(self):
+    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
+    self._reads(**{
+      "2026_07_06": 20, "2026_07_07": 24, "2026_07_08": 18,
+      "2026_07_09": 22, "2026_07_10": 19, "2026_07_11": 25,
+    })
+
+    health = self._health_on_20th()
+
+    self.assertIn("recall_collapsed", health["reasons"])
+    self.assertTrue(health["needs_attention"])
+    self.assertGreaterEqual(health["recall_activity"]["baseline_median"], 3)
+
   def test_steady_recall_volume_raises_nothing(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
     self._reads(**{
@@ -86,6 +99,18 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertNotIn("recall_collapsed", health["reasons"])
     self.assertEqual(health["recall_activity"]["days_observed"], 2)
+    self.assertEqual(health["recall_activity"]["baseline_median"], 0)
+
+  def test_two_busy_days_are_not_enough_to_form_a_baseline(self):
+    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
+    self._reads(**{
+      "2026_07_16": 20, "2026_07_17": 24,
+    })
+
+    health = self._health_on_20th()
+
+    self.assertNotIn("recall_collapsed", health["reasons"])
+    self.assertEqual(health["recall_activity"]["baseline_median"], 0)
 
   def test_missing_read_log_reports_zeroes_without_failing(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})

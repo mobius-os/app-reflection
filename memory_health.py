@@ -99,8 +99,9 @@ def _recall_activity(app_state: Path, now: dt.datetime) -> dict[str, Any]:
   Count DISTINCT chats, not read lines: one chat recalling ten times is a single
   agent deciding once, and raw volume lets a burst on either side of a quiet
   window hide a broad collapse. A day far below its own trailing baseline is the
-  signal; the guards at the call site keep a young or genuinely quiet log from
-  crying regression.
+  signal. Use a bounded nonzero baseline so several silent days cannot redefine
+  a collapse as normal, and require three active days so a lone burst cannot
+  become the baseline for a young or genuinely quiet log.
   """
   per_day: dict[str, set[str]] = {}
   try:
@@ -123,14 +124,16 @@ def _recall_activity(app_state: Path, now: dt.datetime) -> dict[str, Any]:
         chats.add(chat_id)
 
   last_full_day = now.date() - dt.timedelta(days=1)
-  baseline = [
+  recent_counts = [
     len(per_day.get((last_full_day - dt.timedelta(days=offset)).isoformat(), ()))
-    for offset in range(1, 8)
+    for offset in range(1, 15)
   ]
+  baseline = [count for count in recent_counts if count > 0]
+  baseline_median = statistics.median(baseline) if len(baseline) >= 3 else 0
   return {
     "last_full_day": last_full_day.isoformat(),
     "chats_recalling_last_full_day": len(per_day.get(last_full_day.isoformat(), ())),
-    "baseline_median": statistics.median(baseline),
+    "baseline_median": baseline_median,
     "days_observed": len(per_day),
   }
 
@@ -235,8 +238,7 @@ def build_health(memory_root: Path, *, now: dt.datetime | None = None) -> dict[s
   # is long enough to support.
   recall = _recall_activity(app_state, now)
   if (
-    recall["days_observed"] >= 4
-    and recall["baseline_median"] >= 3
+    recall["baseline_median"] >= 3
     and recall["chats_recalling_last_full_day"] * 4 < recall["baseline_median"]
   ):
     reasons.append("recall_collapsed")
