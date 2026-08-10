@@ -28,7 +28,11 @@ class MemoryHealthTests(unittest.TestCase):
     for day, count in per_day.items():
       (log / f"{day.replace('_', '-')}.jsonl").write_text(
         "".join(
-          json.dumps({"read_id": f"{day}-{i}", "chat_id": f"chat-{day}-{i}"}) + "\n"
+          json.dumps({
+            "at": f"{day.replace('_', '-')}T01:00:00Z",
+            "read_id": f"{day}-{i}",
+            "chat_id": f"chat-{day}-{i}",
+          }) + "\n"
           for i in range(count)
         )
       )
@@ -38,62 +42,54 @@ class MemoryHealthTests(unittest.TestCase):
       self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
     )
 
-  def test_recall_collapsing_against_a_real_baseline_needs_attention(self):
+  def test_recall_activity_resumes_at_checkpoint_and_orders_every_day(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
     self._reads(**{
-      "2026_07_12": 20, "2026_07_13": 24, "2026_07_14": 18, "2026_07_15": 22,
-      "2026_07_16": 19, "2026_07_17": 25, "2026_07_18": 21,
-      "2026_07_19": 0,
+      "2026_07_11": 8,
+      "2026_07_12": 2,
+      "2026_07_14": 3,
+      "2026_07_19": 1,
     })
 
-    health = self._health_on_20th()
+    health = memory_health.build_health(
+      self.root,
+      now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      since="2026-07-12T00:00:00Z",
+    )
 
-    self.assertIn("recall_collapsed", health["reasons"])
-    self.assertTrue(health["needs_attention"])
-    self.assertEqual(health["recall_activity"]["chats_recalling_last_full_day"], 0)
-    self.assertEqual(health["recall_activity"]["last_full_day"], "2026-07-19")
-
-  def test_a_lone_stray_recall_still_counts_as_a_collapse(self):
-    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
-    self._reads(**{
-      "2026_07_12": 20, "2026_07_13": 24, "2026_07_14": 18, "2026_07_15": 22,
-      "2026_07_16": 19, "2026_07_17": 25, "2026_07_18": 21,
-      "2026_07_19": 2,
-    })
-
-    health = self._health_on_20th()
-
-    self.assertIn("recall_collapsed", health["reasons"])
-
-  def test_steady_recall_volume_raises_nothing(self):
-    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
-    self._reads(**{
-      "2026_07_12": 20, "2026_07_13": 24, "2026_07_14": 18, "2026_07_15": 22,
-      "2026_07_16": 19, "2026_07_17": 25, "2026_07_18": 21,
-      "2026_07_19": 23,
-    })
-
-    health = self._health_on_20th()
-
+    recall = health["recall_activity"]
+    self.assertEqual(recall["days"][0], {"date": "2026-07-12", "chats": 2})
+    self.assertEqual(recall["days"][-1], {"date": "2026-07-20", "chats": 0})
+    self.assertEqual(
+      [day["date"] for day in recall["days"]],
+      [f"2026-07-{day:02}" for day in range(12, 21)],
+    )
+    self.assertEqual(recall["chat_days"], 6)
     self.assertNotIn("recall_collapsed", health["reasons"])
-    self.assertEqual(health["recall_activity"]["baseline_median"], 21)
-
-  def test_young_or_quiet_read_log_never_cries_regression(self):
-    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
-    self._reads(**{"2026_07_18": 30, "2026_07_19": 0})
-
-    health = self._health_on_20th()
-
-    self.assertNotIn("recall_collapsed", health["reasons"])
-    self.assertEqual(health["recall_activity"]["days_observed"], 2)
 
   def test_missing_read_log_reports_zeroes_without_failing(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
 
     health = self._health_on_20th()
 
-    self.assertEqual(health["recall_activity"]["days_observed"], 0)
+    self.assertEqual(health["recall_activity"]["days"], [])
+    self.assertEqual(health["recall_activity"]["chat_days"], 0)
     self.assertNotIn("recall_collapsed", health["reasons"])
+
+  def test_read_history_before_the_checkpoint_is_ignored(self):
+    self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
+    self._reads(**{"2026_06_01": 30})
+
+    health = memory_health.build_health(
+      self.root,
+      now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      since="2026-07-19T00:00:00Z",
+    )
+
+    self.assertEqual(health["recall_activity"]["days"], [
+      {"date": "2026-07-19", "chats": 0},
+      {"date": "2026-07-20", "chats": 0},
+    ])
 
   def test_recovered_failure_is_visible_without_triggering_shared_writes(self):
     self._runs(

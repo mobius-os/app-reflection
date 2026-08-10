@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,8 @@ _MANIFEST_INPUTS = (
   ("prev-question-answers.json", False),
 )
 
+_EPOCH = "1970-01-01T00:00:00Z"
+
 
 def _atomic_json(path: Path, value: dict) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +70,82 @@ def _manifest_time(value: str) -> datetime.datetime:
   if parsed.tzinfo is None:
     raise ValueError("manifest run start must include a timezone")
   return parsed.astimezone(datetime.timezone.utc)
+
+
+def _utc_time(value: str) -> datetime.datetime:
+  """Parse platform timestamps, whose SQLite form may be timezone-naive UTC."""
+  parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+  if parsed.tzinfo is None:
+    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+  return parsed.astimezone(datetime.timezone.utc)
+
+
+def _latest_completed_run(metrics: Path) -> str | None:
+  try:
+    lines = metrics.read_text(encoding="utf-8", errors="replace").splitlines()
+  except OSError:
+    return None
+  for line in reversed(lines):
+    try:
+      row = json.loads(line)
+    except ValueError:
+      continue
+    if not isinstance(row, dict):
+      continue
+    if (
+      row.get("exit_code") != 0
+      or row.get("dry_run") is not False
+      or row.get("brief_written") is not True
+    ):
+      continue
+    try:
+      started = _manifest_time(row["started_at"])
+    except (KeyError, TypeError, ValueError):
+      continue
+    return started.strftime("%Y-%m-%dT%H:%M:%SZ")
+  return None
+
+
+def resume_since(checkpoint: Path, metrics: Path | None = None) -> str:
+  """Return the durable Reflection checkpoint, migrating old run metrics once."""
+  try:
+    value = _json_object(checkpoint).get("since")
+    return _manifest_time(value).strftime("%Y-%m-%dT%H:%M:%SZ")
+  except (OSError, TypeError, ValueError):
+    pass
+  migrated = _latest_completed_run(metrics) if metrics is not None else None
+  if migrated:
+    _atomic_json(checkpoint, {"schema": 1, "since": migrated})
+    return migrated
+  return _EPOCH
+
+
+def advance_checkpoint(
+  checkpoint: Path,
+  *,
+  started_at: str,
+  report: Path,
+  exit_code: int,
+  dry_run: bool,
+  inputs_complete: bool = True,
+) -> bool:
+  """Advance only after this real run successfully wrote its own brief."""
+  if exit_code != 0 or dry_run or not inputs_complete:
+    return False
+  started = _manifest_time(started_at)
+  try:
+    modified = datetime.datetime.fromtimestamp(
+      report.stat().st_mtime, datetime.timezone.utc,
+    )
+  except OSError:
+    return False
+  if modified < started:
+    return False
+  _atomic_json(checkpoint, {
+    "schema": 1,
+    "since": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+  })
+  return True
 
 
 def _json_object(path: Path) -> dict:
@@ -268,9 +347,11 @@ def stage_chat_digest(
   data_dir: Path,
   target: Path,
   status_target: Path,
+  since: str,
 ) -> dict:
-  """Stage recent active/deleted chat facts with a structured trust receipt."""
+  """Stage every chat changed since the last completed run, oldest first."""
   base = base.rstrip("/")
+  cutoff = _manifest_time(since)
   active_ok = False
   deleted_complete = False
   error = None
@@ -281,47 +362,77 @@ def stage_chat_digest(
       base, token, "/api/chats?include_app_chats=1",
     ))
     active_ok = True
-    by_id = {
-      row["id"]: {
-        **row,
-        # The active-chat API is already ordered by owner-visible activity.
-        # Preserve that timestamp explicitly; summary publication may update
-        # updated_at in a later bookkeeping pass.
-        "recency_at": row.get("activity_at") or row.get("updated_at"),
-      }
-      for row in active
-      if isinstance(row.get("id"), str)
-    }
+    by_id = {}
+    for row in active:
+      chat_id = row.get("id")
+      recency = row.get("activity_at") or row.get("updated_at")
+      try:
+        changed = _utc_time(str(recency))
+      except (TypeError, ValueError):
+        continue
+      if isinstance(chat_id, str) and changed > cutoff:
+        by_id[chat_id] = {**row, "recency_at": recency}
     try:
-      deleted = _api_json(
-        base, token, "/api/chat-logs?include_deleted=true&limit=100",
-      )
-      if not isinstance(deleted, dict) or not isinstance(deleted.get("items"), list):
-        raise ValueError("deleted chat discovery returned an invalid payload")
-      for row in deleted["items"]:
-        if not isinstance(row, dict) or not row.get("deleted_at"):
-          continue
-        chat_id = row.get("id")
-        if not isinstance(chat_id, str) or chat_id in by_id:
-          continue
-        by_id[chat_id] = {
-          **row,
-          "recency_at": row.get("recency_at") or row.get("updated_at"),
-          "provider": "unknown",
-        }
+      before = None
+      seen_pages = set()
+      while True:
+        params = {"include_deleted": "true", "limit": "100"}
+        if before:
+          params.update({
+            "before_recency": before["recency_at"],
+            "before_id": before["id"],
+          })
+        deleted = _api_json(
+          base, token, "/api/chat-logs?" + urllib.parse.urlencode(params),
+        )
+        if not isinstance(deleted, dict) or not isinstance(deleted.get("items"), list):
+          raise ValueError("deleted chat discovery returned an invalid payload")
+        reached_cutoff = False
+        for row in deleted["items"]:
+          if not isinstance(row, dict):
+            continue
+          recency = row.get("recency_at") or row.get("updated_at")
+          try:
+            changed = _utc_time(str(recency))
+          except (TypeError, ValueError):
+            continue
+          if changed <= cutoff:
+            reached_cutoff = True
+            break
+          if not row.get("deleted_at"):
+            continue
+          chat_id = row.get("id")
+          if not isinstance(chat_id, str) or chat_id in by_id:
+            continue
+          by_id[chat_id] = {
+            **row,
+            "recency_at": recency,
+            "provider": "unknown",
+          }
+        if reached_cutoff or deleted.get("next_before") is None:
+          break
+        next_before = deleted.get("next_before")
+        if not isinstance(next_before, dict):
+          raise ValueError("deleted chat discovery returned an invalid cursor")
+        page_key = (next_before.get("recency_at"), next_before.get("id"))
+        if not all(isinstance(value, str) and value for value in page_key):
+          raise ValueError("deleted chat discovery returned an invalid cursor")
+        if page_key in seen_pages:
+          raise ValueError("deleted chat discovery repeated its cursor")
+        seen_pages.add(page_key)
+        before = {"recency_at": page_key[0], "id": page_key[1]}
       deleted_complete = True
     except Exception as exc:
       error = f"deleted chat discovery failed ({type(exc).__name__})"
     chats = sorted(
       by_id.values(),
       key=lambda row: str(row.get("recency_at") or row.get("updated_at") or ""),
-      reverse=True,
-    )[:20]
+    )
   except Exception as exc:
     error = f"active chat discovery failed ({type(exc).__name__})"
 
   lines = [
-    "# Recent chats (fork + interview the ones with activity)",
+    "# Chats awaiting Reflection review (oldest first)",
     "",
     "`[app]` rows are app-driven chats: hidden from the owner's drawer but",
     "useful for the system-improvement brief. `[deleted]` rows remain evidence",
@@ -365,6 +476,7 @@ def stage_chat_digest(
   _atomic_text(target, content)
   status = {
     "schema": 1,
+    "since": since,
     "active_ok": active_ok,
     "deleted_complete": deleted_complete,
     "chat_count": len(chats),
@@ -390,6 +502,79 @@ def _storage_text(
     if exc.code == 404:
       return None
     raise
+
+
+def stage_question_answers(
+  base: str,
+  token: str,
+  app_id: str,
+  since: str,
+  target: Path,
+) -> int:
+  """Stage every answer packet after the checkpoint, oldest first."""
+  base = base.rstrip("/")
+  cutoff = _manifest_time(since)
+  cursor = None
+  seen = set()
+  entries = []
+  while True:
+    path = f"/api/storage/apps-list/{urllib.parse.quote(app_id, safe='')}/question-answers/"
+    if cursor:
+      path += "?" + urllib.parse.urlencode({"cursor": cursor})
+    try:
+      listing = _api_json(base, token, path)
+    except urllib.error.HTTPError as exc:
+      if exc.code == 404 and cursor is None:
+        target.unlink(missing_ok=True)
+        return 0
+      raise
+    if not isinstance(listing, dict) or not isinstance(listing.get("entries"), list):
+      raise ValueError("question-answer listing returned an invalid payload")
+    entries.extend(
+      entry for entry in listing["entries"]
+      if isinstance(entry, dict)
+      and entry.get("type") == "file"
+      and isinstance(entry.get("name"), str)
+      and entry["name"].endswith(".json")
+    )
+    next_cursor = listing.get("next_cursor")
+    if not next_cursor:
+      break
+    if not isinstance(next_cursor, str) or next_cursor in seen:
+      raise ValueError("question-answer listing repeated its cursor")
+    seen.add(next_cursor)
+    cursor = next_cursor
+
+  packets = []
+  for entry in entries:
+    name = entry["name"]
+    path = (
+      f"/api/storage/apps/{urllib.parse.quote(app_id, safe='')}/"
+      f"question-answers/{urllib.parse.quote(name, safe='')}"
+    )
+    packet = _api_json(base, token, path)
+    if not isinstance(packet, dict):
+      continue
+    raw_time = (
+      packet.get("answered_at")
+      or entry.get("modified_at")
+      or (f"{packet.get('report_date')}T00:00:00Z" if packet.get("report_date") else None)
+    )
+    try:
+      answered_at = _utc_time(str(raw_time))
+    except (TypeError, ValueError):
+      continue
+    if answered_at > cutoff:
+      packets.append((answered_at, name, packet))
+  packets.sort(key=lambda item: (item[0], item[1]))
+  if not packets:
+    target.unlink(missing_ok=True)
+    return 0
+  _atomic_json(target, {
+    "since": since,
+    "answer_packets": [packet for _, _, packet in packets],
+  })
+  return len(packets)
 
 
 def _add_request_error(groups: dict, event: dict) -> None:
@@ -448,7 +633,7 @@ class ActivityDigest:
     default_factory=dict,
   )
   app_errors: dict[str, int] = field(default_factory=dict)
-  recent_app_errors: dict[str, list[dict]] = field(default_factory=dict)
+  app_error_details: dict[str, list[dict]] = field(default_factory=dict)
   shell_errors: list[dict] = field(default_factory=list)
   request_errors: dict[str, dict] = field(default_factory=dict)
   shell_request_errors: dict = field(default_factory=dict)
@@ -471,7 +656,7 @@ def _parse_activity_snapshot(
   snapshot: bytes,
   cutoff: datetime.datetime,
 ) -> tuple[dict, ActivityDigest]:
-  """Parse canonical activity once into the bounded digest state."""
+  """Parse canonical activity once into the checkpoint-interval digest."""
   digest = ActivityDigest()
   if not source.get("ok"):
     return source, digest
@@ -511,12 +696,9 @@ def _parse_activity_snapshot(
           summary["where"] = str(event.get("where"))[:120]
         if app_id:
           digest.app_errors[app_id] = digest.app_errors.get(app_id, 0) + 1
-          recent = digest.recent_app_errors.setdefault(app_id, [])
-          recent.append(summary)
-          del recent[:-5]
+          digest.app_error_details.setdefault(app_id, []).append(summary)
         else:
           digest.shell_errors.append(summary)
-          del digest.shell_errors[:-5]
       elif event_name == "app_open" and app_id:
         digest.opens[app_id] = digest.opens.get(app_id, 0) + 1
       elif (
@@ -565,7 +747,6 @@ def _parse_activity_snapshot(
             errors = digest.signal_errors.setdefault(app_id, [])
             errors.append((occurred_at, str(message)[:200]))
             errors.sort(key=lambda row: row[0])
-            del errors[:-5]
   except Exception as exc:
     return {
       **source,
@@ -685,17 +866,19 @@ def build_app_digest(
       "app_id": app_id,
       "slug": slug,
       "name": name,
-      "opens_24h": activity.opens.get(app_id, 0),
+      "opens_in_window": activity.opens.get(app_id, 0),
       "has_signals": has_signals,
       "signal_counts": counts,
-      "last_5_errors": [
-        message for _, message in sorted(errors, key=lambda row: row[0])[-5:]
+      "signal_errors_in_window": [
+        message for _, message in sorted(errors, key=lambda row: row[0])
       ],
-      "app_errors_24h": activity.app_errors.get(app_id, 0),
-      "recent_app_errors": activity.recent_app_errors.get(app_id, []),
-      "request_errors_24h": sum(group["count"] for group in groups.values()),
+      "app_error_count_in_window": activity.app_errors.get(app_id, 0),
+      "app_errors_in_window": activity.app_error_details.get(app_id, []),
+      "request_error_count_in_window": sum(
+        group["count"] for group in groups.values()
+      ),
       "top_request_errors": _top_request_errors(groups),
-      "storage_misses_24h": activity.storage_misses.get(app_id, 0),
+      "storage_miss_count_in_window": activity.storage_misses.get(app_id, 0),
     }
     if signals_error:
       entry["signals_read_error"] = signals_error
@@ -703,15 +886,15 @@ def build_app_digest(
   return {
     "generated_at": now.isoformat(),
     "activity_source": source,
-    "shell_errors_24h": len(activity.shell_errors),
-    "recent_shell_errors": activity.shell_errors,
-    "shell_request_errors_24h": sum(
+    "shell_error_count_in_window": len(activity.shell_errors),
+    "shell_errors_in_window": activity.shell_errors,
+    "shell_request_error_count_in_window": sum(
       group["count"] for group in activity.shell_request_errors.values()
     ),
     "top_shell_request_errors": _top_request_errors(
       activity.shell_request_errors,
     ),
-    "shell_storage_misses_24h": activity.shell_storage_misses,
+    "shell_storage_miss_count_in_window": activity.shell_storage_misses,
     "apps": digests,
   }
 
@@ -734,6 +917,23 @@ def _main(argv: list[str]) -> int:
   chats.add_argument("data_dir", type=Path)
   chats.add_argument("target", type=Path)
   chats.add_argument("status_target", type=Path)
+  chats.add_argument("since")
+  checkpoint = subparsers.add_parser("resume-since")
+  checkpoint.add_argument("checkpoint", type=Path)
+  checkpoint.add_argument("metrics", type=Path, nargs="?")
+  complete = subparsers.add_parser("complete-run")
+  complete.add_argument("checkpoint", type=Path)
+  complete.add_argument("started_at")
+  complete.add_argument("report", type=Path)
+  complete.add_argument("exit_code", type=int)
+  complete.add_argument("dry_run", choices=("true", "false"))
+  complete.add_argument("inputs_complete", choices=("true", "false"))
+  answers = subparsers.add_parser("question-answers")
+  answers.add_argument("base")
+  answers.add_argument("token")
+  answers.add_argument("app_id")
+  answers.add_argument("since")
+  answers.add_argument("target", type=Path)
   digest = subparsers.add_parser("app-digest")
   digest.add_argument("base")
   digest.add_argument("token")
@@ -763,7 +963,27 @@ def _main(argv: list[str]) -> int:
         args.data_dir,
         args.target,
         args.status_target,
+        args.since,
       )))
+    elif args.command == "resume-since":
+      print(resume_since(args.checkpoint, args.metrics))
+    elif args.command == "complete-run":
+      print("true" if advance_checkpoint(
+        args.checkpoint,
+        started_at=args.started_at,
+        report=args.report,
+        exit_code=args.exit_code,
+        dry_run=args.dry_run == "true",
+        inputs_complete=args.inputs_complete == "true",
+      ) else "false")
+    elif args.command == "question-answers":
+      print(stage_question_answers(
+        args.base,
+        args.token,
+        args.app_id,
+        args.since,
+        args.target,
+      ))
     elif args.command == "app-digest":
       print(json.dumps(
         build_app_digest(args.base, args.token, args.inputs, args.since),

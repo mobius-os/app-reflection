@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarise recurring agent-tool friction from recent completed chat turns.
+"""Summarise recurring agent-tool friction not covered by the prior run.
 
 This is read-only evidence for Reflection and manager sessions. It deliberately
 reports a few broad mechanical surfaces rather than diagnosing every command
@@ -165,7 +165,8 @@ def _serialise_surface(value: dict[str, Any]) -> dict[str, Any]:
 def analyse_database(
   db_path: str = DEFAULT_DB,
   *,
-  hours: int = 24,
+  since: str | None = None,
+  hours: int | None = None,
   now: dt.datetime | None = None,
   chat_limit: int = 12,
   repeated_limit: int = 12,
@@ -173,8 +174,13 @@ def analyse_database(
   now = now or _utc_now()
   if now.tzinfo is None:
     now = now.replace(tzinfo=dt.timezone.utc)
-  hours = max(1, hours)
-  cutoff = now - dt.timedelta(hours=hours)
+  if since is None:
+    cutoff = now - dt.timedelta(hours=max(1, hours or 24))
+  else:
+    cutoff = dt.datetime.fromisoformat(since.replace("Z", "+00:00"))
+    if cutoff.tzinfo is None:
+      cutoff = cutoff.replace(tzinfo=dt.timezone.utc)
+    cutoff = cutoff.astimezone(dt.timezone.utc)
   cutoff_ms = int(cutoff.timestamp() * 1000)
   con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
   con.row_factory = sqlite3.Row
@@ -380,7 +386,7 @@ def analyse_database(
   return {
     "version": VERSION,
     "generated_at": now.isoformat(),
-    "window": {"hours": hours, "cutoff": cutoff.isoformat()},
+    "window": {"since": cutoff.isoformat(), "through": now.isoformat()},
     "overall": serial_overall,
     "run_totals": run_totals,
     "tool_types": dict(tool_types.most_common()),
@@ -428,7 +434,7 @@ def format_report(data: dict[str, Any]) -> str:
   overall = data["overall"]
   runs = data["run_totals"]
   lines = [
-    f"TOOL FRICTION — last {data['window']['hours']}h",
+    f"TOOL FRICTION — since {data['window']['since']}",
     "-" * 34,
     (
       f"  chats={overall['chat_count']}  assistant_turns={overall['assistant_turns']}  "
@@ -482,11 +488,13 @@ def format_report(data: dict[str, Any]) -> str:
 def main(argv: Iterable[str] | None = None) -> int:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--db", default=DEFAULT_DB)
-  parser.add_argument("--hours", type=int, default=24)
+  window = parser.add_mutually_exclusive_group()
+  window.add_argument("--since")
+  window.add_argument("--hours", type=int)
   parser.add_argument("--output")
   parser.add_argument("--json", action="store_true")
   args = parser.parse_args(list(argv) if argv is not None else None)
-  result = analyse_database(args.db, hours=args.hours)
+  result = analyse_database(args.db, since=args.since, hours=args.hours)
   if args.output:
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)

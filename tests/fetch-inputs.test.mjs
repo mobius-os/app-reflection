@@ -144,11 +144,11 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(status.event_count, 5)
     assert.equal(status.sha256, createHash('sha256').update(activity).digest('hex'))
     assert.equal(digest.activity_source.ok, true)
-    assert.equal(digest.apps[0].opens_24h, 1)
+    assert.equal(digest.apps[0].opens_in_window, 1)
     assert.equal(digest.apps[0].signal_counts.item_created, 1)
-    assert.equal(digest.apps[0].app_errors_24h, 1)
-    assert.equal(digest.apps[0].recent_app_errors[0].message, 'render failed')
-    assert.equal(digest.apps[0].request_errors_24h, 2)
+    assert.equal(digest.apps[0].app_error_count_in_window, 1)
+    assert.equal(digest.apps[0].app_errors_in_window[0].message, 'render failed')
+    assert.equal(digest.apps[0].request_error_count_in_window, 2)
     assert.deepEqual(digest.apps[0].top_request_errors[0], {
       method: 'POST',
       route: '/api/apps/{app_id}/compile',
@@ -226,9 +226,9 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(failedStatus.retained_previous_snapshot, true)
     assert.match(failedStatus.error, /activity fetch failed/)
     assert.equal(failedDigest.activity_source.ok, false)
-    assert.equal(failedDigest.apps[0].opens_24h, 0)
-    assert.equal(failedDigest.apps[0].app_errors_24h, 0)
-    assert.equal(failedDigest.apps[0].request_errors_24h, 0)
+    assert.equal(failedDigest.apps[0].opens_in_window, 0)
+    assert.equal(failedDigest.apps[0].app_error_count_in_window, 0)
+    assert.equal(failedDigest.apps[0].request_error_count_in_window, 0)
     assert.equal(
       failedManifest.items.find((item) => item.path === 'activity.jsonl').status,
       'stale',

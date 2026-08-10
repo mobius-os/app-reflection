@@ -49,6 +49,7 @@ RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
 LOG_MAX_BYTES="${REFLECTION_LOG_MAX_BYTES:-1048576}"
 [[ "$LOG_MAX_BYTES" =~ ^[0-9]+$ ]] || LOG_MAX_BYTES=1048576
 RUN_METRICS="$DATA_DIR/apps/reflection/reflection-run-metrics.jsonl"
+RUN_CHECKPOINT="$DATA_DIR/apps/reflection/reflection-checkpoint.json"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 RUN_STARTED_EPOCH="$(date +%s)"
 RUN_ID="${REFLECTION_RUN_ID:-${RUN_STARTED_AT}.$$}"
@@ -156,14 +157,22 @@ log "start (app_id=$APP_ID date=$DATE dry=${REFLECTION_DRY:-0} timeout=${RUN_TIM
 
 # --- gather read-only inputs for the agent ----------------------------
 # The agent reads these from inputs/ as its starting context. It can (and
-# does) gather more itself with its token — these are just the obvious
-# 24h slices so it doesn't spend its first turns on boilerplate API
-# calls. Best-effort inputs carry explicit source status: a failed gather must
-# not masquerade as a genuine empty observation window.
+# does) gather more itself with its token. Inputs resume at the start of the
+# last completed real run, so missed, broken, or quota-blocked nights remain in
+# the next bundle. Best-effort inputs carry explicit source status: a failed
+# gather must not masquerade as a genuine empty observation window.
 
-# activity.jsonl — last 24h of platform events (app opens, storage
-# writes, cron_outcomes). The runner's goal message points the agent here.
-SINCE="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Use the start of the last completed real run rather than yesterday's date.
+# Failed and dry runs do not move the checkpoint. Starting at the prior run's
+# beginning deliberately overlaps events gathered during that run rather than
+# risking a gap while the agent was working.
+if ! SINCE="$(
+  python3 "$INPUT_HELPER" resume-since "$RUN_CHECKPOINT" "$RUN_METRICS" 2>>"$LOG"
+)"; then
+  SINCE="1970-01-01T00:00:00Z"
+  log "WARN could not read Reflection resume checkpoint; using full history"
+fi
+CHECKPOINT_READY=true
 ACTIVITY_STATUS="$INPUTS/activity-status.json"
 
 write_activity_status() {
@@ -217,22 +226,41 @@ else
   record_activity_status false "activity fetch failed (curl exit $activity_curl_rc)" ""
 fi
 [[ -z "${ACTIVITY_TMP:-}" ]] || rm -f -- "$ACTIVITY_TMP"
+if ! python3 - "$ACTIVITY_STATUS" <<'PY' 2>>"$LOG"
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1])).get("ok") is True else 1)
+PY
+then
+  CHECKPOINT_READY=false
+fi
 
-# chats.md — recent active and recoverable-deleted chats plus cheap
+# chats.md — every unreviewed active and recoverable-deleted chat, oldest first,
+# plus cheap
 # note/message-size signals. The helper writes a structured status receipt next
 # to the human-readable digest so titles can never masquerade as fetch state.
 if ! python3 "$INPUT_HELPER" chats \
   "$API_BASE_URL" "$SERVICE_TOKEN" "$DATA_DIR" \
-  "$INPUTS/chats.md" "$INPUTS/chats-status.json" >>"$LOG" 2>&1; then
+  "$INPUTS/chats.md" "$INPUTS/chats-status.json" "$SINCE" >>"$LOG" 2>&1; then
   log "WARN chat digest staging failed"
+fi
+if ! python3 - "$INPUTS/chats-status.json" <<'PY' 2>>"$LOG"
+import json, sys
+status = json.load(open(sys.argv[1]))
+raise SystemExit(
+    0 if status.get("active_ok") is True and status.get("deleted_complete") is True else 1
+)
+PY
+then
+  CHECKPOINT_READY=false
 fi
 
 # app-feedback.md — cross-app feedback forms written under
 # shared/app-feedback/<app-slug>/. Reflection can use these as durable
 # product/editorial signals without needing to know each app's numeric id.
-python3 - "$API_BASE_URL" "$SERVICE_TOKEN" >"$INPUTS/app-feedback.md" 2>>"$LOG" <<'PY' || true
-import json, sys, urllib.parse, urllib.request
-base, token = sys.argv[1].rstrip("/"), sys.argv[2]
+if ! python3 - "$API_BASE_URL" "$SERVICE_TOKEN" "$SINCE" >"$INPUTS/app-feedback.md" 2>>"$LOG" <<'PY'
+import datetime, json, sys, urllib.parse, urllib.request
+base, token, since = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
+cutoff = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
 headers = {"Authorization": "Bearer "+token}
 
 def get_json(path):
@@ -240,11 +268,23 @@ def get_json(path):
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8"))
 
-def list_entries(prefix, limit=500, max_pages=20):
+def changed_after(entry):
+    value = entry.get("modified_at")
+    if not isinstance(value, str):
+        return False
+    try:
+        changed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if changed.tzinfo is None:
+            changed = changed.replace(tzinfo=datetime.timezone.utc)
+        return changed > cutoff
+    except ValueError:
+        return False
+
+def list_entries(prefix, limit=500):
     cursor = None
     seen = set()
     entries = []
-    for _ in range(max_pages):
+    while True:
         path = "/api/storage/shared-list/" + urllib.parse.quote(prefix.strip("/"), safe="/")
         params = {"limit": str(limit)}
         if cursor:
@@ -259,9 +299,10 @@ def list_entries(prefix, limit=500, max_pages=20):
         cursor = nxt
     return entries
 
-print("# Recent app feedback\n")
+print("# App feedback awaiting Reflection review (oldest first)\n")
 try:
     entries = []
+    read_failed = False
     app_dirs = []
     for entry in list_entries("app-feedback"):
         name = entry.get("name")
@@ -276,7 +317,10 @@ try:
         for entry in list_entries(app_dir):
             if entry.get("type") == "file" and str(entry.get("name", "")).endswith(".json"):
                 entries.append(entry)
-    entries = sorted(entries, key=lambda e: e.get("modified_at", ""), reverse=True)[:20]
+    entries = sorted(
+        (entry for entry in entries if changed_after(entry)),
+        key=lambda entry: entry["modified_at"],
+    )
     if not entries:
         print("(no app feedback)")
     for entry in entries:
@@ -289,10 +333,18 @@ try:
             text = (item.get("text") or "").replace("\n", " ").strip()
             print(f"- [{app}] {signal} {date}: {text or '(no note)'}")
         except Exception as exc:
+            read_failed = True
             print(f"- {path}: could not read ({exc})")
+    if read_failed:
+        raise SystemExit(1)
 except Exception as e:
     print(f"(could not list app feedback: {e})")
+    raise SystemExit(1)
 PY
+then
+  CHECKPOINT_READY=false
+  log "WARN app-feedback staging failed"
+fi
 
 # prev-report.html — yesterday's brief, so the agent doesn't repeat
 # itself. Enumerate every cursor page and fetch the newest report.
@@ -336,50 +388,15 @@ if [[ -n "$PREV" ]]; then
     >"$INPUTS/prev-report.html" 2>>"$LOG" || true
 fi
 
-# prev-question-answers.json — the partner's taps on the in-brief question
-# cards a recent brief offered. The app saved them to
-# question-answers/<date>.json (bare object). No live agent waited; they are
-# read HERE, on the next run, so the agent can ACT on them in phase 2. Stage
-# the single most recent answer file (filenames are <report_date>.json,
-# ISO-sortable).
-PREV_QA="$(API_BASE_URL="$API_BASE_URL" APP_ID="$APP_ID" SERVICE_TOKEN="$SERVICE_TOKEN" python3 - <<'PY' 2>>"$LOG"
-import json, os, sys, urllib.parse, urllib.request
-
-base = os.environ["API_BASE_URL"].rstrip("/")
-app_id = os.environ["APP_ID"]
-token = os.environ["SERVICE_TOKEN"]
-headers = {"Authorization": f"Bearer {token}"}
-cursor = None
-seen = set()
-files = []
-
-try:
-    for _ in range(50):
-        url = f"{base}/api/storage/apps-list/{app_id}/question-answers/"
-        if cursor:
-            url += "?" + urllib.parse.urlencode({"cursor": cursor})
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        for entry in data.get("entries", []):
-            name = entry.get("name")
-            if entry.get("type") == "file" and isinstance(name, str) and name.endswith(".json"):
-                files.append(name)
-        nxt = data.get("next_cursor")
-        if not nxt or nxt in seen:
-            break
-        seen.add(nxt)
-        cursor = nxt
-    print(sorted(files)[-1] if files else "")
-except Exception as exc:
-    # dir-not-created-yet (404) and any error both degrade to "no answers".
-    print("", file=sys.stderr)
-    print("")
-PY
-)"
-if [[ -n "$PREV_QA" ]]; then
-  curl -s "${auth[@]}" "$API_BASE_URL/api/storage/apps/$APP_ID/question-answers/$PREV_QA" \
-    >"$INPUTS/prev-question-answers.json" 2>>"$LOG" || true
+# prev-question-answers.json — every answer packet submitted since the last
+# completed Reflection run, oldest first. No live agent waited; the next
+# successful run receives the whole outstanding sequence.
+if ! python3 "$INPUT_HELPER" question-answers \
+    "$API_BASE_URL" "$SERVICE_TOKEN" "$APP_ID" "$SINCE" \
+    "$INPUTS/prev-question-answers.json" >>"$LOG" 2>&1; then
+  rm -f -- "$INPUTS/prev-question-answers.json"
+  CHECKPOINT_READY=false
+  log "WARN question-answer staging failed"
 fi
 
 # per-app-digest.json — compact per-app analytics summary the Reflection
@@ -409,6 +426,16 @@ else
   log "WARN per-app digest generation failed; retaining prior digest"
 fi
 [[ -z "${DIGEST_TMP:-}" ]] || rm -f -- "$DIGEST_TMP"
+if ! python3 - "$INPUTS/per-app-digest.json" "$SINCE" <<'PY' 2>>"$LOG"
+import json, sys
+source = json.load(open(sys.argv[1])).get("activity_source") or {}
+raise SystemExit(
+    0 if source.get("ok") is True and source.get("since") == sys.argv[2] else 1
+)
+PY
+then
+  CHECKPOINT_READY=false
+fi
 
 # tool-friction.json — one bounded, read-only view of repeated agent plumbing.
 # Reflection uses this to choose common owning-primitives worth improving rather
@@ -417,11 +444,13 @@ TOOL_FRICTION="$SCRIPT_DIR/tool_friction.py"
 if [[ -r "$TOOL_FRICTION" ]]; then
   if ! python3 "$TOOL_FRICTION" \
       --db "$DATA_DIR/db/ultimate.db" \
-      --hours 24 \
+      --since "$SINCE" \
       --output "$INPUTS/tool-friction.json" 2>>"$LOG"; then
+    CHECKPOINT_READY=false
     log "WARN tool-friction evidence generation failed"
   fi
 else
+  CHECKPOINT_READY=false
   log "WARN tool-friction helper missing at $TOOL_FRICTION"
   rm -f -- "$INPUTS/tool-friction.json"
 fi
@@ -464,10 +493,13 @@ MEMORY_HEALTH="$SCRIPT_DIR/memory_health.py"
 if [[ -r "$MEMORY_HEALTH" ]]; then
   if ! python3 "$MEMORY_HEALTH" \
       --memory-root "$DATA_DIR/shared/memory" \
+      --since "$SINCE" \
       --output "$INPUTS/memory-health.json" 2>>"$LOG"; then
+    CHECKPOINT_READY=false
     log "WARN Memory health handoff failed"
   fi
 else
+  CHECKPOINT_READY=false
   log "WARN Memory health helper missing at $MEMORY_HEALTH"
 fi
 
@@ -916,7 +948,10 @@ row = {
     "duration_seconds": max(0, integer(finished_epoch) - integer(started_epoch)),
     "exit_code": integer(rc),
     "dry_run": dry == "1",
-    "brief_written": pathlib.Path(report).is_file(),
+    "brief_written": (
+        pathlib.Path(report).is_file()
+        and pathlib.Path(report).stat().st_mtime >= integer(started_epoch)
+    ),
     "disk_used_delta_bytes": integer(disk_after) - integer(disk_before),
     "cgroup_cpu_usage_usec_delta": max(0, integer(cpu_after) - integer(cpu_before)),
 }
@@ -934,6 +969,16 @@ with tmp.open("w", encoding="utf-8") as handle:
     handle.flush(); os.fsync(handle.fileno())
 os.replace(tmp, target)
 PY
+
+checkpoint_result="$(python3 "$INPUT_HELPER" complete-run \
+  "$RUN_CHECKPOINT" "$RUN_STARTED_AT" \
+  "$DATA_DIR/apps/$APP_ID/reports/$DATE.html" "$RC" \
+  "$([[ "${REFLECTION_DRY:-0}" == "1" ]] && printf true || printf false)" \
+  "$CHECKPOINT_READY" \
+  2>>"$LOG" || true)"
+if [[ "$RC" == "0" && "${REFLECTION_DRY:-0}" != "1" && "$checkpoint_result" != "true" ]]; then
+  log "WARN successful run did not advance its checkpoint (current brief missing or stale)"
+fi
 
 log "done (rc=$RC)"
 exit "$RC"
