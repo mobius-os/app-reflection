@@ -37,7 +37,7 @@ class ToolFrictionTests(unittest.TestCase):
     self.assertEqual(family, "Bash")
     self.assertNotIn("acme", family)
 
-  def test_recent_tool_friction_is_bounded_and_grouped(self):
+  def test_unreviewed_tool_friction_is_bounded_and_grouped(self):
     db = self.tmp_path / "test.db"
     con = _db(db)
     now = dt.datetime(2026, 7, 28, 12, tzinfo=dt.timezone.utc)
@@ -75,7 +75,9 @@ class ToolFrictionTests(unittest.TestCase):
     con.commit()
     con.close()
 
-    result = tool_friction.analyse_database(str(db), hours=24, now=now)
+    result = tool_friction.analyse_database(
+      str(db), since="2026-07-27T12:00:00Z", now=now,
+    )
 
     self.assertEqual(result["overall"]["tool_calls"], 3)
     self.assertEqual(result["overall"]["failed_calls"], 1)
@@ -134,7 +136,9 @@ class ToolFrictionTests(unittest.TestCase):
     con.commit()
     con.close()
 
-    result = tool_friction.analyse_database(str(db), hours=24, now=now)
+    result = tool_friction.analyse_database(
+      str(db), since="2026-07-27T12:00:00Z", now=now,
+    )
     self.assertEqual(result["overall"]["tool_calls"], 0)
     self.assertEqual(result["run_totals"]["completed_runs"], 1)
 

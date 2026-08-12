@@ -166,7 +166,7 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("meta-state-status.json", goal)
     self.assertIn("different scopes", goal)
     self.assertIn("Memory is the sole writer", goal)
-    self.assertIn("storage_misses_24h", goal)
+    self.assertIn("storage_miss_count_in_window", goal)
     self.assertIn("efficiency evidence, not hard failures", goal)
     self.assertIn("do not repeat a hardened check", goal)
 
