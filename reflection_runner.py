@@ -1163,6 +1163,7 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
   result_error = False
   auth_failure = False
   usage_limit = False
+  logged_session_ids: set[str] = set()
   async for sdk_msg in client.receive_response():
     if log_fh is not None:
       _drain_message(sdk_msg, log_fh)
@@ -1170,7 +1171,12 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
     if kind == "SystemMessage":
       data = getattr(sdk_msg, "data", None)
       session_id = data.get("session_id") if isinstance(data, dict) else None
-      if isinstance(session_id, str) and session_id:
+      if (
+        isinstance(session_id, str)
+        and session_id
+        and session_id not in logged_session_ids
+      ):
+        logged_session_ids.add(session_id)
         _log(f"claude session initialized session_id={session_id}")
     if kind == "ResultMessage":
       saw_result = True
