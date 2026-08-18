@@ -90,6 +90,9 @@ export const CSS = `
   background: ${ACCENT}; color: var(--accent-fg);
   font-weight: 700; line-height: 1;
 }
+.rf-brand-copy { min-width: 0; }
+.rf-brand-copy h1 { margin: 0; color: var(--text); font-size: 18px; line-height: 1.15; font-weight: 700; letter-spacing: -0.015em; }
+.rf-brand-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.2; }
 .rf-header-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex: 0 0 auto; position: relative; z-index: 1; }
 /* /mobius-ui:Header */
 
