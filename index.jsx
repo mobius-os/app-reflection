@@ -171,12 +171,11 @@ export default function App({ appId, token }) {
   return (
     <div className="rf-root">
       <style>{CSS}</style>
-      <h1 className="rf-sr-only">Reflection</h1>
       <div className="rf-aurora" aria-hidden="true" />
       <div className="rf-header">
         <div className="rf-brand">
-          {/* Brand mark: the app's real glossy icon (downscaled + cached),
-              no name text. Falls back to an accent dot when this install
+          {/* Brand mark: the app's real glossy icon (downscaled + cached).
+              Falls back to an accent tile when this install
               has no custom icon and the route 404s. */}
           <img
             src={`/api/apps/${appId}/icon?size=64`}
@@ -190,7 +189,11 @@ export default function App({ appId, token }) {
               if (f) f.style.display = 'flex'
             }}
           />
-          <span className="rf-brand-fallback" style={{ display: 'none' }} aria-hidden="true">·</span>
+          <span className="rf-brand-fallback" style={{ display: 'none' }} aria-hidden="true">R</span>
+          <div className="rf-brand-copy">
+            <h1>Reflection</h1>
+            <span>Daily briefs from your agent</span>
+          </div>
         </div>
         <div className="rf-header-right">
           {headerStreak >= 1 && (

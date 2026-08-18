@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "2.8.19",
+  "version": "2.8.20",
   "description": "While you sleep, M\u00f6bius learns from recent work, improves its own approach, anticipates what may help next, and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
