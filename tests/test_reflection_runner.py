@@ -1,3 +1,4 @@
+import asyncio
 import json
 import io
 from pathlib import Path
@@ -7,6 +8,35 @@ import unittest
 from unittest import mock
 
 import reflection_runner
+
+
+class ClaudeSessionDrainTests(unittest.TestCase):
+  def test_repeated_system_messages_log_each_session_id_once(self):
+    SystemMessage = type("SystemMessage", (), {})
+    ResultMessage = type("ResultMessage", (), {})
+
+    first = SystemMessage()
+    first.data = {"session_id": "session-1"}
+    repeated = SystemMessage()
+    repeated.data = {"session_id": "session-1"}
+    second = SystemMessage()
+    second.data = {"session_id": "session-2"}
+    result = ResultMessage()
+    result.is_error = False
+
+    class Client:
+      async def receive_response(self):
+        for message in (first, repeated, second, repeated, result):
+          yield message
+
+    with mock.patch.object(reflection_runner, "_log") as log:
+      outcome = asyncio.run(reflection_runner._drain_session(Client(), None))
+
+    self.assertEqual(outcome, (True, False, False, False))
+    self.assertEqual(log.call_args_list, [
+      mock.call("claude session initialized session_id=session-1"),
+      mock.call("claude session initialized session_id=session-2"),
+    ])
 
 
 class CodexLogBroadcastTests(unittest.TestCase):
