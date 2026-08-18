@@ -4,13 +4,10 @@ import {
   DEFAULT_HOUR,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
-  EFFORT_LEVELS,
   FALLBACK_MODEL_GROUPS,
-  defaultEffort,
 } from '../constants.js'
 import { buildCron, hourClockLabel, hourToTimeValue, parseCronHour } from '../domain.js'
 import { fetchModelConfig } from '../providers.js'
-import { EffortStepper } from './EffortStepper.jsx'
 import { ModelPicker } from './ModelPicker.jsx'
 import { BackgroundAgentList } from './BackgroundAgentList.jsx'
 import { agentSlotLabel, canReorderAgentSlots, reorderAgentSlots } from './backgroundAgentOrder.js'
@@ -19,18 +16,8 @@ import { agentSlotLabel, canReorderAgentSlots, reorderAgentSlots } from './backg
 // Settings
 // ---------------------------------------------------------------------------
 
-function effortForProvider(provider, value) {
-  const levels = EFFORT_LEVELS[provider] || []
-  return levels.some((level) => level.value === value) ? value : defaultEffort(provider)
-}
-
-function effortLabel(provider, value) {
-  const levels = EFFORT_LEVELS[provider] || []
-  return levels.find((level) => level.value === effortForProvider(provider, value))?.label || ''
-}
-
 function withoutLegacyBriefControls(settings) {
-  const { verbosity, focus, avoid, ...rest } = settings || {}
+  const { verbosity, focus, avoid, effort, fallback_effort, ...rest } = settings || {}
   return rest
 }
 
@@ -41,11 +28,9 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [useSystemPrimary, setUseSystemPrimary] = useState(true)
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
   const [model, setModel] = useState(DEFAULT_MODEL)
-  const [effort, setEffort] = useState(defaultEffort(DEFAULT_PROVIDER))
   const [useSystemSecondary, setUseSystemSecondary] = useState(true)
   const [fallbackProvider, setFallbackProvider] = useState('')
   const [fallbackModel, setFallbackModel] = useState('')
-  const [fallbackEffort, setFallbackEffort] = useState('')
   const [modelGroups, setModelGroups] = useState(null)
   const [connectedProviders, setConnectedProviders] = useState(null)
   // The raw cron we loaded — when it's a custom shape parseCronHour can't
@@ -84,23 +69,21 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         const primaryMode = s.primary_agent_mode
         const providerValue = typeof s.provider === 'string' ? s.provider.trim() : ''
         const modelValue = typeof s.model === 'string' ? s.model.trim() : ''
-        const effortValue = typeof s.effort === 'string' ? s.effort.trim() : ''
         const legacyDefaultPrimary = (
           !primaryMode &&
           providerValue === DEFAULT_PROVIDER &&
-          !modelValue &&
-          !effortValue
+          !modelValue
         )
         const hasPrimaryOverride = primaryMode === 'app' || primaryMode === 'custom' || (
           primaryMode !== 'system' &&
           !legacyDefaultPrimary &&
-          Boolean(providerValue || modelValue || effortValue)
+          Boolean(providerValue || modelValue)
         )
         setUseSystemPrimary(!hasPrimaryOverride)
         const secondaryMode = s.secondary_agent_mode
         const hasSecondaryOverride = secondaryMode === 'app' || secondaryMode === 'custom' || (
           secondaryMode !== 'system' &&
-          Boolean(s.fallback_provider || s.fallback_model || s.fallback_effort)
+          Boolean(s.fallback_provider || s.fallback_model)
         )
         setUseSystemSecondary(!hasSecondaryOverride)
         if (typeof s.provider === 'string' && s.provider.trim()) {
@@ -109,17 +92,11 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         if (typeof s.model === 'string' && s.model.trim()) {
           setModel(s.model.trim())
         }
-        setEffort(effortForProvider(providerValue || DEFAULT_PROVIDER, effortValue))
         if (typeof s.fallback_provider === 'string' && s.fallback_provider.trim()) {
           setFallbackProvider(s.fallback_provider.trim())
         }
         if (typeof s.fallback_model === 'string' && s.fallback_model.trim()) {
           setFallbackModel(s.fallback_model.trim())
-        }
-        const fallbackProviderValue = typeof s.fallback_provider === 'string' ? s.fallback_provider.trim() : ''
-        const fallbackEffortValue = typeof s.fallback_effort === 'string' ? s.fallback_effort.trim() : ''
-        if (fallbackProviderValue) {
-          setFallbackEffort(effortForProvider(fallbackProviderValue, fallbackEffortValue))
         }
       }
       // res.notFound (first run) -> keep the 06:00 defaults.
@@ -178,12 +155,10 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         exclude_apps: excludeApps,
         provider: useSystemPrimary ? null : (provider || settingsExtra.provider || DEFAULT_PROVIDER),
         model: useSystemPrimary ? null : (model || settingsExtra.model || null),
-        effort: useSystemPrimary ? null : effortForProvider(provider || DEFAULT_PROVIDER, effort),
+        effort: null,
         fallback_provider: !useSystemSecondary ? (fallbackProvider || null) : null,
         fallback_model: !useSystemSecondary && fallbackProvider ? (fallbackModel || null) : null,
-        fallback_effort: !useSystemSecondary && fallbackProvider
-          ? effortForProvider(fallbackProvider, fallbackEffort)
-          : null,
+        fallback_effort: null,
         primary_agent_mode: useSystemPrimary ? 'system' : 'app',
         secondary_agent_mode: useSystemSecondary ? 'system' : 'app',
       })
@@ -205,19 +180,17 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort, settingsExtra, storage, onSetupComplete])
+  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, useSystemSecondary, fallbackProvider, fallbackModel, settingsExtra, storage, onSetupComplete])
 
   const reorderAgents = useCallback((fromIndex, toIndex) => {
     const slots = [{
       mode: useSystemPrimary ? 'system' : 'app',
       provider,
       model,
-      effort,
     }, {
       mode: useSystemSecondary ? 'system' : 'app',
       provider: fallbackProvider,
       model: fallbackModel,
-      effort: fallbackEffort,
     }]
     const ordered = reorderAgentSlots(slots, fromIndex, toIndex)
     if (ordered === slots) return false
@@ -225,19 +198,17 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     setUseSystemPrimary(primary.mode === 'system')
     setProvider(primary.provider)
     setModel(primary.model)
-    setEffort(primary.effort)
     setUseSystemSecondary(secondary.mode === 'system')
     setFallbackProvider(secondary.provider)
     setFallbackModel(secondary.model)
-    setFallbackEffort(secondary.effort)
     return true
-  }, [useSystemPrimary, provider, model, effort, useSystemSecondary, fallbackProvider, fallbackModel, fallbackEffort])
+  }, [useSystemPrimary, provider, model, useSystemSecondary, fallbackProvider, fallbackModel])
 
   const agentSlots = [{
-    mode: useSystemPrimary ? 'system' : 'app', provider, model, effort,
+    mode: useSystemPrimary ? 'system' : 'app', provider, model,
   }, {
     mode: useSystemSecondary ? 'system' : 'app',
-    provider: fallbackProvider, model: fallbackModel, effort: fallbackEffort,
+    provider: fallbackProvider, model: fallbackModel,
   }]
   const canReorderAgents = canReorderAgentSlots(agentSlots)
   const agentLabels = [
@@ -340,17 +311,10 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 navKey="reflection-primary-model"
                 useSettingsDefault={useSystemPrimary}
                 onSettingsDefault={() => setUseSystemPrimary(true)}
-                effortLabel={useSystemPrimary ? '' : effortLabel(provider, effort)}
-                efforts={EFFORT_LEVELS[provider] || []}
-                effort={effort}
-                effortControl={useSystemPrimary ? null : (
-                  <EffortStepper provider={provider} value={effort} onChange={setEffort} />
-                )}
                 onChange={(nextProvider, nextModel) => {
                   setUseSystemPrimary(false)
                   setProvider(nextProvider)
                   setModel(nextModel || null)
-                  setEffort(effortForProvider(nextProvider, effort))
                 }}
               />
             </div>
@@ -364,21 +328,10 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
                 navKey="reflection-secondary-model"
                 useSettingsDefault={useSystemSecondary}
                 onSettingsDefault={() => setUseSystemSecondary(true)}
-                effortLabel={useSystemSecondary ? '' : effortLabel(fallbackProvider, fallbackEffort)}
-                efforts={EFFORT_LEVELS[fallbackProvider] || []}
-                effort={fallbackEffort}
-                effortControl={useSystemSecondary ? null : (
-                  <EffortStepper
-                    provider={fallbackProvider}
-                    value={fallbackEffort}
-                    onChange={setFallbackEffort}
-                  />
-                )}
                 onChange={(nextProvider, nextModel) => {
                   setUseSystemSecondary(false)
                   setFallbackProvider(nextProvider)
                   setFallbackModel(nextModel || null)
-                  setFallbackEffort(effortForProvider(nextProvider, fallbackEffort))
                 }}
               />
             </div>

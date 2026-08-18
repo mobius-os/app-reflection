@@ -441,30 +441,6 @@ button.rf-card { cursor: pointer; }
 }
 /* /mobius-ui:ChatSplit */
 
-/* Last-night status row */
-.rf-status-row {
-  max-width: 660px; margin: 0 auto 14px; display: flex; align-items: center;
-  gap: 10px; padding: 10px 14px; border-radius: 13px;
-  border: 1px solid var(--border); background: var(--surface);
-  font-size: 12.5px; line-height: 1.45; flex-wrap: wrap;
-}
-.rf-status-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-}
-.rf-status-dot.ok   { background: var(--green, #3fb950); box-shadow: 0 0 0 3px rgba(63,185,80,.15); }
-.rf-status-dot.fail { background: var(--danger, #f85149); box-shadow: 0 0 0 3px rgba(248,81,73,.15); }
-.rf-status-dot.skip { background: var(--muted); }
-.rf-status-dot.none { background: var(--border); }
-.rf-status-label { flex: 1; color: var(--text); font-weight: 600; }
-.rf-status-hint  { color: var(--muted); font-size: 12px; }
-.rf-status-investigate {
-  display: inline-flex; align-items: center; gap: 5px;
-  min-height: 44px; padding: 5px 12px; border-radius: 9px; border: 1px solid var(--danger);
-  background: transparent; color: var(--danger);
-  font-size: 12px; font-weight: 650; cursor: pointer; font-family: var(--font);
-  touch-action: manipulation; user-select: none;
-}
-
 /* Settings */
 .rf-settings-wrap { max-width: 580px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
 .rf-settings-card {
@@ -558,25 +534,6 @@ button.rf-card { cursor: pointer; }
 .mobius-model-trigger__name,.mobius-model-trigger__id,.mobius-model-sheet__row-title,.mobius-model-sheet__row-id { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mobius-model-trigger__name { font-size:13.5px; font-weight:500; line-height:1.3; }
 .mobius-model-trigger__id { font:11px/1.3 var(--mono); color:var(--muted); }
-.mobius-model-trigger__effort {
-  flex:none; padding:3px 7px; border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));
-  border-radius:999px; background:color-mix(in srgb,var(--accent) 12%,var(--surface));
-  color:var(--muted); font-size:11px; font-weight:500; line-height:1; white-space:nowrap;
-}
-.mobius-model-trigger__effort-visual {
-  position:relative; flex:none; display:inline-flex; align-items:center;
-  justify-content:space-between; gap:5px; min-width:68px; padding:7px 3px;
-}
-.mobius-model-trigger__effort-visual::before {
-  content:''; position:absolute; left:6px; right:6px; top:50%; height:1px;
-  background:var(--border); transform:translateY(-50%);
-}
-.mobius-model-trigger__effort-dot {
-  position:relative; z-index:1; width:6px; height:6px; border-radius:50%;
-  border:1px solid var(--border); background:var(--surface);
-}
-.mobius-model-trigger__effort-dot.is-filled { border-color:var(--accent); background:var(--accent); }
-.mobius-model-trigger__effort-dot.is-active { transform:scale(1.35); box-shadow:0 0 0 2px var(--accent-dim); }
 .mobius-model-sheet__backdrop {
   position:fixed; inset:0; z-index:1000; display:flex; align-items:flex-end; justify-content:center;
   box-sizing:border-box; background:rgba(0,0,0,.5); overscroll-behavior:contain;
@@ -607,29 +564,10 @@ button.rf-card { cursor: pointer; }
 .mobius-model-sheet__row-id { color:var(--muted); font:12px var(--mono); }
 .mobius-model-sheet__check { width:18px; height:18px; flex:none; position:relative; border-radius:50%; background:var(--accent); border:1.5px solid var(--accent); }
 .mobius-model-sheet__check::after { content:''; position:absolute; left:5px; top:2px; width:5px; height:9px; border:1.5px solid var(--accent-fg); border-top:0; border-left:0; transform:rotate(45deg); }
-.mobius-model-sheet__effort { margin:2px 10px 8px 52px; }
 .mobius-model-sheet__empty { padding:16px 10px; color:var(--muted); font-size:13px; }
-.mobius-effort { margin-top:8px; display:flex; align-items:center; gap:10px; min-height:24px; }
-.mobius-effort-track { position:relative; display:flex; align-items:center; gap:10px; min-height:24px; padding:0 2px; }
-.mobius-effort-track::before { content:''; position:absolute; left:7px; right:7px; top:50%; height:2px; transform:translateY(-50%); background:var(--border); }
-.mobius-effort-stop {
-  position:relative; z-index:1; width:14px; height:14px; padding:0;
-  border:1px solid var(--border); border-radius:999px; background:var(--surface);
-  cursor:pointer; touch-action:manipulation; user-select:none;
-}
-.mobius-effort-stop.is-filled { background:var(--accent); border-color:var(--accent); }
-.mobius-effort-stop.is-active { transform:scale(1.3); box-shadow:0 0 0 3px var(--accent-dim); }
-.mobius-effort-stop:disabled { cursor:default; opacity:.55; pointer-events:none; }
-.mobius-effort-label { color:var(--muted); font-size:12px; line-height:1; white-space:nowrap; }
-.mobius-effort.is-disabled .mobius-effort-label { opacity:.55; }
 @media (hover:hover) and (pointer:fine) {
   .mobius-model-trigger:hover { border-color:var(--accent); }
   .mobius-model-sheet__row:hover:not(:disabled) { background:color-mix(in srgb,var(--accent) 8%,var(--surface)); }
-  .mobius-effort-stop:not(:disabled):not(.is-active):hover { border-color:var(--accent); }
-}
-@media (prefers-reduced-motion:no-preference) {
-  .mobius-effort-stop { transition:background .15s,border-color .15s,box-shadow .15s,transform .15s; }
-  .mobius-effort-stop:not(:disabled):active { opacity:.82; }
 }
 @media (min-width:620px) {
   .mobius-model-sheet__backdrop { align-items:center; padding:24px; }
