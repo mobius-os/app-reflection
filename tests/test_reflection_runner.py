@@ -326,6 +326,27 @@ class UsageLimitClassificationTests(unittest.TestCase):
     self.assertFalse(reflection_runner._is_usage_limit("The model process exited unexpectedly"))
 
 
+class AgentOverrideTests(unittest.TestCase):
+  def test_historical_effort_values_do_not_override_provider_defaults(self):
+    override = reflection_runner._agent_override({
+      "primary_agent_mode": "app",
+      "provider": "claude",
+      "model": "claude-current",
+      "effort": "max",
+      "secondary_agent_mode": "app",
+      "fallback_provider": "codex",
+      "fallback_model": "codex-current",
+      "fallback_effort": "high",
+    })
+    self.assertEqual(override, {
+      "primary": {"provider": "claude", "model": "claude-current"},
+      "fallback": {"provider": "codex", "model": "codex-current"},
+    })
+
+  def test_effort_only_legacy_setting_is_not_an_agent_override(self):
+    self.assertEqual(reflection_runner._agent_override({"effort": "max"}), {})
+
+
 class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
   async def test_generic_primary_failure_tries_the_distinct_configured_fallback(self):
     primary = {"provider": "claude", "model": "claude-primary", "effort": "high"}

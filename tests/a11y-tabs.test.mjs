@@ -29,7 +29,6 @@ test('agent overrides default to Settings and use the production-style dialog pi
   const settings = readFileSync(new URL('../ui/SettingsTab.jsx', import.meta.url), 'utf8')
   const picker = readFileSync(new URL('../ui/ModelPicker.jsx', import.meta.url), 'utf8')
   const priorityList = readFileSync(new URL('../ui/BackgroundAgentList.jsx', import.meta.url), 'utf8')
-  const effort = readFileSync(new URL('../ui/EffortStepper.jsx', import.meta.url), 'utf8')
   const theme = readFileSync(new URL('../theme.js', import.meta.url), 'utf8')
   const fetchScript = readFileSync(new URL('../fetch.sh', import.meta.url), 'utf8')
   assert.match(settings, /useState\(true\)/)
@@ -50,9 +49,9 @@ test('agent overrides default to Settings and use the production-style dialog pi
   assert.match(settings, /withoutLegacyBriefControls/)
   assert.doesNotMatch(settings, /role="radiogroup" aria-label="Reflection (?:primary|secondary) agent mode"/)
   assert.match(settings, /<ModelPicker/)
-  assert.match(settings, /effort: useSystemPrimary \? null : effortForProvider/)
-  assert.match(settings, /fallback_effort: !useSystemSecondary/)
-  assert.match(settings, /<EffortStepper/)
+  assert.match(settings, /effort: null/)
+  assert.match(settings, /fallback_effort: null/)
+  assert.doesNotMatch(settings, /EffortStepper|EFFORT_LEVELS|setEffort/)
   assert.doesNotMatch(settings, /<select[\s\S]*Reflection primary model/)
   assert.match(picker, /role="dialog"/)
   assert.match(picker, /aria-modal="true"/)
@@ -60,13 +59,12 @@ test('agent overrides default to Settings and use the production-style dialog pi
   assert.match(picker, /triggerRef\.current\?\.focus/)
   assert.match(picker, /function ClaudeLogo/)
   assert.match(picker, /function OpenAILogo/)
-  assert.match(picker, /mobius-model-trigger__effort/)
+  assert.doesNotMatch(picker, /effort/i)
   assert.match(picker, /Default from settings/)
   assert.match(picker, /onSettingsDefault/)
   assert.match(picker, /aria-label=\{triggerLabel\}/)
   assert.match(picker, /aria-pressed=\{useSettingsDefault\}/)
   assert.match(picker, /aria-pressed=\{selected\}/)
-  assert.match(picker, /effortLabel \? `, \$\{effortLabel\} effort`/)
   assert.match(picker, /\{open && createPortal\([\s\S]*document\.body,\s*\)\}/)
   assert.match(picker, /event\.target === event\.currentTarget\) closeSheet\(\)/)
   assert.match(picker, /mobius-model-sheet__close" onClick=\{closeSheet\}/)
@@ -79,10 +77,6 @@ test('agent overrides default to Settings and use the production-style dialog pi
   assert.match(priorityList, /itemLabels/)
   assert.match(priorityList, /aria-live="polite"/)
   assert.match(settings, /reorderDisabled=\{!canReorderAgents\}/)
-  assert.match(effort, /role="radiogroup"/)
-  assert.match(effort, /role="radio"/)
-  assert.match(effort, /e\.key === 'Home'/)
-  assert.match(effort, /e\.key === 'End'/)
   assert.match(theme, /\.rf-rise \{ animation: rf-rise [^}]+ backwards;/)
   assert.doesNotMatch(theme, /\.rf-verbosity-row|\.rf-textarea/)
   assert.match(fetchScript, /prev-report-name\.txt/)
@@ -91,8 +85,8 @@ test('agent overrides default to Settings and use the production-style dialog pi
 })
 
 test('agent reorder swaps exact overrides and refuses inherited positional rows', () => {
-  const primary = { mode: 'app', provider: 'claude', model: 'claude-primary', effort: 'high' }
-  const fallback = { mode: 'app', provider: 'codex', model: 'codex-fallback', effort: 'medium' }
+  const primary = { mode: 'app', provider: 'claude', model: 'claude-primary' }
+  const fallback = { mode: 'app', provider: 'codex', model: 'codex-fallback' }
   const before = [primary, fallback]
   const after = reorderAgentSlots(before, 0, 1)
   assert.equal(canReorderAgentSlots(before), true)

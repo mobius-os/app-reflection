@@ -15,7 +15,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { X } from '@openai/apps-sdk-ui/components/Icon'
 import { CSS } from './theme.js'
 import { makeStorage, useOnline } from './storage.js'
-import { LastNightStatus } from './ui/LastNightStatus.jsx'
 import { ReportDetail } from './ui/ReportDetail.jsx'
 import { ReportsList } from './ui/ReportsList.jsx'
 import { SettingsTab } from './ui/SettingsTab.jsx'
@@ -251,8 +250,6 @@ export default function App({ appId, token }) {
         )}
         {tab === 'reports' ? (
           <div id="rf-panel-reports" role="tabpanel" aria-labelledby="rf-tab-reports">
-            {/* Last-night status row — shows this app's supervisor-owned outcome */}
-            <LastNightStatus appId={appId} token={token} />
             <ReportsList
               appId={appId}
               storage={storage}

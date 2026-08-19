@@ -579,7 +579,7 @@ def _bounded_excludes(value: object) -> list[str]:
   return result
 
 
-_LEGACY_FALLBACK_KEYS = ("fallback_provider", "fallback_model", "fallback_effort")
+_LEGACY_FALLBACK_KEYS = ("fallback_provider", "fallback_model")
 
 
 def _agent_override(settings: dict) -> dict:
@@ -590,7 +590,7 @@ def _agent_override(settings: dict) -> dict:
   Settings written before those modes existed instead carry a bare
   ``{provider, model}``, where naming a provider IS the override; Reflection
   still honors that so an install which never re-saved keeps the agent it
-  chose. A bare default provider with no model/effort is NOT an override —
+  chose. A bare default provider with no model is NOT an override —
   treating it as one would replace the system primary's model with the SDK
   default.
 
@@ -598,7 +598,9 @@ def _agent_override(settings: dict) -> dict:
   the platform is told just the resulting pick. An omitted key means "no
   preference"; a present ``fallback`` of None means "run without a second
   agent". Normalization is deliberately NOT repeated here: the platform cleans
-  the choice so every background agent cleans it the same way.
+  the choice so every background agent cleans it the same way. Historical
+  per-app effort values are intentionally ignored: Reflection currently uses
+  the resolved provider default rather than exposing another tuning surface.
   """
   override: dict = {}
   mode = settings.get("primary_agent_mode")
@@ -609,15 +611,13 @@ def _agent_override(settings: dict) -> dict:
   else:
     provider = settings.get("provider")
     model = settings.get("model")
-    effort = settings.get("effort")
-    claims_primary = bool(provider or model or effort) and not (
-      provider == "claude" and not model and not effort
+    claims_primary = bool(provider or model) and not (
+      provider == "claude" and not model
     )
   if claims_primary:
     override["primary"] = {
       "provider": settings.get("provider"),
       "model": settings.get("model"),
-      "effort": settings.get("effort"),
     }
   secondary = settings.get("secondary_agent_mode")
   if secondary == "app" or (
@@ -627,7 +627,6 @@ def _agent_override(settings: dict) -> dict:
     override["fallback"] = {
       "provider": settings.get("fallback_provider"),
       "model": settings.get("fallback_model"),
-      "effort": settings.get("fallback_effort"),
     }
   return override
 
