@@ -34,7 +34,11 @@ _MANIFEST_INPUTS = (
   ("meta-state.md", True),
   ("meta-state-status.json", True),
   ("meta-learning.jsonl", True),
+  ("experiments.jsonl", True),
+  ("experiment-status.json", True),
   ("reflection-run-history.txt", True),
+  ("effort-summary.json", True),
+  ("learning-loop.json", True),
   ("app_id", True),
   ("prev-report-name.txt", False),
   ("prev-report.html", False),
@@ -480,6 +484,9 @@ def stage_chat_digest(
     "active_ok": active_ok,
     "deleted_complete": deleted_complete,
     "chat_count": len(chats),
+    "subject_ids": [
+      row["id"] for row in chats if isinstance(row.get("id"), str)
+    ],
     "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
   }
   if error:

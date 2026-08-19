@@ -74,6 +74,7 @@ import os
 import signal
 import sys
 import threading
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # The Codex path does `from app.codex_sdk_runner import ...` (the Claude path
@@ -421,6 +422,111 @@ def _log(message: str) -> None:
     pass
 
 
+def _numeric_usage(value: object, *, depth: int = 0) -> object:
+  """Keep only bounded numeric provider usage fields for a private receipt."""
+  if depth > 3:
+    return None
+  if isinstance(value, bool):
+    return None
+  if isinstance(value, (int, float)):
+    return value
+  if isinstance(value, dict):
+    clean = {}
+    for key, item in list(value.items())[:40]:
+      normalized = _numeric_usage(item, depth=depth + 1)
+      if normalized is not None:
+        clean[str(key)[:80]] = normalized
+    return clean
+  return None
+
+
+def _read_json(path: Path) -> dict:
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+  return value if isinstance(value, dict) else {}
+
+
+def _write_model_usage(
+  *,
+  provider: str,
+  model: str | None,
+  goal: str,
+  system_prompt: str,
+  cost_usd: object,
+  usage: object,
+) -> None:
+  """Write one exact provider receipt for the wrapper's bounded run ledger."""
+  inputs = DATA_DIR / "apps" / "reflection" / "inputs"
+  chats = _read_json(inputs / "chats-status.json")
+  memory = _read_json(inputs / "memory-health.json")
+  manifest = _read_json(inputs / "input-manifest.json")
+  friction = _read_json(inputs / "tool-friction.json")
+  chat_agent_work = friction.get("run_totals")
+  if not isinstance(chat_agent_work, dict):
+    chat_agent_work = None
+  items = manifest.get("items") if isinstance(manifest.get("items"), list) else []
+  staged_bytes = sum(
+    item.get("bytes", 0)
+    for item in items
+    if isinstance(item, dict)
+    and isinstance(item.get("bytes"), int)
+    and not isinstance(item.get("bytes"), bool)
+  )
+  recall = memory.get("recall_activity")
+  recall_chats = recall.get("chat_days") if isinstance(recall, dict) else None
+  attempt = {
+    "provider": provider,
+    "model": model,
+    "cost_usd": (
+      cost_usd if isinstance(cost_usd, (int, float))
+      and not isinstance(cost_usd, bool) else None
+    ),
+    "usage": _numeric_usage(usage),
+  }
+  target = inputs / "model-usage.json"
+  existing = _read_json(target)
+  attempts = (
+    list(existing.get("attempts"))
+    if isinstance(existing.get("attempts"), list) else []
+  )
+  attempts.append(attempt)
+  # Keep the receipt internally reconcilable: totals and counts describe the
+  # same bounded attempts that are persisted, not discarded earlier retries.
+  attempts = attempts[-4:]
+  reported_costs = [
+    item.get("cost_usd") for item in attempts
+    if isinstance(item, dict)
+    and isinstance(item.get("cost_usd"), (int, float))
+    and not isinstance(item.get("cost_usd"), bool)
+  ]
+  receipt = {
+    "schema": 1,
+    "attempts": attempts,
+    "reported_cost_usd": sum(reported_costs) if reported_costs else None,
+    "cost_reported_attempts": len(reported_costs),
+    "work_context": {
+      "chat_count": chats.get("chat_count"),
+      "memory_recall_chat_days": recall_chats,
+      "staged_input_bytes": staged_bytes,
+      "system_prompt_chars": len(system_prompt),
+      "goal_chars": len(goal),
+      "chat_agent_work": chat_agent_work,
+    },
+  }
+  try:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+      json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n",
+      encoding="utf-8",
+    )
+    os.replace(tmp, target)
+  except OSError as exc:
+    _log(f"WARN could not persist model usage receipt: {exc!r}")
+
+
 def load_skill() -> str:
   """Returns the reflection skill text used as the system prompt.
 
@@ -480,7 +586,7 @@ def build_system_prompt() -> str:
   return load_skill().rstrip() + "\n\n" + load_operating_contract()
 
 
-def seed_brief_template() -> None:
+def seed_brief_template(run_date: date | None = None) -> None:
   """Copies the baked brief template into the agent's /data domain.
 
   The SDK Read tool can't reach /app under cwd=/data, so the agent must
@@ -496,8 +602,16 @@ def seed_brief_template() -> None:
     _log("brief template not found in image — phase 6 will use the fallback")
     return
   try:
+    current = run_date or datetime.now(timezone.utc).date()
+    date_long = (
+      f"{current.strftime('%A')}, {current.day} "
+      f"{current.strftime('%B %Y')}"
+    )
+    rendered = src.read_text(encoding="utf-8")
+    rendered = rendered.replace("{{DATE_LONG}}", date_long)
+    rendered = rendered.replace("{{DATE}}", current.isoformat())
     BRIEF_TEMPLATE_DEST.parent.mkdir(parents=True, exist_ok=True)
-    BRIEF_TEMPLATE_DEST.write_bytes(src.read_bytes())
+    BRIEF_TEMPLATE_DEST.write_text(rendered, encoding="utf-8")
   except OSError as exc:
     _log(f"could not seed brief template to {BRIEF_TEMPLATE_DEST}: {exc!r}")
 
@@ -698,6 +812,12 @@ def build_goal(settings: dict) -> str:
     "                          chronology and the responsible code/log path",
     "                          support them; append a correction when later",
     "                          evidence disproves a durable claim.",
+    "  - experiment-status.json  latest lifecycle state for each deliberate",
+    "                          Reflection experiment, including time-due reviews;",
+    "                          inspect triggers intelligently and record outcomes",
+    "                          before tuning or replacing an intervention.",
+    "  - experiments.jsonl    bounded append-only experiment events; read only",
+    "                          when an active/due item needs its earlier context.",
     "  - reflection-run-history.txt  YOUR OWN recent runs (exit codes, log",
     "                          friction, your last skill edits) — read FIRST; a",
     "                          recurring failure across nights is tonight's",
@@ -1144,10 +1264,12 @@ class _LogBroadcast:
       self._closed = True
 
 
-async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
+async def _drain_session(
+  client, log_fh,
+) -> tuple[bool, bool, bool, bool, object, object]:
   """Drains one SDK response stream to its terminal result.
 
-  Returns (saw_result, result_error, auth_failure, usage_limit).
+  Returns (saw_result, result_error, auth_failure, usage_limit, cost, usage).
   `auth_failure` is True when the terminal error result names a CLI
   authentication failure (a 401 / expired credential); `usage_limit` is
   True when it names a provider usage/rate cap — see `_is_auth_failure`
@@ -1162,6 +1284,8 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
   result_error = False
   auth_failure = False
   usage_limit = False
+  cost_usd = None
+  usage = None
   logged_session_ids: set[str] = set()
   async for sdk_msg in client.receive_response():
     if log_fh is not None:
@@ -1179,6 +1303,8 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
         _log(f"claude session initialized session_id={session_id}")
     if kind == "ResultMessage":
       saw_result = True
+      cost_usd = getattr(sdk_msg, "total_cost_usd", None)
+      usage = getattr(sdk_msg, "usage", None)
       # A night that ended in error must not report success; otherwise
       # cron_outcome records exit 0 and both the next run and the app
       # believe a brief was produced when none was.
@@ -1203,7 +1329,7 @@ async def _drain_session(client, log_fh) -> tuple[bool, bool, bool, bool]:
           f"auth_failure={auth_failure}; usage_limit={usage_limit}) "
           f"result error: {err_text or '(none)'}"
         )
-  return saw_result, result_error, auth_failure, usage_limit
+  return saw_result, result_error, auth_failure, usage_limit, cost_usd, usage
 
 
 async def _run_claude_session(
@@ -1260,9 +1386,14 @@ async def _run_claude_session(
       return 1
 
     await client.query(goal)
-    saw_result, result_error, auth_failure, usage_limit = await _drain_session(
-      client, log_fh,
-    )
+    (
+      saw_result, result_error, auth_failure, usage_limit, cost_usd, usage,
+    ) = await _drain_session(client, log_fh)
+    if saw_result:
+      _write_model_usage(
+        provider="claude", model=model, goal=goal,
+        system_prompt=system_prompt, cost_usd=cost_usd, usage=usage,
+      )
     if not saw_result:
       _log("WARN stream ended without a terminal ResultMessage")
       return GENERIC_MODEL_RC
@@ -1327,6 +1458,11 @@ async def _run_codex_session(
     return 1
   finally:
     broadcast.close()
+  _write_model_usage(
+    provider="codex", model=model, goal=goal, system_prompt=system_prompt,
+    cost_usd=result.get("cost_usd"),
+    usage=result.get("usage_metrics") or result.get("usage"),
+  )
   if result.get("error"):
     err = str(result.get("error") or "")
     _log(f"WARN codex run ended in error: {err}")

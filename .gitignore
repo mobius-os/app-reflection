@@ -38,7 +38,9 @@ resource-history.jsonl
 resource-decisions.jsonl
 resource-monitor-state.json
 reflection-run-metrics.jsonl
+reflection-checkpoint.json
 meta-state.md
 meta-learning.jsonl
+experiments.jsonl
 # Defensive: a numeric data directory is app storage, never source.
 [0-9]*/

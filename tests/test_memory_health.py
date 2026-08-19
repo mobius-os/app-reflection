@@ -76,6 +76,125 @@ class MemoryHealthTests(unittest.TestCase):
     self.assertEqual(health["recall_activity"]["chat_days"], 0)
     self.assertNotIn("recall_collapsed", health["reasons"])
 
+  def test_recall_activity_aggregates_provider_receipts_without_chat_content(self):
+    self._runs({
+      "status": "published", "finished_at": "2026-07-20T05:36:00+00:00",
+      "model_work": {"attempt_count": 2, "reported_cost_usd": 1.2},
+    })
+    log = self.root / "app-state" / "read-log"
+    log.mkdir(parents=True)
+    (log / "2026-07-20.jsonl").write_text(json.dumps({
+      "at": "2026-07-20T05:50:00Z",
+      "chat_id": "chat-one",
+      "question": "private question",
+      "traversal": {"decisions": [{"attempts": [{
+        "provider": "claude",
+        "usage_receipt": {
+          "input_chars": 500, "output_chars": 40,
+          "usage": {"input_tokens": 120, "output_tokens": 10},
+          "cost_usd": 0.4,
+        },
+      }]}]},
+    }) + "\n")
+
+    health = memory_health.build_health(
+      self.root,
+      now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      since="2026-07-20T00:00:00Z",
+    )
+
+    self.assertEqual(health["last_run"]["model_work"], {
+      "attempt_count": 2, "reported_cost_usd": 1.2,
+    })
+    self.assertEqual(health["recall_activity"]["model_work"], {
+      "attempt_count": 1,
+      "usage_reported_attempts": 1,
+      "cost_reported_attempts": 1,
+      "reported_cost_usd": 0.4,
+      "input_chars": 500,
+      "output_chars": 40,
+      "token_usage": {"input_tokens": 120, "output_tokens": 10},
+    })
+    self.assertNotIn("private question", json.dumps(health))
+
+  def test_recall_activity_does_not_call_unreported_cost_zero(self):
+    self._runs({
+      "status": "published", "finished_at": "2026-07-20T05:36:00+00:00",
+    })
+    log = self.root / "app-state" / "read-log"
+    log.mkdir(parents=True)
+    (log / "2026-07-20.jsonl").write_text(json.dumps({
+      "at": "2026-07-20T05:50:00Z", "chat_id": "chat-one",
+      "traversal": {"decisions": [{"attempts": [{
+        "usage_receipt": {"usage": {"total_tokens": 7}},
+      }]}]},
+    }) + "\n")
+
+    health = memory_health.build_health(
+      self.root,
+      now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      since="2026-07-20T00:00:00Z",
+    )
+    work = health["recall_activity"]["model_work"]
+    self.assertIsNone(work["reported_cost_usd"])
+    self.assertEqual(work["cost_reported_attempts"], 0)
+
+  def test_memory_learning_handoff_carries_bounded_self_review_and_hindsight(self):
+    self._runs({
+      "status": "published", "run_id": "run-1",
+      "finished_at": "2026-07-20T05:36:00+00:00",
+      "writer_self_reviews": [{
+        "hardest_decision": "Whether to move the route.",
+        "possibly_missed": "A neighboring preference.",
+        "prompt_change": "none",
+        "next_experiment": "Clarify the parent cue; expect helpful hindsight.",
+        "private_extra": "drop me",
+      }],
+    })
+    updates = self.root / "app-state" / "update-log"
+    updates.mkdir()
+    (updates / "2026-07-20.jsonl").write_text(json.dumps({
+      "run_id": "run-1", "timestamp": "2026-07-20T05:36:00+00:00",
+      "commit": "abc", "changed_paths": ["mocs/topic.md"],
+      "writer_self_reviews": [{
+        "hardest_decision": "Whether to move the route.",
+        "possibly_missed": "A neighboring preference.",
+        "prompt_change": "none",
+        "next_experiment": "Clarify the parent cue; expect helpful hindsight.",
+      }],
+      "followups": ["Check the next audited recall."],
+    }) + "\n")
+    (self.root / "app-state" / "recall-stats.json").write_text(json.dumps({
+      "last_audited_at": "2026-07-20T05:00:00+00:00",
+      "reads_audited": 12,
+      "hindsight_assessed": 4,
+      "usefulness_counts": {
+        "helpful": 2, "mixed": 1, "unused": 1, "harmful": 0, "unknown": 8,
+      },
+      "recent": [{"hindsight_reason": "private outcome detail"}],
+    }))
+
+    health = self._health_on_20th()
+
+    self.assertEqual(
+      health["last_run"]["writer_self_reviews"][0]["next_experiment"],
+      "Clarify the parent cue; expect helpful hindsight.",
+    )
+    self.assertNotIn("private_extra", json.dumps(health))
+    self.assertEqual(health["recall_hindsight"], {
+      "last_audited_at": "2026-07-20T05:00:00+00:00",
+      "reads_audited": 12,
+      "hindsight_assessed": 4,
+      "usefulness_counts": {
+        "helpful": 2, "mixed": 1, "unused": 1, "harmful": 0, "unknown": 8,
+      },
+    })
+    self.assertEqual(
+      health["latest_writer_update"]["followups"],
+      ["Check the next audited recall."],
+    )
+    self.assertNotIn("private outcome detail", json.dumps(health))
+
   def test_read_history_before_the_checkpoint_is_ignored(self):
     self._runs({"status": "published", "finished_at": "2026-07-20T05:36:00+00:00"})
     self._reads(**{"2026_06_01": 30})

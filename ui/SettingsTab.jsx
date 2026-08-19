@@ -23,7 +23,6 @@ function withoutLegacyBriefControls(settings) {
 
 export function SettingsTab({ appId, storage, token, onSetupComplete }) {
   const [hour, setHour] = useState(DEFAULT_HOUR)
-  const [excludeApps, setExcludeApps] = useState([])
   const [settingsExtra, setSettingsExtra] = useState({})
   const [useSystemPrimary, setUseSystemPrimary] = useState(true)
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
@@ -65,7 +64,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
           setHour(s.hour)
           setCronIsCustom(false)
         }
-        if (Array.isArray(s.exclude_apps)) setExcludeApps(s.exclude_apps)
         const primaryMode = s.primary_agent_mode
         const providerValue = typeof s.provider === 'string' ? s.provider.trim() : ''
         const modelValue = typeof s.model === 'string' ? s.model.trim() : ''
@@ -152,7 +150,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         hour,
         minute: 0,
         timezone: settingsExtra.timezone ?? null,
-        exclude_apps: excludeApps,
         provider: useSystemPrimary ? null : (provider || settingsExtra.provider || DEFAULT_PROVIDER),
         model: useSystemPrimary ? null : (model || settingsExtra.model || null),
         effort: null,
@@ -168,7 +165,6 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         custom_cron: cronIsCustom,
         use_system_primary: useSystemPrimary,
         has_fallback: Boolean(fallbackProvider),
-        exclude_count: excludeApps.length,
       })
       onSetupComplete?.()
       setToast('Saved ✓')
@@ -180,7 +176,7 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     } finally {
       setSaving(false)
     }
-  }, [saving, cronIsCustom, rawCron, hour, excludeApps, useSystemPrimary, provider, model, useSystemSecondary, fallbackProvider, fallbackModel, settingsExtra, storage, onSetupComplete])
+  }, [saving, cronIsCustom, rawCron, hour, useSystemPrimary, provider, model, useSystemSecondary, fallbackProvider, fallbackModel, settingsExtra, storage, onSetupComplete])
 
   const reorderAgents = useCallback((fromIndex, toIndex) => {
     const slots = [{
@@ -270,18 +266,18 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
         <div className="rf-schedule-hint">
           <span aria-hidden="true">💡</span>
           <span>
-            Schedule changes take effect after the reflection agent re-installs
-            its overnight job — usually by the next run. The app saves your
-            preference; the agent picks it up from there.
+            Changes take effect for the next overnight run.
           </span>
         </div>
       </div>
 
-      <div className="rf-settings-card">
-        <div className="rf-section-head">
-          <span className="rf-section-icon" aria-hidden="true">🤖</span>
-          <h2 className="rf-section-label">Background agents</h2>
-        </div>
+      <details className="rf-settings-advanced">
+        <summary>
+          <span>Advanced</span>
+          <strong>Use different models</strong>
+          <small>Reflection follows Möbius Settings by default.</small>
+        </summary>
+        <div className="rf-settings-advanced-body">
         <p className="rf-note">
           Tried in order. Drag to change priority. Each row follows Möbius
           Settings by default, or can use its own model for Reflection.
@@ -337,7 +333,8 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
             </div>
           </BackgroundAgentList>
         )}
-      </div>
+        </div>
+      </details>
 
       <div className="rf-save-row">
         <button className="rf-save-btn rf-pressable" onClick={save} disabled={saving}>

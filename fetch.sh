@@ -27,6 +27,10 @@ set -uo pipefail
 APP_ID="${1:-}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8000}"
 DATA_DIR="${DATA_DIR:-/data}"
+if [[ ! "$APP_ID" =~ ^[0-9]+$ ]]; then
+  echo "reflection: numeric app id required as \$1" >&2
+  exit 2
+fi
 LOG="$DATA_DIR/cron-logs/reflection.log"
 LOG_ARCHIVE="$DATA_DIR/cron-logs/reflection.log.1"
 LOG_FALLBACK_ARCHIVE="$DATA_DIR/cron-logs/reflection.log.rotation-fallback"
@@ -36,6 +40,7 @@ TOKEN_FILE="$DATA_DIR/service-token.txt"
 DATE="$(date +%F)"
 INPUTS="$DATA_DIR/apps/reflection/inputs"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+RUNTIME_DIR="$DATA_DIR/apps/$APP_ID"
 RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 INPUT_HELPER="$SCRIPT_DIR/reflection_inputs.py"
 # Wall-clock cap for the whole night. Generous (the agent does real,
@@ -48,8 +53,10 @@ RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
 # are the durable outcome record; these files are the bounded diagnostic trace.
 LOG_MAX_BYTES="${REFLECTION_LOG_MAX_BYTES:-1048576}"
 [[ "$LOG_MAX_BYTES" =~ ^[0-9]+$ ]] || LOG_MAX_BYTES=1048576
-RUN_METRICS="$DATA_DIR/apps/reflection/reflection-run-metrics.jsonl"
-RUN_CHECKPOINT="$DATA_DIR/apps/reflection/reflection-checkpoint.json"
+RUN_METRICS="$RUNTIME_DIR/reflection-run-metrics.jsonl"
+RUN_CHECKPOINT="$RUNTIME_DIR/reflection-checkpoint.json"
+MODEL_USAGE="$INPUTS/model-usage.json"
+LATEST_EFFORT="$INPUTS/latest-effort.json"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 RUN_STARTED_EPOCH="$(date +%s)"
 RUN_ID="${REFLECTION_RUN_ID:-${RUN_STARTED_AT}.$$}"
@@ -66,12 +73,7 @@ export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$DATA_DIR/cli-auth/claude}"
 export CODEX_HOME="${CODEX_HOME:-$DATA_DIR/cli-auth/codex}"
 export API_BASE_URL DATA_DIR
 
-mkdir -p "$DATA_DIR/cron-logs" "$INPUTS"
-# Optional engagement inputs must describe THIS run's predecessor. Without
-# clearing them first, a night with no new answer file would inherit an older
-# answer and falsely look engaged forever.
-rm -f "$INPUTS/prev-report.html" "$INPUTS/prev-report-name.txt" \
-  "$INPUTS/prev-question-answers.json"
+mkdir -p "$DATA_DIR/cron-logs"
 log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
 
 # --- no-overlap lock (flock) ------------------------------------------
@@ -87,6 +89,31 @@ if ! flock -n 9; then
   log "another reflection run holds the lock; skipping this night (exit 5)"
   exit 5
 fi
+
+# Everything below mutates run state and therefore belongs behind the lock.
+# An overlapping invocation must not clear the active run's inputs before it
+# discovers that the lock is held.
+mkdir -p "$INPUTS" "$RUNTIME_DIR"
+# Older releases kept operational receipts beside catalog source. Preserve the
+# last complete state once, then keep every future write in numeric app storage
+# so source review shows code rather than the previous run's cursor.
+for runtime_name in \
+    reflection-run-metrics.jsonl reflection-checkpoint.json \
+    resource-history.jsonl resource-monitor-state.json \
+    resource-decisions.jsonl meta-state.md meta-learning.jsonl \
+    experiments.jsonl; do
+  legacy="$DATA_DIR/apps/reflection/$runtime_name"
+  canonical="$RUNTIME_DIR/$runtime_name"
+  if [[ -f "$legacy" && ! -e "$canonical" ]]; then
+    cp -p -- "$legacy" "$canonical"
+  fi
+done
+rm -f -- "$MODEL_USAGE"
+# Optional engagement inputs must describe THIS run's predecessor. Without
+# clearing them first, a night with no new answer file would inherit an older
+# answer and falsely look engaged forever.
+rm -f "$INPUTS/prev-report.html" "$INPUTS/prev-report-name.txt" \
+  "$INPUTS/prev-question-answers.json"
 
 # Atomic rename, never in-place truncation. At this point no Reflection runner
 # can be active (fd 9 proves exclusivity), and this wrapper has not opened LOG
@@ -145,13 +172,6 @@ SERVICE_TOKEN="$(cat "$TOKEN_FILE")"
 # wrapper-era scripts read SERVICE_TOKEN. Export both so either works.
 export SERVICE_TOKEN AGENT_TOKEN="$SERVICE_TOKEN"
 auth=(-H "Authorization: Bearer $SERVICE_TOKEN")
-
-# App id ($1) scopes storage. The platform job supervisor records the outcome
-# for every real attempt, including failures before this wrapper can start.
-if [[ -z "$APP_ID" ]]; then
-  log "ERROR no app id passed as \$1; exiting"
-  exit 2
-fi
 
 log "start (app_id=$APP_ID date=$DATE dry=${REFLECTION_DRY:-0} timeout=${RUN_TIMEOUT}s)"
 
@@ -521,11 +541,13 @@ fi
 # This gives Reflection trend evidence without paying for the same broad `du`
 # commands every night. History and decisions are bounded durable logs.
 RESOURCE_MONITOR="$SCRIPT_DIR/resource_monitor.py"
-RESOURCE_HISTORY="$DATA_DIR/apps/reflection/resource-history.jsonl"
-RESOURCE_STATE="$DATA_DIR/apps/reflection/resource-monitor-state.json"
-RESOURCE_LEDGER="$DATA_DIR/apps/reflection/resource-decisions.jsonl"
-META_STATE="$DATA_DIR/apps/reflection/meta-state.md"
-META_LOG="$DATA_DIR/apps/reflection/meta-learning.jsonl"
+RESOURCE_HISTORY="$RUNTIME_DIR/resource-history.jsonl"
+RESOURCE_STATE="$RUNTIME_DIR/resource-monitor-state.json"
+RESOURCE_LEDGER="$RUNTIME_DIR/resource-decisions.jsonl"
+META_STATE="$RUNTIME_DIR/meta-state.md"
+META_LOG="$RUNTIME_DIR/meta-learning.jsonl"
+EXPERIMENT_LEDGER="$RUNTIME_DIR/experiments.jsonl"
+EXPERIMENT_STATUS="$SCRIPT_DIR/experiment_status.py"
 if [[ -r "$RESOURCE_MONITOR" ]]; then
   if ! python3 "$RESOURCE_MONITOR" snapshot \
       --data-dir "$DATA_DIR" \
@@ -652,6 +674,25 @@ else
   : >"$INPUTS/meta-learning.jsonl"
 fi
 
+# Experiments are distinct from durable lessons. The append-only ledger records
+# lifecycle events under a stable experiment_id; this deterministic view tells
+# the agent what is active or time-due without deciding whether an experiment
+# was good, whether a trigger fired, or what outcome means.
+if [[ -r "$EXPERIMENT_LEDGER" ]]; then
+  tail -n 200 "$EXPERIMENT_LEDGER" >"$INPUTS/experiments.jsonl" 2>>"$LOG" || true
+else
+  : >"$INPUTS/experiments.jsonl"
+fi
+if [[ -r "$EXPERIMENT_STATUS" ]]; then
+  if ! python3 "$EXPERIMENT_STATUS" \
+      --ledger "$EXPERIMENT_LEDGER" \
+      --output "$INPUTS/experiment-status.json" 2>>"$LOG"; then
+    log "WARN experiment status handoff failed"
+  fi
+else
+  log "WARN experiment status helper missing at $EXPERIMENT_STATUS"
+fi
+
 # reflection-run-history.txt — bounded self-observation for the next agent.
 # Metrics answer "did the last change make the run cheaper?"; the normalized
 # semantic tail carries friction without letting hundreds of SDK output/text
@@ -760,6 +801,24 @@ PY
 # Record the app id where the runner's goal message and the agent can
 # find it (the agent writes reports to apps/<app_id>/reports/).
 printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
+EFFORT_SUMMARY="$SCRIPT_DIR/effort_summary.py"
+if [[ -r "$EFFORT_SUMMARY" ]]; then
+  if ! python3 "$EFFORT_SUMMARY" --metrics "$RUN_METRICS" \
+      --output "$INPUTS/effort-summary.json" 2>>"$LOG"; then
+    log "WARN rolling effort summary failed"
+  fi
+else
+  log "WARN effort summary helper missing at $EFFORT_SUMMARY"
+fi
+LEARNING_LOOP="$SCRIPT_DIR/learning_loop.py"
+if [[ -r "$LEARNING_LOOP" ]]; then
+  if ! python3 "$LEARNING_LOOP" --inputs "$INPUTS" \
+      --output "$INPUTS/learning-loop.json" 2>>"$LOG"; then
+    log "WARN consolidated learning-loop orientation failed"
+  fi
+else
+  log "WARN learning-loop helper missing at $LEARNING_LOOP"
+fi
 if ! python3 "$INPUT_HELPER" manifest \
     "$INPUTS" "$RUN_ID" "$RUN_STARTED_AT" 2>>"$LOG"; then
   rm -f -- "$INPUTS/input-manifest.json"
@@ -844,6 +903,10 @@ fi
 # dependency on the agent picking the right tool. Best-effort: a failed
 # push is logged, never fatal.
 send_morning_push() {
+  [[ "${REFLECTION_DRY:-0}" != "1" ]] || {
+    log "morning push: skip (dry run)"
+    return 0
+  }
   [[ "$RC" == "0" ]] || { log "morning push: skip (rc=$RC)"; return 0; }
   local brief="$DATA_DIR/apps/$APP_ID/reports/$DATE.html"
   [[ -f "$brief" ]] || { log "morning push: skip (no brief for $DATE)"; return 0; }
@@ -920,8 +983,7 @@ PY
 send_morning_push
 
 # Persist one compact row about Reflection's own footprint. Keep the log
-# bounded: it is an optimization input, not an audit trail. Cost/token details
-# emitted by provider SDKs remain in the short reflection.log tail staged above.
+# bounded: it is evidence for qualitative review, not an optimization target.
 RUN_FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 RUN_FINISHED_EPOCH="$(date +%s)"
 RUN_DISK_AFTER="$(python3 - "$DATA_DIR" <<'PY' 2>/dev/null || echo 0
@@ -934,11 +996,13 @@ python3 - "$RUN_METRICS" "$RUN_STARTED_AT" "$RUN_FINISHED_AT" \
     "$RUN_STARTED_EPOCH" "$RUN_FINISHED_EPOCH" "$RC" \
     "$RUN_DISK_BEFORE" "$RUN_DISK_AFTER" "$RUN_CPU_BEFORE" "$RUN_CPU_AFTER" \
     "$DATA_DIR/apps/$APP_ID/reports/$DATE.html" "${REFLECTION_DRY:-0}" \
+    "$MODEL_USAGE" "$LATEST_EFFORT" \
     2>>"$LOG" <<'PY' || log "WARN could not persist reflection run metrics"
 import json, os, pathlib, sys
 
 (path, started_at, finished_at, started_epoch, finished_epoch, rc,
- disk_before, disk_after, cpu_before, cpu_after, report, dry) = sys.argv[1:]
+ disk_before, disk_after, cpu_before, cpu_after, report, dry,
+ model_usage, latest_effort) = sys.argv[1:]
 def integer(value):
     try: return int(value)
     except (TypeError, ValueError): return 0
@@ -955,6 +1019,12 @@ row = {
     "disk_used_delta_bytes": integer(disk_after) - integer(disk_before),
     "cgroup_cpu_usage_usec_delta": max(0, integer(cpu_after) - integer(cpu_before)),
 }
+try:
+    receipt = json.load(open(model_usage, encoding="utf-8"))
+except (OSError, ValueError):
+    receipt = None
+if isinstance(receipt, dict):
+    row["model_usage"] = receipt
 target = pathlib.Path(path)
 try:
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -968,6 +1038,11 @@ with tmp.open("w", encoding="utf-8") as handle:
     handle.write("\n".join(lines) + "\n")
     handle.flush(); os.fsync(handle.fileno())
 os.replace(tmp, target)
+if dry != "1":
+    latest = pathlib.Path(latest_effort)
+    latest_tmp = latest.with_name(f".{latest.name}.{os.getpid()}.tmp")
+    latest_tmp.write_text(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.replace(latest_tmp, latest)
 PY
 
 checkpoint_result="$(python3 "$INPUT_HELPER" complete-run \

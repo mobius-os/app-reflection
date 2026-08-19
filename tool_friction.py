@@ -21,8 +21,18 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-VERSION = 4
+VERSION = 5
 DEFAULT_DB = "/data/db/ultimate.db"
+
+_CODEX_SKILL_ENTRY = re.compile(
+  r"(?<![A-Za-z0-9._/-])(?:/[^\s'\"`;&|()<>]+)?/\.codex/skills/"
+  r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)/SKILL\.md\b",
+)
+_SHARED_SKILL_ENTRY = re.compile(
+  r"(?<![A-Za-z0-9._/-])(?:/[^\s'\"`;&|()<>]+)?/shared/skills/"
+  r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
+  r"(?:\.md\b|/(?i:SKILL\.md)\b)",
+)
 
 PRIMITIVES = {
   "visual_capture": re.compile(
@@ -137,6 +147,14 @@ def _command_family(tool: str, text: str) -> str:
   return tool
 
 
+def _skill_entry_names(command: str) -> tuple[set[str], set[str]]:
+  """Project-local and authoritative skill entries named by one command."""
+  return (
+    {match.group("name") for match in _CODEX_SKILL_ENTRY.finditer(command)},
+    {match.group("name") for match in _SHARED_SKILL_ENTRY.finditer(command)},
+  )
+
+
 def _empty_surface() -> dict[str, Any]:
   return {
     "tool_calls": 0,
@@ -220,9 +238,18 @@ def analyse_database(
   assistant_turns = 0
   failure_classes: Counter[str] = Counter()
   failure_families: Counter[str] = Counter()
+  skill_indirections = {
+    "chains": 0,
+    "extra_tool_calls": 0,
+    "candidate_output_bytes": 0,
+    "chat_ids": set(),
+    "skills": Counter(),
+  }
+  exact_repeat_candidates: dict[str, dict[str, Any]] = {}
   daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
     "tool_calls": 0, "failed_calls": 0, "truncated_calls": 0,
-    "completed_runs": 0, "cost_usd": 0.0, "total_tokens": 0,
+    "completed_runs": 0, "cost_usd": 0.0, "cost_reported_runs": 0,
+    "total_tokens": 0,
     "input_tokens": 0, "cache_read_input_tokens": 0,
   })
 
@@ -256,6 +283,7 @@ def analyse_database(
       day = dt.datetime.fromtimestamp(
         _message_time_ms(message) / 1000, tz=dt.timezone.utc,
       ).date().isoformat()
+      message_tools: list[dict[str, Any]] = []
       for block in message.get("blocks") or []:
         if not isinstance(block, dict) or block.get("type") != "tool":
           continue
@@ -301,10 +329,13 @@ def analyse_database(
         family = _command_family(tool, command)
         family_item = command_families.setdefault(family, {
           "family": family, "count": 0, "chat_ids": set(), "failed_calls": 0,
+          "truncated_calls": 0, "output_bytes": 0,
         })
         family_item["count"] += 1
         family_item["chat_ids"].add(chat_id)
         family_item["failed_calls"] += int(failed)
+        family_item["truncated_calls"] += int(truncated)
+        family_item["output_bytes"] += output_bytes
         key = (tool, signature)
         item = repeated.setdefault(key, {
           "tool": tool,
@@ -317,6 +348,75 @@ def analyse_database(
         item["count"] += 1
         item["chat_ids"].add(chat_id)
         item["failed_calls"] += int(failed)
+        project_skills, shared_skills = _skill_entry_names(searchable_command)
+        message_tools.append({
+          "tool": tool,
+          "signature": signature,
+          "family": family,
+          "failed": failed,
+          # Write/edit transcript blocks retain only their target path, not the
+          # full mutation. Two edits to one file are therefore not proven
+          # duplicates even when their privacy-safe signatures match.
+          "repeatable": (
+            bool(searchable_command.strip())
+            and tool not in {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+          ),
+          "output_bytes": output_bytes,
+          "project_skills": project_skills,
+          "shared_skills": shared_skills,
+        })
+
+      # A pointer-style project skill followed later in the same physical turn
+      # by its authoritative shared entry is one causal chain. This is the
+      # relationship broad command families and privacy-safe hashes cannot
+      # reveal on their own. Keep only counts + skill ids; never command text.
+      project_occurrences: dict[str, list[int]] = defaultdict(list)
+      shared_occurrences: dict[str, list[int]] = defaultdict(list)
+      for index, item in enumerate(message_tools):
+        for name in item["project_skills"]:
+          project_occurrences[name].append(index)
+        for name in item["shared_skills"]:
+          shared_occurrences[name].append(index)
+      redirected_project_calls: set[int] = set()
+      for name in project_occurrences.keys() & shared_occurrences.keys():
+        pairs = [
+          (project_index, shared_index)
+          for project_index in project_occurrences[name]
+          for shared_index in shared_occurrences[name]
+          if project_index < shared_index
+        ]
+        if not pairs:
+          continue
+        skill_indirections["chains"] += 1
+        skill_indirections["skills"][name] += 1
+        skill_indirections["chat_ids"].add(chat_id)
+        redirected_project_calls.update(project_index for project_index, _ in pairs)
+      skill_indirections["extra_tool_calls"] += len(redirected_project_calls)
+      skill_indirections["candidate_output_bytes"] += sum(
+        message_tools[index]["output_bytes"] for index in redirected_project_calls
+      )
+
+      # Repeating the exact same successful call inside one physical turn can
+      # be legitimate after an intervening edit, so expose it as a bounded
+      # candidate—not a diagnosis. Failed-call retries are deliberately absent.
+      seen_successful: set[str] = set()
+      for item in message_tools:
+        if item["failed"] or not item["repeatable"]:
+          continue
+        signature = item["signature"]
+        if signature not in seen_successful:
+          seen_successful.add(signature)
+          continue
+        family = item["family"]
+        repeat = exact_repeat_candidates.setdefault(family, {
+          "family": family,
+          "extra_tool_calls": 0,
+          "candidate_output_bytes": 0,
+          "chat_ids": set(),
+        })
+        repeat["extra_tool_calls"] += 1
+        repeat["candidate_output_bytes"] += item["output_bytes"]
+        repeat["chat_ids"].add(chat_id)
     if chat["assistant_turns"]:
       by_chat[chat_id] = chat
 
@@ -330,16 +430,24 @@ def analyse_database(
     except (TypeError, ValueError):
       continue
     daily[day]["completed_runs"] += 1
-    daily[day]["cost_usd"] += float(row["cost_usd"] or 0)
+    if row["cost_usd"] is not None:
+      daily[day]["cost_usd"] += float(row["cost_usd"])
+      daily[day]["cost_reported_runs"] += 1
     daily[day]["total_tokens"] += int(row["total_tokens"] or 0)
     daily[day]["input_tokens"] += int(row["input_tokens"] or 0)
     daily[day]["cache_read_input_tokens"] += int(
       row["cache_read_input_tokens"] or 0
     )
+  reported_costs = [
+    float(row["cost_usd"])
+    for row in completed_runs
+    if row["cost_usd"] is not None
+  ]
   run_totals = {
     "completed_runs": len(completed_runs),
     "chat_count": len({str(row["chat_id"]) for row in completed_runs}),
-    "cost_usd": round(sum(float(row["cost_usd"] or 0) for row in completed_runs), 6),
+    "cost_usd": round(sum(reported_costs), 6) if reported_costs else None,
+    "cost_reported_runs": len(reported_costs),
     "input_tokens": sum(int(row["input_tokens"] or 0) for row in completed_runs),
     "output_tokens": sum(int(row["output_tokens"] or 0) for row in completed_runs),
     "cache_read_input_tokens": sum(
@@ -350,9 +458,9 @@ def analyse_database(
   run_totals["cache_read_share"] = _ratio(
     run_totals["cache_read_input_tokens"], run_totals["input_tokens"],
   )
-  run_totals["cost_per_completed_run"] = round(
-    run_totals["cost_usd"] / run_totals["completed_runs"], 6,
-  ) if run_totals["completed_runs"] else 0.0
+  run_totals["cost_per_reported_run"] = round(
+    run_totals["cost_usd"] / run_totals["cost_reported_runs"], 6,
+  ) if run_totals["cost_reported_runs"] else None
 
   top_chats = sorted(
     by_chat.values(),
@@ -397,7 +505,10 @@ def analyse_database(
         "date": day,
         **{
           **values,
-          "cost_usd": round(values["cost_usd"], 6),
+          "cost_usd": (
+            round(values["cost_usd"], 6)
+            if values["cost_reported_runs"] else None
+          ),
           "failure_rate": _ratio(values["failed_calls"], values["tool_calls"]),
           "truncation_rate": _ratio(
             values["truncated_calls"], values["tool_calls"],
@@ -412,6 +523,33 @@ def analyse_database(
     "primitives": {
       name: _serialise_surface(surfaces[name]) for name in PRIMITIVES
     },
+    "avoidable_call_candidates": {
+      "skill_read_indirection": {
+        "chains": skill_indirections["chains"],
+        "extra_tool_calls": skill_indirections["extra_tool_calls"],
+        "candidate_output_bytes": skill_indirections["candidate_output_bytes"],
+        "chat_count": len(skill_indirections["chat_ids"]),
+        "top_skills": [
+          {"skill": name, "chains": count}
+          for name, count in skill_indirections["skills"].most_common(8)
+        ],
+      },
+      "same_turn_exact_success_repeats": [
+        {
+          "family": item["family"],
+          "extra_tool_calls": item["extra_tool_calls"],
+          "candidate_output_bytes": item["candidate_output_bytes"],
+          "chat_count": len(item["chat_ids"]),
+        }
+        for item in sorted(
+          exact_repeat_candidates.values(),
+          key=lambda value: (
+            value["extra_tool_calls"], value["candidate_output_bytes"],
+          ),
+          reverse=True,
+        )[:max(1, repeated_limit)]
+      ],
+    },
     "top_chats": top_chats,
     "repeated_calls": repeated_rows,
     "command_families": [
@@ -420,6 +558,8 @@ def analyse_database(
         "count": item["count"],
         "chat_count": len(item["chat_ids"]),
         "failed_calls": item["failed_calls"],
+        "truncated_calls": item["truncated_calls"],
+        "output_bytes": item["output_bytes"],
       }
       for item in sorted(
         command_families.values(),
@@ -427,12 +567,36 @@ def analyse_database(
         reverse=True,
       )[:max(1, repeated_limit)]
     ],
+    "truncating_command_families": [
+      {
+        "family": item["family"],
+        "count": item["count"],
+        "chat_count": len(item["chat_ids"]),
+        "truncated_calls": item["truncated_calls"],
+        "truncation_rate": _ratio(item["truncated_calls"], item["count"]),
+        "output_bytes": item["output_bytes"],
+      }
+      for item in sorted(
+        command_families.values(),
+        key=lambda value: (value["truncated_calls"], value["output_bytes"]),
+        reverse=True,
+      )
+      if item["truncated_calls"]
+    ][:max(1, repeated_limit)],
   }
 
 
 def format_report(data: dict[str, Any]) -> str:
   overall = data["overall"]
   runs = data["run_totals"]
+  recorded_cost = (
+    f"${runs['cost_usd']:.2f} across {runs['cost_reported_runs']} reported runs"
+    if runs["cost_usd"] is not None else "unknown (no provider-reported cost)"
+  )
+  cost_per_run = (
+    f"${runs['cost_per_reported_run']:.2f}"
+    if runs["cost_per_reported_run"] is not None else "unknown"
+  )
   lines = [
     f"TOOL FRICTION — since {data['window']['since']}",
     "-" * 34,
@@ -444,13 +608,13 @@ def format_report(data: dict[str, Any]) -> str:
     ),
     (
       f"  completed_runs={runs['completed_runs']}  "
-      f"recorded_cost=${runs['cost_usd']:.2f}  total_tokens={runs['total_tokens']}"
+      f"recorded_cost={recorded_cost}  total_tokens={runs['total_tokens']}"
     ),
     (
       f"  failure_rate={overall['failure_rate']:.1%}  "
       f"truncation_rate={overall['truncation_rate']:.1%}  "
       f"cache_read_share={runs['cache_read_share']:.1%}  "
-      f"cost/run=${runs['cost_per_completed_run']:.2f}"
+      f"cost/reported_run={cost_per_run}"
     ),
     "  recurring mechanical surfaces:",
   ]
@@ -458,6 +622,21 @@ def format_report(data: dict[str, Any]) -> str:
     lines.append(
       f"    {name:20} calls={item['tool_calls']:4}  failed={item['failed_calls']:3}  "
       f"truncated={item['truncated_calls']:3}  chats={item['chat_count']:3}"
+    )
+  candidates = data.get("avoidable_call_candidates") or {}
+  indirection = candidates.get("skill_read_indirection") or {}
+  if indirection.get("chains"):
+    lines.append("  avoidable-call candidates:")
+    lines.append(
+      "    skill read indirection "
+      f"chains={indirection['chains']}  "
+      f"extra_calls={indirection['extra_tool_calls']}  "
+      f"chats={indirection['chat_count']}"
+    )
+  for item in (candidates.get("same_turn_exact_success_repeats") or [])[:4]:
+    lines.append(
+      f"    repeated {item['family'][:22]:22} "
+      f"extra_calls={item['extra_tool_calls']:3}  chats={item['chat_count']:3}"
     )
   if data["top_chats"]:
     lines.append("  highest-friction chats:")
@@ -476,6 +655,15 @@ def format_report(data: dict[str, Any]) -> str:
       lines.append(
         f"    {item['family'][:28]:28} calls={item['count']:3}  "
         f"failed={item['failed_calls']:3}  chats={item['chat_count']:3}"
+      )
+  truncating = data.get("truncating_command_families") or []
+  if truncating:
+    lines.append("  most-truncated command families:")
+    for item in truncating[:6]:
+      lines.append(
+        f"    {item['family'][:28]:28} truncated={item['truncated_calls']:3}  "
+        f"rate={item['truncation_rate']:.1%}  "
+        f"output={item['output_bytes'] / 1_000_000:.1f}MB"
       )
   failures = data.get("failure_families") or {}
   if failures:
