@@ -248,7 +248,8 @@ def analyse_database(
   exact_repeat_candidates: dict[str, dict[str, Any]] = {}
   daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
     "tool_calls": 0, "failed_calls": 0, "truncated_calls": 0,
-    "completed_runs": 0, "cost_usd": 0.0, "total_tokens": 0,
+    "completed_runs": 0, "cost_usd": 0.0, "cost_reported_runs": 0,
+    "total_tokens": 0,
     "input_tokens": 0, "cache_read_input_tokens": 0,
   })
 
@@ -429,16 +430,24 @@ def analyse_database(
     except (TypeError, ValueError):
       continue
     daily[day]["completed_runs"] += 1
-    daily[day]["cost_usd"] += float(row["cost_usd"] or 0)
+    if row["cost_usd"] is not None:
+      daily[day]["cost_usd"] += float(row["cost_usd"])
+      daily[day]["cost_reported_runs"] += 1
     daily[day]["total_tokens"] += int(row["total_tokens"] or 0)
     daily[day]["input_tokens"] += int(row["input_tokens"] or 0)
     daily[day]["cache_read_input_tokens"] += int(
       row["cache_read_input_tokens"] or 0
     )
+  reported_costs = [
+    float(row["cost_usd"])
+    for row in completed_runs
+    if row["cost_usd"] is not None
+  ]
   run_totals = {
     "completed_runs": len(completed_runs),
     "chat_count": len({str(row["chat_id"]) for row in completed_runs}),
-    "cost_usd": round(sum(float(row["cost_usd"] or 0) for row in completed_runs), 6),
+    "cost_usd": round(sum(reported_costs), 6) if reported_costs else None,
+    "cost_reported_runs": len(reported_costs),
     "input_tokens": sum(int(row["input_tokens"] or 0) for row in completed_runs),
     "output_tokens": sum(int(row["output_tokens"] or 0) for row in completed_runs),
     "cache_read_input_tokens": sum(
@@ -449,9 +458,9 @@ def analyse_database(
   run_totals["cache_read_share"] = _ratio(
     run_totals["cache_read_input_tokens"], run_totals["input_tokens"],
   )
-  run_totals["cost_per_completed_run"] = round(
-    run_totals["cost_usd"] / run_totals["completed_runs"], 6,
-  ) if run_totals["completed_runs"] else 0.0
+  run_totals["cost_per_reported_run"] = round(
+    run_totals["cost_usd"] / run_totals["cost_reported_runs"], 6,
+  ) if run_totals["cost_reported_runs"] else None
 
   top_chats = sorted(
     by_chat.values(),
@@ -496,7 +505,10 @@ def analyse_database(
         "date": day,
         **{
           **values,
-          "cost_usd": round(values["cost_usd"], 6),
+          "cost_usd": (
+            round(values["cost_usd"], 6)
+            if values["cost_reported_runs"] else None
+          ),
           "failure_rate": _ratio(values["failed_calls"], values["tool_calls"]),
           "truncation_rate": _ratio(
             values["truncated_calls"], values["tool_calls"],
@@ -577,6 +589,14 @@ def analyse_database(
 def format_report(data: dict[str, Any]) -> str:
   overall = data["overall"]
   runs = data["run_totals"]
+  recorded_cost = (
+    f"${runs['cost_usd']:.2f} across {runs['cost_reported_runs']} reported runs"
+    if runs["cost_usd"] is not None else "unknown (no provider-reported cost)"
+  )
+  cost_per_run = (
+    f"${runs['cost_per_reported_run']:.2f}"
+    if runs["cost_per_reported_run"] is not None else "unknown"
+  )
   lines = [
     f"TOOL FRICTION — since {data['window']['since']}",
     "-" * 34,
@@ -588,13 +608,13 @@ def format_report(data: dict[str, Any]) -> str:
     ),
     (
       f"  completed_runs={runs['completed_runs']}  "
-      f"recorded_cost=${runs['cost_usd']:.2f}  total_tokens={runs['total_tokens']}"
+      f"recorded_cost={recorded_cost}  total_tokens={runs['total_tokens']}"
     ),
     (
       f"  failure_rate={overall['failure_rate']:.1%}  "
       f"truncation_rate={overall['truncation_rate']:.1%}  "
       f"cache_read_share={runs['cache_read_share']:.1%}  "
-      f"cost/run=${runs['cost_per_completed_run']:.2f}"
+      f"cost/reported_run={cost_per_run}"
     ),
     "  recurring mechanical surfaces:",
   ]
