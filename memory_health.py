@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a compact, content-free health handoff from Memory to Reflection."""
+"""Build a compact health and learning handoff from Memory to Reflection."""
 
 from __future__ import annotations
 
@@ -17,7 +17,12 @@ _RUN_FIELDS = (
   "status", "started_at", "finished_at", "app_id", "run_id", "commit",
   "new_commit", "provider", "model", "error_class", "error_code",
   "offending_path", "invalid_source_count", "source_chat_count",
-  "queued_chat_count", "reason",
+  "queued_chat_count", "reason", "model_work", "recall_audit_model_work",
+  "recall_model_work",
+  "read_audit_count", "writer_self_reviews", "deferred_read_audit_count",
+)
+_SELF_REVIEW_FIELDS = (
+  "hardest_decision", "possibly_missed", "prompt_change", "next_experiment",
 )
 
 
@@ -62,14 +67,80 @@ def _read_runs(path: Path) -> list[dict[str, Any]]:
         continue
       if isinstance(row, dict):
         rows.append(row)
-  rows.sort(key=lambda row: str(row.get("finished_at") or row.get("started_at") or ""))
+  rows.sort(key=lambda row: str(
+    row.get("finished_at") or row.get("started_at") or row.get("timestamp") or ""
+  ))
   return rows
 
 
 def _safe_run(row: dict[str, Any] | None) -> dict[str, Any] | None:
   if not row:
     return None
-  return {key: row[key] for key in _RUN_FIELDS if key in row}
+  result = {
+    key: row[key]
+    for key in _RUN_FIELDS
+    if key in row and key != "writer_self_reviews"
+  }
+  if "writer_self_reviews" in row:
+    result["writer_self_reviews"] = _safe_self_reviews(
+      row.get("writer_self_reviews"),
+    )
+  return result
+
+
+def _safe_self_reviews(value: Any) -> list[dict[str, str]]:
+  if not isinstance(value, list):
+    return []
+  return [
+    {
+      key: str(item[key])[:1000]
+      for key in _SELF_REVIEW_FIELDS
+      if isinstance(item.get(key), str)
+    }
+    for item in value[-12:]
+    if isinstance(item, dict)
+  ]
+
+
+def _latest_update(app_state: Path) -> dict[str, Any] | None:
+  rows = _read_runs(app_state / "update-log")
+  if not rows:
+    return None
+  row = rows[-1]
+  result = {
+    key: row[key]
+    for key in (
+      "run_id", "timestamp", "commit", "provider", "model", "changed_paths",
+      "deleted_paths", "topology", "model_work",
+    )
+    if key in row
+  }
+  result["writer_self_reviews"] = _safe_self_reviews(
+    row.get("writer_self_reviews"),
+  )
+  followups = row.get("followups")
+  result["followups"] = [str(item)[:1000] for item in followups[-50:]] \
+    if isinstance(followups, list) else []
+  return result
+
+
+def _recall_hindsight(app_state: Path) -> dict[str, Any]:
+  stats = _read_json(app_state / "recall-stats.json")
+  if not isinstance(stats, dict):
+    return {"hindsight_assessed": 0, "usefulness_counts": {}}
+  counts = stats.get("usefulness_counts")
+  if not isinstance(counts, dict):
+    counts = {}
+  return {
+    "last_audited_at": stats.get("last_audited_at"),
+    "reads_audited": stats.get("reads_audited"),
+    "hindsight_assessed": stats.get("hindsight_assessed", 0),
+    "usefulness_counts": {
+      key: counts[key]
+      for key in ("helpful", "mixed", "unused", "harmful", "unknown")
+      if isinstance(counts.get(key), int) and not isinstance(counts.get(key), bool)
+    },
+  }
 
 
 def _safe_queue_progress(row: dict[str, Any] | None) -> dict[str, int] | None:
@@ -124,9 +195,11 @@ def _recall_activity(
       "through": now.isoformat(),
       "days": [],
       "chat_days": 0,
+      "model_work": _model_work([]),
     }
   start_day = max(since.date(), available_days[0])
   days = []
+  receipts = []
   cursor = start_day
   while cursor <= now.date():
     day = cursor.isoformat()
@@ -149,6 +222,22 @@ def _recall_activity(
       chat_id = row.get("chat_id") if isinstance(row, dict) else None
       if isinstance(chat_id, str) and chat_id:
         chats.add(chat_id)
+      traversal = row.get("traversal")
+      decisions = (
+        traversal.get("decisions") if isinstance(traversal, dict) else None
+      )
+      if isinstance(decisions, list):
+        for decision in decisions:
+          attempts = (
+            decision.get("attempts") if isinstance(decision, dict) else None
+          )
+          if not isinstance(attempts, list):
+            continue
+          receipts.extend(
+            attempt["usage_receipt"] for attempt in attempts
+            if isinstance(attempt, dict)
+            and isinstance(attempt.get("usage_receipt"), dict)
+          )
     days.append({"date": day, "chats": len(chats)})
     cursor += dt.timedelta(days=1)
   return {
@@ -156,6 +245,33 @@ def _recall_activity(
     "through": now.isoformat(),
     "days": days,
     "chat_days": sum(day["chats"] for day in days),
+    "model_work": _model_work(receipts),
+  }
+
+
+def _model_work(receipts: list[dict[str, Any]]) -> dict[str, Any]:
+  token_usage: dict[str, int | float] = {}
+  costs = []
+  for receipt in receipts:
+    usage = receipt.get("usage")
+    if isinstance(usage, dict):
+      for key, value in usage.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+          token_usage[str(key)] = token_usage.get(str(key), 0) + value
+    cost = receipt.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+      costs.append(cost)
+  return {
+    "attempt_count": len(receipts),
+    "usage_reported_attempts": sum(
+      1 for receipt in receipts if isinstance(receipt.get("usage"), dict)
+    ),
+    "cost_reported_attempts": len(costs),
+    # A provider that omitted cost did not report a free run.
+    "reported_cost_usd": sum(costs) if costs else None,
+    "input_chars": sum(int(receipt.get("input_chars") or 0) for receipt in receipts),
+    "output_chars": sum(int(receipt.get("output_chars") or 0) for receipt in receipts),
+    "token_usage": token_usage,
   }
 
 
@@ -284,6 +400,8 @@ def build_health(
     "queue_progress": _safe_queue_progress(latest_terminal),
     "recovered_after_failure": recovered_after_failure,
     "recall_activity": recall,
+    "recall_hindsight": _recall_hindsight(app_state),
+    "latest_writer_update": _latest_update(app_state),
     "last_run": _safe_run(latest),
     "latest_terminal_run": _safe_run(latest_terminal),
     "last_rejection_codes": _rejection_codes(latest),

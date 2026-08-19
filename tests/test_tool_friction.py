@@ -100,6 +100,16 @@ class ToolFrictionTests(unittest.TestCase):
     )
     self.assertEqual(source_family["count"], 2)
     self.assertEqual(source_family["chat_count"], 1)
+    self.assertEqual(source_family["truncated_calls"], 2)
+    self.assertEqual(source_family["output_bytes"], 10_000)
+    self.assertEqual(result["truncating_command_families"][0], {
+      "family": "source search",
+      "count": 2,
+      "chat_count": 1,
+      "truncated_calls": 2,
+      "truncation_rate": 1.0,
+      "output_bytes": 10_000,
+    })
     self.assertEqual(result["daily"], [{
       "date": "2026-07-28",
       "tool_calls": 3,
@@ -141,6 +151,68 @@ class ToolFrictionTests(unittest.TestCase):
     )
     self.assertEqual(result["overall"]["tool_calls"], 0)
     self.assertEqual(result["run_totals"]["completed_runs"], 1)
+
+  def test_correlates_skill_pointer_followups_and_same_turn_exact_repeats(self):
+    db = self.tmp_path / "test.db"
+    con = _db(db)
+    now = dt.datetime(2026, 8, 11, 2, tzinfo=dt.timezone.utc)
+    messages = [{
+      "role": "assistant",
+      "ts": int((now - dt.timedelta(minutes=5)).timestamp() * 1000),
+      "blocks": [
+        {
+          "type": "tool", "tool": "Bash",
+          "input": "cat /data/.codex/skills/visual-testing/SKILL.md",
+          "output_exit_code": 0, "output_full_len": 300,
+        },
+        {
+          "type": "tool", "tool": "Bash",
+          "input": "cat /data/shared/skills/visual-testing.md",
+          "output_exit_code": 0, "output_full_len": 9_000,
+        },
+        {
+          "type": "tool", "tool": "Bash", "input": "git status --short",
+          "output_exit_code": 0, "output_full_len": 20,
+        },
+        {
+          "type": "tool", "tool": "Bash", "input": "git status --short",
+          "output_exit_code": 0, "output_full_len": 20,
+        },
+        {
+          "type": "tool", "tool": "Edit", "input": "/data/app/index.jsx",
+          "output_exit_code": 0, "output_full_len": 0,
+        },
+        {
+          "type": "tool", "tool": "Edit", "input": "/data/app/index.jsx",
+          "output_exit_code": 0, "output_full_len": 0,
+        },
+      ],
+    }]
+    con.execute(
+      "insert into chats values (?,?,?)",
+      ("chat-1", "Avoidable calls", json.dumps(messages)),
+    )
+    con.commit()
+    con.close()
+
+    result = tool_friction.analyse_database(
+      str(db), since="2026-08-11T00:00:00Z", now=now,
+    )
+
+    candidates = result["avoidable_call_candidates"]
+    self.assertEqual(candidates["skill_read_indirection"], {
+      "chains": 1,
+      "extra_tool_calls": 1,
+      "candidate_output_bytes": 300,
+      "chat_count": 1,
+      "top_skills": [{"skill": "visual-testing", "chains": 1}],
+    })
+    self.assertEqual(candidates["same_turn_exact_success_repeats"], [{
+      "family": "git status",
+      "extra_tool_calls": 1,
+      "candidate_output_bytes": 20,
+      "chat_count": 1,
+    }])
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ test('morning push is idempotent per day and fails open', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'reflection-push-'))
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
   await mkdir(join(dataDir, 'cron-logs'), { recursive: true })
+  const runner = join(dataDir, 'runner.py')
+  await writeFile(runner, 'raise SystemExit(0)\n')
 
   // fetch.sh names the brief with the server-local date (`date +%F`); the
   // dedupe guard compares sent_at (UTC) against the current UTC date. Both
@@ -81,7 +83,8 @@ test('morning push is idempotent per day and fails open', async () => {
       ...process.env,
       API_BASE_URL: `http://127.0.0.1:${port}`,
       DATA_DIR: dataDir,
-      REFLECTION_DRY: '1',
+      REFLECTION_DRY: '0',
+      REFLECTION_RUNNER: runner,
       REFLECTION_TIMEOUT: '5',
       REFLECTION_RESOURCE_WARN_PERCENT: '100',
       REFLECTION_RESOURCE_CRITICAL_PERCENT: '101',
@@ -121,6 +124,60 @@ test('morning push is idempotent per day and fails open', async () => {
     historyStatus = 503
     await run()
     assert.equal(sends.length, 1)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+    await rm(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('dry rehearsal cannot notify or replace the last real effort receipt', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'reflection-dry-'))
+  await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
+  await mkdir(join(dataDir, 'cron-logs'), { recursive: true })
+  await mkdir(join(dataDir, 'apps', '1', 'reports'), { recursive: true })
+  await mkdir(join(dataDir, 'apps', 'reflection', 'inputs'), { recursive: true })
+  const effort = join(dataDir, 'apps', 'reflection', 'inputs', 'latest-effort.json')
+  await writeFile(effort, '{"real":true}\n')
+  const d = new Date()
+  const localDate = [
+    d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
+    String(d.getDate()).padStart(2, '0'),
+  ].join('-')
+  await writeFile(
+    join(dataDir, 'apps', '1', 'reports', `${localDate}.html`),
+    '<html>existing brief</html>\n',
+  )
+  let sends = 0
+  const server = createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost')
+    if (request.method === 'POST' && url.pathname === '/api/notifications/send') sends += 1
+    request.resume()
+    return json(response, 404, { detail: 'Not found' })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  try {
+    await execFileAsync('bash', [join(appRoot, 'fetch.sh'), '1'], {
+      cwd: appRoot,
+      env: {
+        ...process.env,
+        API_BASE_URL: `http://127.0.0.1:${port}`,
+        DATA_DIR: dataDir,
+        REFLECTION_DRY: '1',
+        REFLECTION_TIMEOUT: '5',
+        REFLECTION_RESOURCE_WARN_PERCENT: '100',
+        REFLECTION_RESOURCE_CRITICAL_PERCENT: '101',
+        CODEX_HOME: join(dataDir, 'codex-home'),
+        CLAUDE_CONFIG_DIR: join(dataDir, 'claude-home'),
+      },
+    })
+    assert.equal(sends, 0)
+    assert.equal(await readFile(effort, 'utf8'), '{"real":true}\n')
+    assert.match(
+      await readFile(join(dataDir, 'cron-logs', 'reflection.log'), 'utf8'),
+      /morning push: skip \(dry run\)/,
+    )
   } finally {
     server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))

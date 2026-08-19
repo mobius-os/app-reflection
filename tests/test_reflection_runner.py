@@ -1,6 +1,7 @@
 import asyncio
 import json
 import io
+from datetime import date
 from pathlib import Path
 import tempfile
 import threading
@@ -8,6 +9,29 @@ import unittest
 from unittest import mock
 
 import reflection_runner
+
+
+class BriefTemplateSeedTests(unittest.TestCase):
+  def test_seed_owns_the_utc_report_date_and_weekday(self):
+    with tempfile.TemporaryDirectory() as raw:
+      root = Path(raw)
+      source = root / "template.html"
+      destination = root / "staged" / "template.html"
+      source.write_text(
+        "<title>{{DATE}}</title><p>{{DATE_LONG}}</p><p>{{SUMMARY}}</p>",
+        encoding="utf-8",
+      )
+      with (
+        mock.patch.object(reflection_runner, "BAKED_BRIEF_TEMPLATE", source),
+        mock.patch.object(reflection_runner, "BRIEF_TEMPLATE_DEST", destination),
+      ):
+        reflection_runner.seed_brief_template(date(2026, 8, 17))
+
+      self.assertEqual(
+        destination.read_text(encoding="utf-8"),
+        "<title>2026-08-17</title><p>Monday, 17 August 2026</p>"
+        "<p>{{SUMMARY}}</p>",
+      )
 
 
 class ClaudeSessionDrainTests(unittest.TestCase):
@@ -23,6 +47,8 @@ class ClaudeSessionDrainTests(unittest.TestCase):
     second.data = {"session_id": "session-2"}
     result = ResultMessage()
     result.is_error = False
+    result.total_cost_usd = 1.25
+    result.usage = {"input_tokens": 100, "output_tokens": 20}
 
     class Client:
       async def receive_response(self):
@@ -32,11 +58,105 @@ class ClaudeSessionDrainTests(unittest.TestCase):
     with mock.patch.object(reflection_runner, "_log") as log:
       outcome = asyncio.run(reflection_runner._drain_session(Client(), None))
 
-    self.assertEqual(outcome, (True, False, False, False))
+    self.assertEqual(outcome, (
+      True, False, False, False, 1.25,
+      {"input_tokens": 100, "output_tokens": 20},
+    ))
     self.assertEqual(log.call_args_list, [
       mock.call("claude session initialized session_id=session-1"),
       mock.call("claude session initialized session_id=session-2"),
     ])
+
+  def test_model_usage_receipt_keeps_cost_and_work_context(self):
+    with tempfile.TemporaryDirectory() as raw:
+      root = Path(raw)
+      inputs = root / "apps" / "reflection" / "inputs"
+      inputs.mkdir(parents=True)
+      (inputs / "chats-status.json").write_text('{"chat_count":7}')
+      (inputs / "memory-health.json").write_text(
+        '{"recall_activity":{"chat_days":3}}',
+      )
+      (inputs / "input-manifest.json").write_text(
+        '{"items":[{"bytes":100},{"bytes":250}]}',
+      )
+      (inputs / "tool-friction.json").write_text(json.dumps({
+        "run_totals": {
+          "completed_runs": 9, "chat_count": 4,
+          "total_tokens": 5000, "cost_usd": 2.25,
+        },
+      }))
+      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+        reflection_runner._write_model_usage(
+          provider="claude", model="test", goal="abc",
+          system_prompt="system", cost_usd=1.5,
+          usage={"input_tokens": 120, "private_text": "drop me"},
+        )
+        reflection_runner._write_model_usage(
+          provider="codex", model=None, goal="abc",
+          system_prompt="system", cost_usd=None,
+          usage={"input_tokens": 80, "output_tokens": 10},
+        )
+
+      receipt = json.loads((inputs / "model-usage.json").read_text())
+      self.assertEqual(receipt["reported_cost_usd"], 1.5)
+      self.assertEqual(receipt["cost_reported_attempts"], 1)
+      self.assertEqual(receipt["attempts"], [
+        {
+          "provider": "claude", "model": "test", "cost_usd": 1.5,
+          "usage": {"input_tokens": 120},
+        },
+        {
+          "provider": "codex", "model": None, "cost_usd": None,
+          "usage": {"input_tokens": 80, "output_tokens": 10},
+        },
+      ])
+      self.assertEqual(receipt["work_context"], {
+        "chat_count": 7,
+        "memory_recall_chat_days": 3,
+        "staged_input_bytes": 350,
+        "system_prompt_chars": 6,
+        "goal_chars": 3,
+        "chat_agent_work": {
+          "completed_runs": 9, "chat_count": 4,
+          "total_tokens": 5000, "cost_usd": 2.25,
+        },
+      })
+
+  def test_model_usage_receipt_bounds_attempts_before_totalling(self):
+    with tempfile.TemporaryDirectory() as raw:
+      root = Path(raw)
+      inputs = root / "apps" / "reflection" / "inputs"
+      inputs.mkdir(parents=True)
+      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+        for index in range(5):
+          reflection_runner._write_model_usage(
+            provider="test", model=None, goal="", system_prompt="",
+            cost_usd=None if index == 4 else 1,
+            usage={"total_tokens": index + 1},
+          )
+
+      receipt = json.loads((inputs / "model-usage.json").read_text())
+      self.assertEqual(len(receipt["attempts"]), 4)
+      self.assertEqual(
+        [item["usage"]["total_tokens"] for item in receipt["attempts"]],
+        [2, 3, 4, 5],
+      )
+      self.assertEqual(receipt["reported_cost_usd"], 3)
+      self.assertEqual(receipt["cost_reported_attempts"], 3)
+
+  def test_model_usage_receipt_does_not_call_unreported_cost_zero(self):
+    with tempfile.TemporaryDirectory() as raw:
+      root = Path(raw)
+      inputs = root / "apps" / "reflection" / "inputs"
+      inputs.mkdir(parents=True)
+      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+        reflection_runner._write_model_usage(
+          provider="test", model=None, goal="", system_prompt="",
+          cost_usd=None, usage={"total_tokens": 1},
+        )
+      receipt = json.loads((inputs / "model-usage.json").read_text())
+      self.assertIsNone(receipt["reported_cost_usd"])
+      self.assertEqual(receipt["cost_reported_attempts"], 0)
 
 
 class CodexLogBroadcastTests(unittest.TestCase):

@@ -257,6 +257,7 @@ class ReflectionInputsTests(unittest.TestCase):
 
     chats = (self.tmp_path / "chats.md").read_text(encoding="utf-8")
     self.assertEqual(status["chat_count"], 25)
+    self.assertEqual(status["subject_ids"], [f"chat-{index:02}" for index in range(25)])
     self.assertLess(chats.index("`chat-00`"), chats.index("`chat-24`"))
 
   def test_deleted_chat_backlog_paginates_until_the_checkpoint(self):

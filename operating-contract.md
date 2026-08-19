@@ -49,6 +49,15 @@ stays here.
 - The app injects its base style into every brief, including hand-written
   fallback ones — the `details`/`summary`/`.item`/`.lede` styling ships with
   the app, so structure is all a brief owes.
+- Read `inputs/effort-summary.json`. When `window_runs` is nonzero, include
+  exactly one compact line in collapsed report details: **Average token ratio —
+  X% across N comparable runs**. Use `average_token_ratio` exactly; do not
+  recompute it, substitute cost, or add the other receipt fields. Put that
+  sentence in its own paragraph; never append unrelated diagnostics or build a
+  general run-receipts rollup around it. Operational evidence belongs in a
+  normal report item only when it independently clears the report's
+  trigger/why/next-action bar. This ratio is context, never a target. Omit the
+  line when no comparable run exists.
 
 ## Header state — also the push body
 

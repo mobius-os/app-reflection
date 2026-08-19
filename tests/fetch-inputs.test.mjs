@@ -20,6 +20,12 @@ function json(response, status, value) {
 test('fetch stages an exact activity snapshot and fails closed while retaining it', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'reflection-fetch-'))
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
+  const legacyRuntime = join(dataDir, 'apps', 'reflection')
+  await mkdir(legacyRuntime, { recursive: true })
+  await writeFile(
+    join(legacyRuntime, 'reflection-checkpoint.json'),
+    '{"schema":1,"since":"2026-07-20T06:00:00Z"}\n',
+  )
   const cronLogs = join(dataDir, 'cron-logs')
   await mkdir(cronLogs, { recursive: true })
   const legacyNoise = [
@@ -129,7 +135,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     const memoryHealth = JSON.parse(await readFile(join(inputs, 'memory-health.json'), 'utf8'))
     const housekeeping = JSON.parse(await readFile(join(inputs, 'housekeeping.json'), 'utf8'))
     const manifest = JSON.parse(await readFile(join(inputs, 'input-manifest.json'), 'utf8'))
-    const resourceHistory = await readFile(join(dataDir, 'apps', 'reflection', 'resource-history.jsonl'), 'utf8')
+    const resourceHistory = await readFile(join(dataDir, 'apps', '1', 'resource-history.jsonl'), 'utf8')
     const stagedResourceHistory = await readFile(join(inputs, 'resource-history.jsonl'), 'utf8')
     const runHistory = await readFile(join(inputs, 'reflection-run-history.txt'), 'utf8')
     const archivedLog = await readFile(join(cronLogs, 'reflection.log.1'), 'utf8')
@@ -197,6 +203,10 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     assert.equal(metaStateStatus.exists, true)
     assert.equal(metaStateStatus.first_run_seed, true)
     assert.equal(metaLearning, '')
+    assert.equal(
+      await readFile(join(dataDir, 'apps', '1', 'reflection-checkpoint.json'), 'utf8'),
+      '{"schema":1,"since":"2026-07-20T06:00:00Z"}\n',
+    )
     assert.match(chats, /messages=7, note_bytes=13/)
     assert.match(chats, /\[deleted\].*Deleted but useful/)
     assert.equal(chatsStatus.active_ok, true)
@@ -210,7 +220,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       change: 'Added adaptive review cadence',
       revisit_after: '2026-07-24',
     })
-    await writeFile(join(dataDir, 'apps', 'reflection', 'meta-learning.jsonl'), `${learning}\nnot-json\n`)
+    await writeFile(join(dataDir, 'apps', '1', 'meta-learning.jsonl'), `${learning}\nnot-json\n`)
 
     failActivity = true
     await run()

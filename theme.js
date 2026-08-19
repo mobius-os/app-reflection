@@ -456,6 +456,30 @@ button.rf-card { cursor: pointer; }
 .rf-section-label { font-size: 14.5px; font-weight: 700; letter-spacing: 0; margin: 0; }
 .rf-note { font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.55; }
 .rf-note-strong { color: var(--text); font-weight: 650; }
+.rf-settings-advanced {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+}
+.rf-settings-advanced > summary {
+  min-height: 64px; padding: 12px 18px; display: grid; grid-template-columns: auto 1fr;
+  align-items: center; column-gap: 12px; cursor: pointer; list-style: none;
+}
+.rf-settings-advanced > summary::-webkit-details-marker { display: none; }
+.rf-settings-advanced > summary::after {
+  content: '›'; grid-column: 3; grid-row: 1 / span 2; color: var(--muted);
+  font-size: 22px; transform: rotate(90deg); transition: transform .16s ease-out;
+}
+.rf-settings-advanced[open] > summary::after { transform: rotate(-90deg); }
+.rf-settings-advanced > summary span {
+  grid-row: 1 / span 2; color: var(--muted); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.rf-settings-advanced > summary strong { color: var(--text); font-size: 14px; }
+.rf-settings-advanced > summary small { color: var(--muted); font-size: 11.5px; }
+.rf-settings-advanced-body {
+  display: flex; flex-direction: column; gap: 12px; padding: 0 18px 18px;
+  border-top: 1px solid var(--border);
+}
+.rf-settings-advanced-body > .rf-note { margin-top: 16px; }
 .rf-time-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
 .rf-time-input {
   min-height: 44px; padding: 9px 12px; font-size: 16px; font-family: var(--font); font-weight: 600;
@@ -564,7 +588,6 @@ button.rf-card { cursor: pointer; }
 .mobius-model-sheet__row-id { color:var(--muted); font:12px var(--mono); }
 .mobius-model-sheet__check { width:18px; height:18px; flex:none; position:relative; border-radius:50%; background:var(--accent); border:1.5px solid var(--accent); }
 .mobius-model-sheet__check::after { content:''; position:absolute; left:5px; top:2px; width:5px; height:9px; border:1.5px solid var(--accent-fg); border-top:0; border-left:0; transform:rotate(45deg); }
-.mobius-model-sheet__empty { padding:16px 10px; color:var(--muted); font-size:13px; }
 @media (hover:hover) and (pointer:fine) {
   .mobius-model-trigger:hover { border-color:var(--accent); }
   .mobius-model-sheet__row:hover:not(:disabled) { background:color-mix(in srgb,var(--accent) 8%,var(--surface)); }
