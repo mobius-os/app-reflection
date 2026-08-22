@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-VERSION = 5
+VERSION = 7
 DEFAULT_DB = "/data/db/ultimate.db"
 
 _CODEX_SKILL_ENTRY = re.compile(
@@ -155,6 +155,14 @@ def _skill_entry_names(command: str) -> tuple[set[str], set[str]]:
   )
 
 
+def _is_noop_command(tool: str, text: str) -> bool:
+  """A shell call that cannot advance work or wait for anything."""
+  if tool not in {"Bash", "Shell", "exec_command"}:
+    return False
+  command = " ".join(_command_text(text).split())
+  return bool(re.fullmatch(r"(?::|true)(?:\s*(?:;|&&)\s*(?::|true))*", command))
+
+
 def _empty_surface() -> dict[str, Any]:
   return {
     "tool_calls": 0,
@@ -246,6 +254,11 @@ def analyse_database(
     "skills": Counter(),
   }
   exact_repeat_candidates: dict[str, dict[str, Any]] = {}
+  no_op_calls = {
+    "tool_calls": 0,
+    "candidate_output_bytes": 0,
+    "chat_ids": set(),
+  }
   daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
     "tool_calls": 0, "failed_calls": 0, "truncated_calls": 0,
     "completed_runs": 0, "cost_usd": 0.0, "cost_reported_runs": 0,
@@ -314,6 +327,10 @@ def analyse_database(
         if failure_class:
           failure_classes[failure_class] += 1
           failure_families[_command_family(tool, command)] += 1
+        if not failed and _is_noop_command(tool, command):
+          no_op_calls["tool_calls"] += 1
+          no_op_calls["candidate_output_bytes"] += output_bytes
+          no_op_calls["chat_ids"].add(chat_id)
 
         for name, pattern in PRIMITIVES.items():
           if not pattern.search(searchable_command):
@@ -354,12 +371,15 @@ def analyse_database(
           "signature": signature,
           "family": family,
           "failed": failed,
-          # Write/edit transcript blocks retain only their target path, not the
-          # full mutation. Two edits to one file are therefore not proven
-          # duplicates even when their privacy-safe signatures match.
+          # Write/edit blocks retain only the target, not the mutation; Read
+          # blocks likewise omit their line ranges. Repeated paths from those
+          # tools are therefore not proven duplicates.
           "repeatable": (
             bool(searchable_command.strip())
-            and tool not in {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+            and not _is_noop_command(tool, command)
+            and tool not in {
+              "Edit", "Write", "MultiEdit", "NotebookEdit", "Read",
+            }
           ),
           "output_bytes": output_bytes,
           "project_skills": project_skills,
@@ -524,6 +544,11 @@ def analyse_database(
       name: _serialise_surface(surfaces[name]) for name in PRIMITIVES
     },
     "avoidable_call_candidates": {
+      "shell_no_op_calls": {
+        "tool_calls": no_op_calls["tool_calls"],
+        "candidate_output_bytes": no_op_calls["candidate_output_bytes"],
+        "chat_count": len(no_op_calls["chat_ids"]),
+      },
       "skill_read_indirection": {
         "chains": skill_indirections["chains"],
         "extra_tool_calls": skill_indirections["extra_tool_calls"],
@@ -624,9 +649,16 @@ def format_report(data: dict[str, Any]) -> str:
       f"truncated={item['truncated_calls']:3}  chats={item['chat_count']:3}"
     )
   candidates = data.get("avoidable_call_candidates") or {}
+  no_ops = candidates.get("shell_no_op_calls") or {}
   indirection = candidates.get("skill_read_indirection") or {}
-  if indirection.get("chains"):
+  if indirection.get("chains") or no_ops.get("tool_calls"):
     lines.append("  avoidable-call candidates:")
+  if no_ops.get("tool_calls"):
+    lines.append(
+      "    shell no-op calls "
+      f"calls={no_ops['tool_calls']}  chats={no_ops['chat_count']}"
+    )
+  if indirection.get("chains"):
     lines.append(
       "    skill read indirection "
       f"chains={indirection['chains']}  "
