@@ -210,6 +210,20 @@ class ToolFrictionTests(unittest.TestCase):
           "type": "tool", "tool": "Edit", "input": "/data/app/index.jsx",
           "output_exit_code": 0, "output_full_len": 0,
         },
+        {
+          "type": "tool", "tool": "Read", "input": "/data/app/index.jsx",
+          "output_exit_code": 0, "output_full_len": 4_000,
+        },
+        {
+          # Read transcript inputs retain only the target path, not distinct
+          # line ranges, so these are not proven exact-call duplicates.
+          "type": "tool", "tool": "Read", "input": "/data/app/index.jsx",
+          "output_exit_code": 0, "output_full_len": 6_000,
+        },
+        {
+          "type": "tool", "tool": "Bash", "input": "true",
+          "output_exit_code": 0, "output_full_len": 0,
+        },
       ],
     }]
     con.execute(
@@ -224,6 +238,11 @@ class ToolFrictionTests(unittest.TestCase):
     )
 
     candidates = result["avoidable_call_candidates"]
+    self.assertEqual(candidates["shell_no_op_calls"], {
+      "tool_calls": 1,
+      "candidate_output_bytes": 0,
+      "chat_count": 1,
+    })
     self.assertEqual(candidates["skill_read_indirection"], {
       "chains": 1,
       "extra_tool_calls": 1,
