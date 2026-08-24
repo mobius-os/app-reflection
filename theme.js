@@ -73,11 +73,14 @@ export const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. Diverge below the marker only. */
 .rf-header {
-  flex: 0 0 auto;
+  flex: 0 0 auto; width: 100%; background: var(--bg); border-bottom: 1px solid var(--border);
+  position: relative; z-index: 1;
+}
+.rf-header-inner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
-  padding: max(22px, env(safe-area-inset-top)) 20px 0;
-  position: relative; z-index: 1;
+  width: 100%; max-width: 700px; margin-inline: auto;
+  padding: max(22px, env(safe-area-inset-top)) 20px 16px;
 }
 .rf-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .rf-brand-icon {
@@ -221,7 +224,6 @@ button.rf-card { cursor: pointer; }
   background: radial-gradient(120% 90% at 18% -10%, ${ACCENT_DIM} 0%, transparent 55%), radial-gradient(110% 80% at 92% -20%, ${ACCENT_DIM_2} 0%, transparent 60%);
   pointer-events: none; z-index: 0;
 }
-.rf-divider { height: 1px; background: var(--border); margin: 16px 20px 0; position: relative; z-index: 1; }
 
 /* Streak badge — header pill + standalone streak bar share the base; the bar
    variant bumps padding + font. */
@@ -713,4 +715,22 @@ button.rf-card { cursor: pointer; }
   }
 }
 /* /mobius-ui:ReducedMotion */
+
+/* mobius-ui:CenteredRail v1 */
+@media (min-width: 900px) {
+  .rf-root {
+    background: radial-gradient(ellipse 62% 88% at 50% 48%,
+      color-mix(in srgb, var(--accent) 9%, var(--surface)) 0%,
+      color-mix(in srgb, var(--accent) 3%, var(--surface)) 38%,
+      var(--surface) 100%);
+  }
+  .rf-root::before {
+    content: ""; position: absolute; inset-block: 0; left: 50%;
+    width: min(100%, 700px); transform: translateX(-50%);
+    background: var(--bg); pointer-events: none;
+  }
+  .rf-header { width: min(100%, 700px); margin-inline: auto; }
+  .rf-aurora { inset-inline: auto; left: 50%; width: min(100%, 700px); transform: translateX(-50%); }
+}
+/* /mobius-ui:CenteredRail */
 `
