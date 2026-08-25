@@ -73,11 +73,14 @@ export const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. Diverge below the marker only. */
 .rf-header {
-  flex: 0 0 auto;
+  flex: 0 0 auto; width: 100%; background: var(--bg); border-bottom: 1px solid var(--border);
+  position: relative; z-index: 1;
+}
+.rf-header-inner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
-  padding: max(22px, env(safe-area-inset-top)) 20px 0;
-  position: relative; z-index: 1;
+  width: 100%; max-width: 760px; margin-inline: auto;
+  padding: max(22px, env(safe-area-inset-top)) 20px 16px;
 }
 .rf-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .rf-brand-icon {
@@ -713,26 +716,13 @@ button.rf-card { cursor: pointer; }
 }
 /* /mobius-ui:ReducedMotion */
 
-/* mobius-ui:CenteredRail v1 — a full-bleed band carries the surface color while
-   the header row itself stays centered. Header v1 stays in sync above; every
-   rail-specific override lives here. */
-.rf-header-band {
-  flex: 0 0 auto; width: 100%;
-  background: var(--bg); border-bottom: 1px solid var(--border);
-  position: relative; z-index: 1;
-}
-.rf-header { width: 100%; max-width: 700px; margin-inline: auto; padding-bottom: 16px; }
+/* mobius-ui:CenteredRail v1 */
 @media (min-width: 900px) {
   .rf-root {
-    background:
-      linear-gradient(var(--bg), var(--bg)) center / min(100%, 700px) 100% no-repeat,
-      radial-gradient(ellipse 76% 112% at 50% 46%,
-        color-mix(in srgb, var(--accent) 18%, var(--bg)) 0%,
-        color-mix(in srgb, var(--accent) 7%, var(--bg)) 46%,
-        color-mix(in srgb, var(--text) 2%, var(--bg)) 100%);
+
   }
-  .rf-header-band { width: min(100%, 700px); margin-inline: auto; }
-  .rf-aurora { inset-inline: auto; left: 50%; width: min(100%, 700px); transform: translateX(-50%); }
+  .rf-header { width: min(100%, 760px); margin-inline: auto; }
+  .rf-aurora { inset-inline: auto; left: 50%; width: min(100%, 760px); transform: translateX(-50%); }
 }
 /* /mobius-ui:CenteredRail */
 `

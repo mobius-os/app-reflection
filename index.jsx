@@ -171,70 +171,70 @@ export default function App({ appId, token }) {
     <div className="rf-root">
       <style>{CSS}</style>
       <div className="rf-aurora" aria-hidden="true" />
-      <div className="rf-header-band">
-        <header className="rf-header">
-          <div className="rf-brand">
-            {/* Brand mark: the app's real glossy icon (downscaled + cached).
-                Falls back to an accent tile when this install
-                has no custom icon and the route 404s. */}
-            <img
-              src={`/api/apps/${appId}/icon?size=64`}
-              alt=""
-              width={26}
-              height={26}
-              className="rf-brand-icon"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none'
-                const f = e.currentTarget.nextElementSibling
-                if (f) f.style.display = 'flex'
-              }}
-            />
-            <span className="rf-brand-fallback" style={{ display: 'none' }} aria-hidden="true">R</span>
-            <div className="rf-brand-copy">
-              <h1>Reflection</h1>
-              <span>Daily briefs from your agent</span>
-            </div>
+      <header className="rf-header">
+        <div className="rf-header-inner">
+        <div className="rf-brand">
+          {/* Brand mark: the app's real glossy icon (downscaled + cached).
+              Falls back to an accent tile when this install
+              has no custom icon and the route 404s. */}
+          <img
+            src={`/api/apps/${appId}/icon?size=64`}
+            alt=""
+            width={26}
+            height={26}
+            className="rf-brand-icon"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none'
+              const f = e.currentTarget.nextElementSibling
+              if (f) f.style.display = 'flex'
+            }}
+          />
+          <span className="rf-brand-fallback" style={{ display: 'none' }} aria-hidden="true">R</span>
+          <div className="rf-brand-copy">
+            <h1>Reflection</h1>
+            <span>Daily briefs from your agent</span>
           </div>
-          <div className="rf-header-right">
-            {headerStreak >= 1 && (
-              <span className="rf-streak-badge" title={`${headerStreak} mornings in a row`}>
-                <span aria-hidden="true">🔥</span>
-                {headerStreak}
-              </span>
-            )}
-            <div className="rf-seg" role="tablist" aria-label="View">
-              <button
-                id="rf-tab-reports"
-                ref={(node) => { tabRefs.current[0] = node }}
-                type="button"
-                role="tab"
-                aria-selected={tab === 'reports'}
-                aria-controls="rf-panel-reports"
-                tabIndex={tab === 'reports' ? 0 : -1}
-                className={`rf-seg-btn${tab === 'reports' ? ' is-active' : ''}`}
-                onClick={() => selectTab('reports')}
-                onKeyDown={(event) => onTabKeyDown(event, 0)}
-              >
-                Briefs
-              </button>
-              <button
-                id="rf-tab-settings"
-                ref={(node) => { tabRefs.current[1] = node }}
-                type="button"
-                role="tab"
-                aria-selected={tab === 'settings'}
-                aria-controls="rf-panel-settings"
-                tabIndex={tab === 'settings' ? 0 : -1}
-                className={`rf-seg-btn${tab === 'settings' ? ' is-active' : ''}`}
-                onClick={() => selectTab('settings')}
-                onKeyDown={(event) => onTabKeyDown(event, 1)}
-              >
-                Settings
-              </button>
-            </div>
+        </div>
+        <div className="rf-header-right">
+          {headerStreak >= 1 && (
+            <span className="rf-streak-badge" title={`${headerStreak} mornings in a row`}>
+              <span aria-hidden="true">🔥</span>
+              {headerStreak}
+            </span>
+          )}
+          <div className="rf-seg" role="tablist" aria-label="View">
+            <button
+              id="rf-tab-reports"
+              ref={(node) => { tabRefs.current[0] = node }}
+              type="button"
+              role="tab"
+              aria-selected={tab === 'reports'}
+              aria-controls="rf-panel-reports"
+              tabIndex={tab === 'reports' ? 0 : -1}
+              className={`rf-seg-btn${tab === 'reports' ? ' is-active' : ''}`}
+              onClick={() => selectTab('reports')}
+              onKeyDown={(event) => onTabKeyDown(event, 0)}
+            >
+              Briefs
+            </button>
+            <button
+              id="rf-tab-settings"
+              ref={(node) => { tabRefs.current[1] = node }}
+              type="button"
+              role="tab"
+              aria-selected={tab === 'settings'}
+              aria-controls="rf-panel-settings"
+              tabIndex={tab === 'settings' ? 0 : -1}
+              className={`rf-seg-btn${tab === 'settings' ? ' is-active' : ''}`}
+              onClick={() => selectTab('settings')}
+              onKeyDown={(event) => onTabKeyDown(event, 1)}
+            >
+              Settings
+            </button>
           </div>
-        </header>
-      </div>
+        </div>
+        </div>
+      </header>
       <div className="rf-scroll">
         {deadLetter && (
           <div className="rf-deadletter" role="alert">
