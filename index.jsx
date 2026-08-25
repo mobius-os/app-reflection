@@ -171,7 +171,8 @@ export default function App({ appId, token }) {
     <div className="rf-root">
       <style>{CSS}</style>
       <div className="rf-aurora" aria-hidden="true" />
-      <div className="rf-header">
+      <header className="rf-header">
+        <div className="rf-header-inner">
         <div className="rf-brand">
           {/* Brand mark: the app's real glossy icon (downscaled + cached).
               Falls back to an accent tile when this install
@@ -232,8 +233,8 @@ export default function App({ appId, token }) {
             </button>
           </div>
         </div>
-      </div>
-      <div className="rf-divider" />
+        </div>
+      </header>
       <div className="rf-scroll">
         {deadLetter && (
           <div className="rf-deadletter" role="alert">
