@@ -226,6 +226,23 @@ export const REPORT_BASE_STYLE = `<style>
   :where(.brief, body > article, body > main) .badge.review { color: var(--amber, #d29a3a); }
   :where(.brief, body > article, body > main) .badge.risk { color: var(--danger, #e26a63); }
 
+  /* Reflection no longer emits generic chat handoffs. Hide the obsolete block
+     in historical self-contained briefs too: the app already owns discussion. */
+  .handoff { display: none !important; }
+
+  :where(.brief, body > article, body > main) .run-facts {
+    display: grid; gap: var(--sp-2); margin: var(--sp-3) 0 0;
+  }
+  :where(.brief, body > article, body > main) .run-facts > div {
+    display: grid; grid-template-columns: minmax(8rem, 11rem) 1fr;
+    gap: var(--sp-3); padding: var(--sp-2) 0;
+    border-top: 1px solid var(--border, #e4e1dc);
+  }
+  :where(.brief, body > article, body > main) .run-facts dt {
+    color: var(--muted, #6b6862); font-size: var(--step--1); font-weight: 650;
+  }
+  :where(.brief, body > article, body > main) .run-facts dd { margin: 0; }
+
   /* /mobius-ui:BriefStyle */
 </style>`
 

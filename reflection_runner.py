@@ -804,7 +804,7 @@ def build_goal(settings: dict) -> str:
     "                          so do not raise a watch about it.",
     "  - meta-state-status.json  identity, age, hash, and cold-start status for",
     "                          the canonical live model. meta-state.md is a",
-    f"                          read-only snapshot; Read {DATA_DIR / 'apps' / 'reflection' / 'meta-state.md'}",
+    f"                          read-only snapshot; Read {(reflection_storage_dir() or DATA_DIR / 'apps' / 'reflection') / 'meta-state.md'}",
     "                          before editing that same live path.",
     "  - meta-learning.jsonl  recent durable discoveries about your own",
     "                          effectiveness; use it to avoid rediscovery and",

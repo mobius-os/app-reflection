@@ -417,20 +417,75 @@ def _allocated_bytes(stat_result: os.stat_result) -> int:
   return blocks * 512 if isinstance(blocks, int) else stat_result.st_size
 
 
+# Provider session/transcript stores whose stale bytes are the primary
+# disk-reclaim signal. These are measured directly (not via the budget-limited
+# full walk) so the numbers are reliable even when the deep scan cannot reach
+# them before its deadline — otherwise an unreached dir reports a misleading 0.
+SESSION_DIRS = {
+  "codex": "cli-auth/codex/sessions",
+  "claude": "cli-auth/claude/projects",
+}
+
+
+def _measure_session_history(
+  data_dir: Path, *, now: dt.datetime, budget_seconds: int
+) -> dict[str, Any]:
+  deadline = time.monotonic() + max(1, budget_seconds)
+  now_ts = now.timestamp()
+  result: dict[str, Any] = {}
+  for provider, rel in SESSION_DIRS.items():
+    entry = {"older_than_14d_bytes": 0, "older_than_45d_bytes": 0, "complete": True}
+    base = data_dir / rel
+    seen: set[tuple[int, int]] = set()
+    if base.exists():
+      for root, dirs, files in os.walk(base, followlinks=False):
+        if time.monotonic() >= deadline:
+          entry["complete"] = False
+          dirs.clear()
+          break
+        root_path = Path(root)
+        for name in files:
+          if time.monotonic() >= deadline:
+            entry["complete"] = False
+            dirs.clear()
+            break
+          try:
+            st = (root_path / name).stat(follow_symlinks=False)
+          except OSError:
+            continue
+          key = (st.st_dev, st.st_ino)
+          if key in seen:
+            continue
+          seen.add(key)
+          allocated = _allocated_bytes(st)
+          age_days = (now_ts - st.st_mtime) / 86400
+          if age_days > SESSION_AGE_DAYS[0]:
+            entry["older_than_14d_bytes"] += allocated
+          if age_days > SESSION_AGE_DAYS[1]:
+            entry["older_than_45d_bytes"] += allocated
+    result[provider] = entry
+  return result
+
+
 def _deep_scan(data_dir: Path, *, now: dt.datetime) -> dict[str, Any]:
   budget = _env_int(
     "REFLECTION_RESOURCE_DEEP_SCAN_BUDGET_SECONDS",
     DEFAULT_DEEP_BUDGET_SECONDS,
     minimum=1,
   )
+  # Measure the provider session stores first, with their own small budget, so
+  # the reclaim-relevant numbers are reliable even if the full walk below cannot
+  # reach cli-auth before its deadline.
+  session_budget = _env_int(
+    "REFLECTION_RESOURCE_SESSION_BUDGET_SECONDS", 8, minimum=1,
+  )
+  session_age = _measure_session_history(
+    data_dir, now=now, budget_seconds=session_budget
+  )
   deadline = time.monotonic() + budget
   categories: dict[str, int] = {}
   browser_profiles: dict[str, int] = {}
   browser_cache_bytes = 0
-  session_age = {
-    "codex": {"older_than_14d_bytes": 0, "older_than_45d_bytes": 0},
-    "claude": {"older_than_14d_bytes": 0, "older_than_45d_bytes": 0},
-  }
   files_seen = 0
   dirs_seen = 0
   complete = True
@@ -488,19 +543,6 @@ def _deep_scan(data_dir: Path, *, now: dt.datetime) -> dict[str, Any]:
         browser_profiles[profile] = browser_profiles.get(profile, 0) + allocated
         if any(part in CACHE_PARTS for part in parts[2:]):
           browser_cache_bytes += allocated
-
-      age_days = (now.timestamp() - st.st_mtime) / 86400
-      rel = "/".join(parts)
-      provider = None
-      if rel.startswith("cli-auth/codex/sessions/"):
-        provider = "codex"
-      elif rel.startswith("cli-auth/claude/projects/"):
-        provider = "claude"
-      if provider:
-        if age_days > SESSION_AGE_DAYS[0]:
-          session_age[provider]["older_than_14d_bytes"] += allocated
-        if age_days > SESSION_AGE_DAYS[1]:
-          session_age[provider]["older_than_45d_bytes"] += allocated
 
   top_profiles = [
     {"name": name, "bytes": size}

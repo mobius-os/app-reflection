@@ -235,6 +235,59 @@ class ReflectionInputsTests(unittest.TestCase):
     self.assertLess(chats.index("`active`"), chats.index("`deleted`"))
     self.assertIn("updated 2026-08-09T10:00:00Z", chats)
 
+  def test_empty_deleted_stubs_and_probes_are_filtered_but_evidence_kept(self):
+    active = [
+      {"id": "real", "title": "Real work", "activity_at": "2026-08-08T10:00:00Z"},
+      {"id": "blank", "title": "New chat", "activity_at": "2026-08-08T10:05:00Z"},
+    ]
+    deleted = {"items": [
+      # empty deleted stub — no messages, no digest -> dropped
+      {"id": "stub", "title": "[redacted]", "deleted_at": "2026-08-09T00:00:00Z",
+       "recency_at": "2026-08-09T10:00:00Z", "message_count": 0},
+      # test-harness probe -> dropped
+      {"id": "probe", "title": "__pw_idle_send_jump_review_40",
+       "deleted_at": "2026-08-09T00:01:00Z", "recency_at": "2026-08-09T10:01:00Z",
+       "message_count": 0},
+      # deleted WITH message content — real subagent-run evidence -> kept
+      {"id": "evidence", "title": "Verifying goal command",
+       "deleted_at": "2026-08-09T00:02:00Z", "recency_at": "2026-08-09T10:02:00Z",
+       "message_count": 2},
+    ]}
+    with mock.patch.object(
+      reflection_inputs, "_api_json", side_effect=[active, deleted],
+    ):
+      status = reflection_inputs.stage_chat_digest(
+        "http://example.test", "token", self.tmp_path,
+        self.tmp_path / "chats.md", self.tmp_path / "chats-status.json",
+        "2026-08-01T00:00:00Z",
+      )
+    self.assertEqual(status["filtered_stub_count"], 2)
+    self.assertEqual(
+      sorted(status["subject_ids"]), ["blank", "evidence", "real"],
+    )
+    chats = (self.tmp_path / "chats.md").read_text(encoding="utf-8")
+    self.assertNotIn("`stub`", chats)
+    self.assertNotIn("`probe`", chats)
+    self.assertIn("`evidence`", chats)
+
+  def test_stubs_are_kept_when_deleted_discovery_is_incomplete(self):
+    # A discovery gap must never masquerade as filtered stubs: keep every row.
+    active = [
+      {"id": "real", "title": "Real work", "activity_at": "2026-08-08T10:00:00Z"},
+    ]
+    with mock.patch.object(
+      reflection_inputs, "_api_json",
+      side_effect=[active, {"items": "not-a-list"}],
+    ):
+      status = reflection_inputs.stage_chat_digest(
+        "http://example.test", "token", self.tmp_path,
+        self.tmp_path / "chats.md", self.tmp_path / "chats-status.json",
+        "2026-08-01T00:00:00Z",
+      )
+    self.assertFalse(status["deleted_complete"])
+    self.assertEqual(status["filtered_stub_count"], 0)
+    self.assertEqual(status["subject_ids"], ["real"])
+
   def test_chat_digest_keeps_the_whole_unreviewed_sequence(self):
     active = [
       {

@@ -345,6 +345,52 @@ def _one_line(value, fallback: str = "") -> str:
   return text.replace("\\", "\\\\").replace("`", "\\`")
 
 
+def _row_message_count(row: dict):
+  count = row.get("message_count", row.get("messages_count"))
+  if count is None and isinstance(row.get("messages"), list):
+    count = len(row["messages"])
+  if isinstance(count, bool):
+    return None
+  return count if isinstance(count, int) else None
+
+
+def _row_has_digest(row: dict, data_dir: Path) -> bool:
+  chat_id = row.get("id")
+  if not isinstance(chat_id, str):
+    return False
+  if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", chat_id):
+    return False
+  note = data_dir / "shared" / "memory" / "chats" / chat_id / "index.md"
+  try:
+    return note.stat().st_size > 0
+  except OSError:
+    return False
+
+
+# Automated test-harness probe titles: Playwright/cursor/markdown probes and
+# question-follow stubs the daytime test suites create by the dozen. They carry
+# no reviewable content.
+_PROBE_TITLE = re.compile(r"^(__pw_|__cursor_probe|__probe_)|_question-follow$")
+
+
+def _is_empty_stub(row: dict, data_dir: Path) -> bool:
+  """True only when a row is provably unreviewable, so dropping it loses nothing.
+
+  Two narrow classes: (1) a recoverable-deleted chat with zero messages AND no
+  memory digest — its content exists nowhere, so there is nothing to read; and
+  (2) an automated test-harness probe chat. Everything else — every active chat
+  (whose digest may simply not be generated yet) and every content-bearing
+  deleted chat (real subagent-run evidence) — is kept.
+  """
+  title = str(row.get("title") or "")
+  if _PROBE_TITLE.search(title.strip()):
+    return True
+  if row.get("deleted_at"):
+    if _row_message_count(row) == 0 and not _row_has_digest(row, data_dir):
+      return True
+  return False
+
+
 def stage_chat_digest(
   base: str,
   token: str,
@@ -435,6 +481,16 @@ def stage_chat_digest(
   except Exception as exc:
     error = f"active chat discovery failed ({type(exc).__name__})"
 
+  # Drop provably-unreviewable rows (empty deleted stubs + test-harness probes)
+  # so the staged subject set and its coverage receipt cover real chats only.
+  # Only runs when active discovery succeeded and completed (a partial fetch
+  # keeps every row so a discovery gap is never hidden as a "filtered stub").
+  filtered_stub_count = 0
+  if active_ok and deleted_complete and chats:
+    kept = [row for row in chats if not _is_empty_stub(row, data_dir)]
+    filtered_stub_count = len(chats) - len(kept)
+    chats = kept
+
   lines = [
     "# Chats awaiting Reflection review (oldest first)",
     "",
@@ -457,11 +513,9 @@ def stage_chat_digest(
     if row.get("deleted_at"):
       tags.append("deleted")
     tag = "".join(f"  [{item}]" for item in tags)
-    message_count = row.get("message_count", row.get("messages_count"))
-    if message_count is None and isinstance(row.get("messages"), list):
-      message_count = len(row["messages"])
+    message_count = _row_message_count(row)
     metrics = []
-    if isinstance(message_count, int) and not isinstance(message_count, bool):
+    if message_count is not None:
       metrics.append(f"messages={message_count}")
     if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", chat_id):
       note = data_dir / "shared" / "memory" / "chats" / chat_id / "index.md"
@@ -484,6 +538,7 @@ def stage_chat_digest(
     "active_ok": active_ok,
     "deleted_complete": deleted_complete,
     "chat_count": len(chats),
+    "filtered_stub_count": filtered_stub_count,
     "subject_ids": [
       row["id"] for row in chats if isinstance(row.get("id"), str)
     ],
