@@ -77,11 +77,16 @@ export const CSS = `
   position: relative; z-index: 1;
 }
 .rf-header-inner {
+  position: relative;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
   width: 100%; max-width: 760px; margin-inline: auto;
   padding: max(22px, env(safe-area-inset-top)) 20px 16px;
-  border-bottom: 1px solid var(--border);
+}
+.rf-header-inner::after {
+  content: "";
+  position: absolute; inset-inline: 20px; bottom: 0;
+  height: 1px; background: var(--border);
 }
 .rf-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .rf-brand-icon {
