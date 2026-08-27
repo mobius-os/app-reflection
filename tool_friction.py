@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-VERSION = 7
+VERSION = 8
 DEFAULT_DB = "/data/db/ultimate.db"
 
 _CODEX_SKILL_ENTRY = re.compile(
@@ -32,6 +32,10 @@ _SHARED_SKILL_ENTRY = re.compile(
   r"(?<![A-Za-z0-9._/-])(?:/[^\s'\"`;&|()<>]+)?/shared/skills/"
   r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
   r"(?:\.md\b|/(?i:SKILL\.md)\b)",
+)
+_SKILL_DOCUMENT = re.compile(
+  r"/(?:[^\s'\"`;&|()<>]+/)*skills/"
+  r"(?:[^\s'\"`;&|()<>]+/)+(?i:SKILL\.md)\b",
 )
 
 PRIMITIVES = {
@@ -134,6 +138,17 @@ def _command_family(tool: str, text: str) -> str:
     verb = match.group(1).lower()
     owner = "GitHub" if pattern.startswith("\\bgh") else "git"
     return f"{owner} {verb}"
+  # Required skill and chat-summary reads are their own evidence surfaces.
+  # Falling through to the first executable labels these as generic ``cat``
+  # calls, which made Reflection attribute large authored documents to broad
+  # shell/file-output waste instead of reviewing whether the read itself was
+  # complete and necessary.
+  if _SKILL_DOCUMENT.search(command) or _SHARED_SKILL_ENTRY.search(command):
+    return "skill read"
+  if re.search(
+    r"/shared/memory/chats/[^\s'\"`;&|()<>]+/index\.md\b", command,
+  ):
+    return "chat summary read"
   try:
     words = shlex.split(compact)
   except ValueError:

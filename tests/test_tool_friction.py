@@ -37,6 +37,40 @@ class ToolFrictionTests(unittest.TestCase):
     self.assertEqual(family, "Bash")
     self.assertNotIn("acme", family)
 
+  def test_command_family_attributes_authored_context_reads_explicitly(self):
+    self.assertEqual(
+      tool_friction._command_family(
+        "Bash", "cat /data/.codex/skills/building-apps/SKILL.md",
+      ),
+      "skill read",
+    )
+    self.assertEqual(
+      tool_friction._command_family(
+        "Bash", "cat /data/shared/memory/chats/chat-1/index.md",
+      ),
+      "chat summary read",
+    )
+
+  def test_command_family_recognizes_nested_system_and_plugin_skills(self):
+    for path in (
+      "/data/cli-auth/codex/skills/.system/openai-docs/SKILL.md",
+      "/data/cli-auth/codex/plugins/cache/example/1.0/skills/deep/SKILL.md",
+    ):
+      with self.subTest(path=path):
+        self.assertEqual(
+          tool_friction._command_family("Bash", f"cat {path}"),
+          "skill read",
+        )
+
+  def test_command_family_keeps_the_output_producing_test_owner(self):
+    family = tool_friction._command_family(
+      "Bash",
+      "cat /data/.codex/skills/goal-planning/SKILL.md >/dev/null "
+      "&& scripts/wt-pytest.sh backend/tests/test_projects.py",
+    )
+
+    self.assertEqual(family, "backend focused tests")
+
   def test_unreviewed_tool_friction_is_bounded_and_grouped(self):
     db = self.tmp_path / "test.db"
     con = _db(db)
