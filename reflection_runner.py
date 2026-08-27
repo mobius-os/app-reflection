@@ -71,8 +71,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
+import tempfile
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -320,6 +322,26 @@ def build_fallback_goal() -> str:
   ])
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+  """Replace one text file without exposing a partial write."""
+  path.parent.mkdir(parents=True, exist_ok=True)
+  fd, tmp = tempfile.mkstemp(
+    dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp",
+  )
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+      fh.write(content)
+      fh.flush()
+      os.fsync(fh.fileno())
+    os.replace(tmp, path)
+  except BaseException:
+    try:
+      os.unlink(tmp)
+    except OSError:
+      pass
+    raise
+
+
 def _write_static_floor_brief(brief_path: Path, message_html: str) -> bool:
   """Atomically writes a minimal, self-contained HTML floor brief.
 
@@ -336,7 +358,6 @@ def _write_static_floor_brief(brief_path: Path, message_html: str) -> bool:
   logged and swallowed (a failed write must never crash the run — the exit
   code is the record).
   """
-  import tempfile
   from datetime import date
   today = date.today().isoformat()
   html = (
@@ -355,22 +376,7 @@ def _write_static_floor_brief(brief_path: Path, message_html: str) -> bool:
     "</html>\n"
   )
   try:
-    brief_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-      dir=str(brief_path.parent), prefix=".brief-", suffix=".tmp",
-    )
-    try:
-      with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(html)
-        fh.flush()
-        os.fsync(fh.fileno())
-      os.replace(tmp, brief_path)
-    except BaseException:
-      try:
-        os.unlink(tmp)
-      except OSError:
-        pass
-      raise
+    _atomic_write_text(brief_path, html)
     return True
   except OSError as exc:
     _log(f"ERROR could not write static floor brief: {exc!r}")
@@ -610,10 +616,76 @@ def seed_brief_template(run_date: date | None = None) -> None:
     rendered = src.read_text(encoding="utf-8")
     rendered = rendered.replace("{{DATE_LONG}}", date_long)
     rendered = rendered.replace("{{DATE}}", current.isoformat())
+    rendered = _with_canonical_brief_title(rendered, current)
     BRIEF_TEMPLATE_DEST.parent.mkdir(parents=True, exist_ok=True)
     BRIEF_TEMPLATE_DEST.write_text(rendered, encoding="utf-8")
   except OSError as exc:
     _log(f"could not seed brief template to {BRIEF_TEMPLATE_DEST}: {exc!r}")
+
+
+def _with_canonical_brief_title(html: str, run_date: date) -> str:
+  """Own the document title instead of trusting an agent-edited template.
+
+  The visible brief content remains the agent's judgment. The browser title is
+  deterministic run metadata, so the runner normalizes it both when staging
+  the template and after the agent writes the final document. This also repairs
+  older image templates that baked a literal historical date.
+  """
+  title = f"Morning brief — {run_date.isoformat()}"
+  replacement = f"<title>{title}</title>"
+  if re.search(r"<title\b[^>]*>.*?</title\s*>", html, re.IGNORECASE | re.DOTALL):
+    return re.sub(
+      r"<title\b[^>]*>.*?</title\s*>", replacement, html,
+      count=1, flags=re.IGNORECASE | re.DOTALL,
+    )
+  if re.search(r"</head\s*>", html, re.IGNORECASE):
+    return re.sub(
+      r"</head\s*>", f"{replacement}\n</head>", html,
+      count=1, flags=re.IGNORECASE,
+    )
+  head = f"<head>{replacement}</head>"
+  if re.search(r"<html\b[^>]*>", html, re.IGNORECASE):
+    return re.sub(
+      r"<html\b[^>]*>", lambda match: f"{match.group(0)}\n{head}", html,
+      count=1, flags=re.IGNORECASE,
+    )
+  if re.search(r"<!doctype\b[^>]*>", html, re.IGNORECASE):
+    return re.sub(
+      r"<!doctype\b[^>]*>", lambda match: f"{match.group(0)}\n{head}", html,
+      count=1, flags=re.IGNORECASE,
+    )
+  return f"{head}\n{html}"
+
+
+def finalize_brief_document(
+  brief_path: Path | None,
+  run_date: date | None = None,
+) -> bool:
+  """Atomically normalizes deterministic metadata in the finished brief.
+
+  Returns False when there is no readable brief. Agent-authored prose is never
+  rewritten. Residual template tokens are logged as a contract warning so a
+  future run can diagnose the malformed artifact without hiding it.
+  """
+  if brief_path is None or not brief_path.is_file():
+    return False
+  current = run_date or datetime.now(timezone.utc).date()
+  try:
+    original = brief_path.read_text(encoding="utf-8")
+    rendered = _with_canonical_brief_title(original, current)
+    residual = sorted(set(re.findall(r"\{\{[A-Z][A-Z0-9_]*\}\}", rendered)))
+    if residual:
+      _log(
+        "WARN finished brief retained template tokens: "
+        + ", ".join(residual[:8])
+      )
+    if rendered == original:
+      return True
+    _atomic_write_text(brief_path, rendered)
+    return True
+  except OSError as exc:
+    _log(f"WARN could not finalize brief metadata: {exc!r}")
+    return False
 
 
 def load_settings() -> dict:
@@ -1649,13 +1721,14 @@ async def run() -> int:
       provider = fallback["provider"]
       model = fallback.get("model")
       effort = fallback.get("effort")
-    if rc == 0:
-      _log("done")
-    else:
+    if rc != 0:
       await _maybe_write_fallback_brief(
         rc, provider=provider, system_prompt=system_prompt, env=env,
         model=model, effort=effort, log_fh=log_fh,
       )
+    finalize_brief_document(todays_brief_path())
+    if rc == 0:
+      _log("done")
     return rc
   finally:
     if log_fh is not None:
