@@ -88,6 +88,14 @@ test('hardenReportHtml styles details/summary drill-down and the questions card'
   assert.match(hardened, /\.brief-questions\s*\{/)
 })
 
+test('hardenReportHtml suppresses obsolete generic chat handoffs', () => {
+  const hardened = hardenReportHtml(
+    '<main><p>Useful ending.</p><div class="handoff">The conversation continues below.</div></main>',
+  )
+
+  assert.match(hardened, /\.handoff\s*\{\s*display:\s*none\s*!important/)
+})
+
 test('lean brief styling survives a missing root class on semantic report elements', () => {
 
   const hardened = hardenReportHtml(

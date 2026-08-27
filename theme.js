@@ -73,14 +73,20 @@ export const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. Diverge below the marker only. */
 .rf-header {
-  flex: 0 0 auto; width: 100%; background: var(--bg); border-bottom: 1px solid var(--border);
+  flex: 0 0 auto; width: 100%; background: var(--bg);
   position: relative; z-index: 1;
 }
 .rf-header-inner {
+  position: relative;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
   width: 100%; max-width: 760px; margin-inline: auto;
   padding: max(22px, env(safe-area-inset-top)) 20px 16px;
+}
+.rf-header-inner::after {
+  content: "";
+  position: absolute; inset-inline: 20px; bottom: 0;
+  height: 1px; background: var(--border);
 }
 .rf-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .rf-brand-icon {
@@ -723,6 +729,14 @@ button.rf-card { cursor: pointer; }
   }
   .rf-header { width: min(100%, 760px); margin-inline: auto; }
   .rf-aurora { inset-inline: auto; left: 50%; width: min(100%, 760px); transform: translateX(-50%); }
+}
+
+@media (max-width: 560px) {
+  .rf-header-inner { align-items: flex-start; row-gap: 12px; }
+  .rf-header-right { width: 100%; }
+  .rf-header-right .rf-streak-badge { display: none; }
+  .rf-segmented { width: 100%; }
+  .rf-seg-btn { flex: 1; }
 }
 /* /mobius-ui:CenteredRail */
 `

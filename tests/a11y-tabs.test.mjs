@@ -71,6 +71,7 @@ test('agent overrides default to Settings and use the production-style dialog pi
   assert.match(picker, /closeRef\.current\?\.focus\?\.\(\)/)
   assert.match(picker, /triggerRef\.current\?\.focus\?\.\(\)/)
   assert.match(theme, /\.mobius-model-sheet__backdrop\s*\{[\s\S]*position:fixed[\s\S]*z-index:1000/)
+  assert.match(theme, /\.rf-header-inner::after\s*\{[\s\S]*inset-inline:\s*20px;[\s\S]*background:\s*var\(--border\)/)
   assert.match(priorityList, /mobius-agent-priority-handle/)
   assert.match(priorityList, /onPointerDown/)
   assert.match(priorityList, /event\.key === 'ArrowUp'/)
