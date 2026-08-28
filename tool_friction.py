@@ -33,9 +33,13 @@ _SHARED_SKILL_ENTRY = re.compile(
   r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
   r"(?:\.md\b|/(?i:SKILL\.md)\b)",
 )
+# Each repeated group is one path component, so its class must exclude ``/``.
+# Allowing a component to absorb its own delimiter makes the nested quantifiers
+# ambiguous, and a slash-heavy token that never reaches ``SKILL.md`` then costs
+# exponential backtracking on recorded command text we treat as hostile data.
 _SKILL_DOCUMENT = re.compile(
-  r"/(?:[^\s'\"`;&|()<>]+/)*skills/"
-  r"(?:[^\s'\"`;&|()<>]+/)+(?i:SKILL\.md)\b",
+  r"/(?:[^\s'\"`;&|()<>/]+/)*skills/"
+  r"(?:[^\s'\"`;&|()<>/]+/)+(?i:SKILL\.md)\b",
 )
 
 PRIMITIVES = {

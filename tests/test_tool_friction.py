@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -70,6 +71,19 @@ class ToolFrictionTests(unittest.TestCase):
     )
 
     self.assertEqual(family, "backend focused tests")
+
+  def test_command_family_does_not_stall_on_a_slash_heavy_non_skill_path(self):
+    # Recorded command text is hostile data. A long path that never reaches
+    # ``skills/<component>/SKILL.md`` must fail the match in linear time; an
+    # ambiguous path-component class made this branch backtrack exponentially.
+    command = "cat /" + "segment/" * 24 + "notes.txt"
+
+    started = time.monotonic()
+    family = tool_friction._command_family("Bash", command)
+    elapsed = time.monotonic() - started
+
+    self.assertEqual(family, "cat")
+    self.assertLess(elapsed, 0.5)
 
   def test_unreviewed_tool_friction_is_bounded_and_grouped(self):
     db = self.tmp_path / "test.db"
