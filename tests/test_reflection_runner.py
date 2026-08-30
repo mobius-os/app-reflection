@@ -468,6 +468,30 @@ class AgentOverrideTests(unittest.TestCase):
 
 
 class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
+  async def test_clean_run_without_a_brief_still_runs_the_rescue(self):
+    with tempfile.TemporaryDirectory() as raw:
+      brief = Path(raw) / "missing.html"
+      rescue = mock.AsyncMock(return_value=0)
+      with (
+        mock.patch.object(
+          reflection_runner, "todays_brief_path", return_value=brief,
+        ),
+        mock.patch.object(
+          reflection_runner, "_run_claude_session", rescue,
+        ),
+      ):
+        await reflection_runner._maybe_write_fallback_brief(
+          0,
+          provider="claude",
+          system_prompt="system",
+          env={},
+          model=None,
+          effort=None,
+          log_fh=None,
+        )
+
+    rescue.assert_awaited_once()
+
   async def test_generic_primary_failure_tries_the_distinct_configured_fallback(self):
     primary = {"provider": "claude", "model": "claude-primary", "effort": "high"}
     fallback = {"provider": "codex", "model": "codex-fallback", "effort": "medium"}
@@ -500,6 +524,7 @@ class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
       fallback = {"provider": "codex"}
       self.assertFalse(reflection_runner.configured_fallback_needed(64, fallback, brief))
       self.assertFalse(reflection_runner.configured_fallback_needed(64, None, Path(raw) / "missing"))
+      self.assertFalse(reflection_runner.configured_fallback_needed(0, fallback, Path(raw) / "missing"))
 
 
 if __name__ == "__main__":
