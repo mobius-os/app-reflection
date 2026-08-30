@@ -29,8 +29,84 @@ class BriefTemplateSeedTests(unittest.TestCase):
 
       self.assertEqual(
         destination.read_text(encoding="utf-8"),
-        "<title>2026-08-17</title><p>Monday, 17 August 2026</p>"
+        "<title>Morning brief — 2026-08-17</title>"
+        "<p>Monday, 17 August 2026</p>"
         "<p>{{SUMMARY}}</p>",
+      )
+
+  def test_seed_replaces_a_stale_literal_title_from_an_older_image(self):
+    with tempfile.TemporaryDirectory() as raw:
+      root = Path(raw)
+      source = root / "template.html"
+      destination = root / "staged" / "template.html"
+      source.write_text(
+        "<html><head><title>Morning brief — 2026-08-19</title></head>"
+        "<body><p>{{DATE_LONG}}</p></body></html>",
+        encoding="utf-8",
+      )
+      with (
+        mock.patch.object(reflection_runner, "BAKED_BRIEF_TEMPLATE", source),
+        mock.patch.object(reflection_runner, "BRIEF_TEMPLATE_DEST", destination),
+      ):
+        reflection_runner.seed_brief_template(date(2026, 8, 27))
+
+      rendered = destination.read_text(encoding="utf-8")
+      self.assertIn("<title>Morning brief — 2026-08-27</title>", rendered)
+      self.assertNotIn("2026-08-19", rendered)
+
+  def test_finalization_normalizes_title_without_rewriting_brief_content(self):
+    with tempfile.TemporaryDirectory() as raw:
+      brief = Path(raw) / "2026-08-27.html"
+      brief.write_text(
+        "<html><head><title>Morning brief — 2026-08-19</title></head>"
+        "<body><article><p>Agent-authored result.</p></article></body></html>",
+        encoding="utf-8",
+      )
+
+      self.assertTrue(
+        reflection_runner.finalize_brief_document(
+          brief, date(2026, 8, 27),
+        )
+      )
+      rendered = brief.read_text(encoding="utf-8")
+      self.assertIn("<title>Morning brief — 2026-08-27</title>", rendered)
+      self.assertIn("<p>Agent-authored result.</p>", rendered)
+
+  def test_finalization_inserts_missing_document_title(self):
+    with tempfile.TemporaryDirectory() as raw:
+      brief = Path(raw) / "2026-08-27.html"
+      brief.write_text(
+        "<html><head><meta charset=\"utf-8\"></head><body>Done.</body></html>",
+        encoding="utf-8",
+      )
+
+      self.assertTrue(
+        reflection_runner.finalize_brief_document(
+          brief, date(2026, 8, 27),
+        )
+      )
+      self.assertIn(
+        "<title>Morning brief — 2026-08-27</title>",
+        brief.read_text(encoding="utf-8"),
+      )
+
+  def test_finalization_inserts_head_when_document_has_none(self):
+    with tempfile.TemporaryDirectory() as raw:
+      brief = Path(raw) / "2026-08-27.html"
+      brief.write_text(
+        "<!DOCTYPE html><html><body>Done.</body></html>",
+        encoding="utf-8",
+      )
+
+      self.assertTrue(
+        reflection_runner.finalize_brief_document(
+          brief, date(2026, 8, 27),
+        )
+      )
+      rendered = brief.read_text(encoding="utf-8")
+      self.assertIn(
+        "<html>\n<head><title>Morning brief — 2026-08-27</title></head>",
+        rendered,
       )
 
 
