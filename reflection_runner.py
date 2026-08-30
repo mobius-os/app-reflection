@@ -271,17 +271,8 @@ def todays_brief_path() -> Path | None:
   )
 
 
-def fallback_needed(rc: int, brief_path: Path | None) -> bool:
-  """True when the night failed AND left no brief for the partner.
-
-  A clean run (rc 0) wrote its brief per the skill contract — trust
-  it. A failed run whose brief is already on disk (the agent shipped
-  phase 6 and then crashed) needs no rescue. Everything else does,
-  including an unresolvable brief path — one redundant rescue pass
-  beats a morning with nothing.
-  """
-  if rc == 0:
-    return False
+def brief_rescue_needed(brief_path: Path | None) -> bool:
+  """True unless the expected brief is already on disk."""
   if brief_path is None:
     return True
   return not brief_path.is_file()
@@ -293,7 +284,7 @@ def configured_fallback_needed(
   brief_path: Path | None,
 ) -> bool:
   """A configured second agent gets one turn after any failed empty run."""
-  return fallback is not None and fallback_needed(rc, brief_path)
+  return rc != 0 and fallback is not None and brief_rescue_needed(brief_path)
 
 
 def build_fallback_goal() -> str:
@@ -303,7 +294,7 @@ def build_fallback_goal() -> str:
   runs_dir = DATA_DIR / "apps" / "reflection" / "runs" / today
   inputs_dir = DATA_DIR / "apps" / "reflection" / "inputs"
   return "\n".join([
-    f"The main Reflection run of {today} failed or stopped before it "
+    f"The main Reflection run of {today} ended before it "
     "could deliver the brief. You are a focused rescue pass with ONE "
     "goal: the partner must not wake to nothing.",
     "",
@@ -1584,11 +1575,12 @@ async def _maybe_write_fallback_brief(
   effort: str | None,
   log_fh,
 ) -> None:
-  """Guaranteed-brief layer: rescues a failed night that has no brief.
+  """Guaranteed-brief layer: rescues any completed run that has no brief.
 
-  When the main session ends non-zero and tonight's brief file is missing,
-  spawn one focused rescue session whose only goal is a minimal brief
-  built from whatever the cut-off run left behind.
+  When the main session ends and tonight's brief file is missing, spawn one
+  focused rescue session whose only goal is a minimal brief built from whatever
+  the run left behind. A zero exit proves the provider loop completed; it does
+  not prove the agent honored the publication contract.
 
   Blocked-night case (rc in {AUTH_FAILURE_RC, USAGE_LIMIT_RC}): the
   night died because the model is unreachable for the rest of it — a
@@ -1609,7 +1601,7 @@ async def _maybe_write_fallback_brief(
   """
   try:
     brief = todays_brief_path()
-    if not fallback_needed(rc, brief):
+    if not brief_rescue_needed(brief):
       return
     if brief is not None and rc in (AUTH_FAILURE_RC, USAGE_LIMIT_RC):
       # The model is unreachable for the rest of the night (a 401 that
@@ -1637,7 +1629,7 @@ async def _maybe_write_fallback_brief(
       )
       return
     _log(
-      f"main run failed (rc={rc}) with no brief at "
+      f"main run ended (rc={rc}) with no brief at "
       f"{brief or '(unresolved path)'} — running guaranteed-brief "
       "fallback"
     )
@@ -1674,10 +1666,10 @@ async def run() -> int:
   usage/rate cap, AUTH_FAILURE_RC (66) for a CLI auth failure (a 401).
   The wrapper maps the exit code into the `cron_outcome` event, so this
   is the one signal the activity log records about whether the night
-  ran. A non-zero night additionally triggers the guaranteed-brief
-  fallback. A configured distinct second agent is tried first after any
-  failed run that left no brief; if it also fails, the bounded guaranteed-
-  brief rescue remains the final floor.
+  ran. Any completed run that left no brief triggers the guaranteed-brief
+  rescue. A configured distinct second agent is tried first only after a failed
+  empty run; if it also fails or exits cleanly without publishing, the bounded
+  rescue remains the final floor.
   """
   settings = load_settings()
   agents = _resolve_agents(settings)
@@ -1721,11 +1713,10 @@ async def run() -> int:
       provider = fallback["provider"]
       model = fallback.get("model")
       effort = fallback.get("effort")
-    if rc != 0:
-      await _maybe_write_fallback_brief(
-        rc, provider=provider, system_prompt=system_prompt, env=env,
-        model=model, effort=effort, log_fh=log_fh,
-      )
+    await _maybe_write_fallback_brief(
+      rc, provider=provider, system_prompt=system_prompt, env=env,
+      model=model, effort=effort, log_fh=log_fh,
+    )
     finalize_brief_document(todays_brief_path())
     if rc == 0:
       _log("done")
