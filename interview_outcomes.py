@@ -18,12 +18,19 @@ from typing import Any
 
 
 KINDS = {"chat", "app_run", "memory_writer"}
-METHODS = {"interview", "evidence_review", "summary_sufficient", "skipped_stub"}
+METHODS = {
+  "interview",
+  "interview_unavailable",
+  "evidence_review",
+  "summary_sufficient",
+  "skipped_stub",
+}
 VERDICTS = {"verified", "contradicted", "unverified", "not_applicable"}
 TEXT_FIELDS = (
   "subject_id", "subject_kind", "method", "verification", "outcome",
   "friction", "skill_signal", "memory_signal", "next_action", "reason",
 )
+FORK_TEXT_FIELDS = ("provider", "source_session_id", "forked_session_id")
 
 
 def _text(value: Any, limit: int = 2000) -> str:
@@ -40,6 +47,21 @@ def normalize(row: Any) -> dict[str, Any] | None:
     return None
   if not value["outcome"]:
     return None
+  if value["method"] == "interview":
+    fork = {key: _text(row.get(key), 500) for key in FORK_TEXT_FIELDS}
+    if (
+      row.get("exact_session_fork") is not True
+      or fork["provider"] not in {"claude", "codex"}
+      or not fork["source_session_id"]
+      or not fork["forked_session_id"]
+      or fork["source_session_id"] == fork["forked_session_id"]
+    ):
+      return None
+    value.update(fork)
+    value["exact_session_fork"] = True
+  elif value["method"] == "interview_unavailable":
+    if value["verification"] != "unverified" or not value["reason"]:
+      return None
   evidence = row.get("evidence")
   if not isinstance(evidence, list):
     return None

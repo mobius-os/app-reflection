@@ -18,11 +18,43 @@ class InterviewOutcomeTests(unittest.TestCase):
         "outcome": "Fixed the owning parser.",
         "evidence": ["apps/foo/parser.py: parse_record"],
         "next_action": "Watch the next scheduled run.",
+        "provider": "codex",
+        "source_session_id": "source-session",
+        "forked_session_id": "forked-session",
+        "exact_session_fork": True,
       }) + "\n")
       result = interview_outcomes.build_status(path)
       self.assertEqual(result["valid_outcomes"], 1)
       self.assertEqual(result["methods"], {"interview": 1})
       self.assertEqual(result["followups"][0]["subject_id"], "chat-1")
+      self.assertTrue(result["outcomes"][0]["exact_session_fork"])
+
+  def test_interview_requires_an_exact_distinct_provider_fork_receipt(self):
+    row = {
+      "subject_id": "chat-1", "subject_kind": "chat",
+      "method": "interview", "verification": "unverified",
+      "outcome": "A plausible but unproven interview.", "evidence": [],
+    }
+
+    self.assertIsNone(interview_outcomes.normalize(row))
+    row.update({
+      "provider": "claude",
+      "source_session_id": "same-session",
+      "forked_session_id": "same-session",
+      "exact_session_fork": True,
+    })
+    self.assertIsNone(interview_outcomes.normalize(row))
+
+  def test_unavailable_interview_is_a_first_class_honest_disposition(self):
+    row = interview_outcomes.normalize({
+      "subject_id": "chat-1", "subject_kind": "chat",
+      "method": "interview_unavailable", "verification": "unverified",
+      "outcome": "Exact-session coaching did not complete.",
+      "reason": "Provider fork returned only a preamble.", "evidence": [],
+    })
+
+    self.assertIsNotNone(row)
+    self.assertEqual(row["method"], "interview_unavailable")
 
   def test_verified_requires_evidence_and_invalid_is_visible(self):
     with tempfile.TemporaryDirectory() as raw:
