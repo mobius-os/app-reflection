@@ -2,7 +2,9 @@
 
 The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, a real agent steps back from individual tasks and looks at the larger picture: how you work, what the system learned, what caused friction, what may matter tomorrow or next week, and how Möbius itself should evolve. In the morning it leaves a concise brief with the useful outcomes and only the decisions worth your attention.
 
-It always ships a brief, even on quiet nights — Möbius's reflection skill mandates a brief every run.
+It always ships a brief, even on quiet or failed nights. The agent writes the
+useful report; if its process ends without one, the surviving wrapper writes a
+small, honest safety notice without spending another model turn.
 
 ## Install
 
@@ -45,6 +47,12 @@ the canonical live file so the agent reads that path before rewriting it.
 
 Reflection also receives `memory-health.json`, a content-free handoff containing
 Memory's recent run outcome, recovery/backlog counters, and graph health counts.
+Memory is optional. Reflection checks the authenticated installed-app list
+rather than inferring installation from leftover files. When an installed
+Memory is still publishing, Reflection waits for a bounded interval; if the
+run remains in motion, Reflection proceeds using the prior immutable revision
+named by Memory's atomic publication pointer and marks the moving run
+unassessed. The handoff records the exact immutable Memory commit consumed.
 Memory remains the sole graph writer. Reflection observes and diagnoses that
 loop, then surfaces bounded recommendations instead of silently becoming a
 second consolidator.
@@ -82,9 +90,10 @@ instead of rerunning the same diagnostics. It automatically cleans only data
 that is demonstrably regenerable, expired, inactive, and narrowly targeted;
 user content, credentials, databases, and uncertain backups remain proposals.
 The wrapper also retains 60 compact run-metric rows (duration, exit status,
-disk delta, cgroup CPU delta, and whether the brief shipped), alongside only a
-short log tail, so Reflection can reduce its own footprint without creating an
-ever-growing observability store.
+disk delta, cgroup CPU delta, whether the brief shipped, and whether it came
+from the agent or the safety floor), alongside only a short log tail, so
+Reflection can reduce its own footprint without creating an ever-growing
+observability store.
 
 ## No sandbox, by design
 
@@ -101,7 +110,10 @@ Schedule changes take effect within 10 minutes (the cron sync runs every 10). Wh
 
 ## Streak
 
-The streak counts consecutive days a brief was produced. The reflection skill mandates a brief every run, so the streak grows each night the run completes and is never reset by a "quiet" night — only by a run that actually failed or was skipped (lock-held or config error).
+The streak counts consecutive successful days with a substantive Reflection
+brief. Quiet successful nights still count. A model-independent safety notice
+neither increments nor resets the displayed prior streak; the next successful
+substantive run starts a new streak when the intervening day was only a notice.
 
 ## License
 

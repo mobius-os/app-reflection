@@ -53,39 +53,59 @@ class ReflectionInputsTests(unittest.TestCase):
       "1970-01-01T00:00:00Z",
     )
 
-  def test_checkpoint_advances_only_after_a_successful_current_brief(self):
+  def test_checkpoint_advances_only_after_a_proven_current_run_brief(self):
     checkpoint = self.tmp_path / "checkpoint.json"
-    report = self.tmp_path / "brief.html"
-    report.write_text("brief", encoding="utf-8")
-    started = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=2)
+    started = "2026-08-07T05:00:00+00:00"
 
     self.assertFalse(reflection_inputs.advance_checkpoint(
       checkpoint,
-      started_at=started.isoformat(),
-      report=report,
+      started_at=started,
+      brief_written=True,
       exit_code=65,
       dry_run=False,
     ))
     self.assertFalse(checkpoint.exists())
     self.assertFalse(reflection_inputs.advance_checkpoint(
       checkpoint,
-      started_at=started.isoformat(),
-      report=report,
+      started_at=started,
+      brief_written=True,
       exit_code=0,
       dry_run=False,
       inputs_complete=False,
     ))
     self.assertFalse(checkpoint.exists())
+    self.assertFalse(reflection_inputs.advance_checkpoint(
+      checkpoint,
+      started_at=started,
+      brief_written=False,
+      exit_code=0,
+      dry_run=False,
+    ))
+    self.assertFalse(checkpoint.exists())
     self.assertTrue(reflection_inputs.advance_checkpoint(
       checkpoint,
-      started_at=started.isoformat(),
-      report=report,
+      started_at=started,
+      brief_written=True,
       exit_code=0,
       dry_run=False,
     ))
     self.assertEqual(
       reflection_inputs.resume_since(checkpoint),
-      started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+      "2026-08-07T05:00:00Z",
+    )
+
+  def test_app_installation_uses_authenticated_inventory_shape(self):
+    with mock.patch.object(reflection_inputs, "_api_json", return_value=[
+      {"id": 1, "name": "reflection"}, {"id": 2, "slug": "memory"},
+    ]) as request:
+      self.assertTrue(reflection_inputs.app_is_installed(
+        "http://example.test", "secret", "memory",
+      ))
+      self.assertFalse(reflection_inputs.app_is_installed(
+        "http://example.test", "secret", "news",
+      ))
+    request.assert_called_with(
+      "http://example.test", "secret", "/api/apps/",
     )
 
   def test_input_manifest_rejects_retained_and_failed_evidence(self):
@@ -149,6 +169,20 @@ class ReflectionInputsTests(unittest.TestCase):
 
     self.assertEqual(by_path["activity-status.json"]["status"], "complete")
     self.assertEqual(by_path["activity.jsonl"]["status"], "complete")
+
+  def test_memory_timeout_receipt_is_current_when_prior_publication_is_pinned(self):
+    dependency = self.tmp_path / "memory-dependency.json"
+    dependency.write_text(json.dumps({
+      "status": "timeout",
+      "run": {"status": "running", "publication_matches": False},
+    }), encoding="utf-8")
+
+    status, reason = reflection_inputs._manifest_status(
+      self.tmp_path, "memory-dependency.json", True,
+    )
+
+    self.assertEqual(status, "complete")
+    self.assertIsNone(reason)
 
   def test_input_manifest_marks_missing_deleted_chat_view_partial(self):
     started = datetime.datetime.now(

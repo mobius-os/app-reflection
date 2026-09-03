@@ -18,12 +18,11 @@ import shlex
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
 
 
 VERSION = 8
 DEFAULT_DB = "/data/db/ultimate.db"
-COMMAND_INSPECTION_LIMIT = 8192
 
 _CODEX_SKILL_ENTRY = re.compile(
   r"(?<![A-Za-z0-9._/-])(?:/[^\s'\"`;&|()<>]+)?/\.codex/skills/"
@@ -34,8 +33,13 @@ _SHARED_SKILL_ENTRY = re.compile(
   r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
   r"(?:\.md\b|/(?i:SKILL\.md)\b)",
 )
+# Each repeated group is one path component, so its class must exclude ``/``.
+# Allowing a component to absorb its own delimiter makes the nested quantifiers
+# ambiguous, and a slash-heavy token that never reaches ``SKILL.md`` then costs
+# exponential backtracking on recorded command text we treat as hostile data.
 _SKILL_DOCUMENT = re.compile(
-  r"/skills/[^\s'\"`;&|()<>]*/(?i:SKILL\.md)\b",
+  r"/(?:[^\s'\"`;&|()<>/]+/)*skills/"
+  r"(?:[^\s'\"`;&|()<>/]+/)+(?i:SKILL\.md)\b",
 )
 
 PRIMITIVES = {
@@ -88,11 +92,6 @@ def _command_text(text: str) -> str:
   return text
 
 
-def _inspection_text(command: str) -> str:
-  """Keep mechanics classification on the executable prefix, not payloads."""
-  return command[:COMMAND_INSPECTION_LIMIT]
-
-
 def _failed(block: dict[str, Any]) -> bool:
   return (
     block.get("status") in {"error", "failed"}
@@ -120,7 +119,7 @@ def _command_signature(tool: str, text: str) -> str:
 
 def _command_family(tool: str, text: str) -> str:
   """Return a useful command family without retaining arguments or paths."""
-  command = _inspection_text(_command_text(text))
+  command = _command_text(text)
   compact = " ".join(command.split())
   patterns = (
     (r"\bwt-pytest\.sh\b", "backend focused tests"),
@@ -169,7 +168,6 @@ def _command_family(tool: str, text: str) -> str:
 
 def _skill_entry_names(command: str) -> tuple[set[str], set[str]]:
   """Project-local and authoritative skill entries named by one command."""
-  command = _inspection_text(command)
   return (
     {match.group("name") for match in _CODEX_SKILL_ENTRY.finditer(command)},
     {match.group("name") for match in _SHARED_SKILL_ENTRY.finditer(command)},
@@ -180,10 +178,7 @@ def _is_noop_command(tool: str, text: str) -> bool:
   """A shell call that cannot advance work or wait for anything."""
   if tool not in {"Bash", "Shell", "exec_command"}:
     return False
-  raw = _command_text(text)
-  if len(raw) > 256:
-    return False
-  command = " ".join(raw.split())
+  command = " ".join(_command_text(text).split())
   return bool(re.fullmatch(r"(?::|true)(?:\s*(?:;|&&)\s*(?::|true))*", command))
 
 
@@ -195,44 +190,6 @@ def _empty_surface() -> dict[str, Any]:
     "output_bytes": 0,
     "chat_ids": set(),
   }
-
-
-def _iter_chat_rows(
-  con: sqlite3.Connection,
-  chat_ids: list[str],
-  cutoff_ms: int,
-) -> Iterator[sqlite3.Row]:
-  """Stream only in-window assistant messages through SQLite's JSON cursor.
-
-  Chat ``messages`` columns can be very large on busy build days. Materializing
-  or decoding every selected transcript makes staging scale with complete chat
-  history rather than the Reflection window. SQLite filters at the owning data
-  boundary, leaving Python with one relevant message and a small id chunk at a
-  time. ``messages`` stays a one-item array so the downstream analyzer keeps a
-  single message-shape owner.
-  """
-  chunks: list[list[str] | None] = (
-    [chat_ids[offset : offset + 400] for offset in range(0, len(chat_ids), 400)]
-    if chat_ids else [None]
-  )
-  for chunk in chunks:
-    chat_filter = ""
-    params: list[Any] = []
-    if chunk is not None:
-      marks = ",".join("?" for _ in chunk)
-      chat_filter = f"c.id in ({marks}) and "
-      params.extend(chunk)
-    params.append(cutoff_ms)
-    yield from con.execute(
-      "select c.id, c.title, json_array(json(item.value)) as messages "
-      "from chats as c join json_each("
-      "case when json_valid(c.messages) then c.messages else '[]' end"
-      ") as item "
-      f"where {chat_filter}item.type='object' "
-      "and json_extract(item.value, '$.role')='assistant' "
-      "and cast(coalesce(json_extract(item.value, '$.ts'), 0) as integer) >= ?",
-      params,
-    )
 
 
 def _serialise_surface(value: dict[str, Any]) -> dict[str, Any]:
@@ -288,6 +245,17 @@ def analyse_database(
   except sqlite3.Error:
     run_rows = []
 
+  if chat_ids:
+    chat_rows = []
+    for offset in range(0, len(chat_ids), 400):
+      chunk = chat_ids[offset : offset + 400]
+      marks = ",".join("?" for _ in chunk)
+      chat_rows.extend(con.execute(
+        f"select id, title, messages from chats where id in ({marks})", chunk,
+      ))
+  else:
+    chat_rows = list(con.execute("select id, title, messages from chats"))
+
   overall = _empty_surface()
   tool_types: Counter[str] = Counter()
   surfaces = defaultdict(_empty_surface)
@@ -317,7 +285,7 @@ def analyse_database(
     "input_tokens": 0, "cache_read_input_tokens": 0,
   })
 
-  for row in _iter_chat_rows(con, chat_ids, cutoff_ms):
+  for row in chat_rows:
     chat_id = str(row["id"])
     title = str(row["title"] or "Untitled chat")
     try:
@@ -326,7 +294,7 @@ def analyse_database(
       continue
     if not isinstance(messages, list):
       continue
-    chat = by_chat.setdefault(chat_id, {
+    chat = {
       "chat_id": chat_id,
       "title": title,
       "assistant_turns": 0,
@@ -334,7 +302,7 @@ def analyse_database(
       "failed_calls": 0,
       "truncated_calls": 0,
       "output_bytes": 0,
-    })
+    }
     for message in messages:
       if (
         not isinstance(message, dict)
@@ -354,7 +322,6 @@ def analyse_database(
         tool = str(block.get("tool") or "unknown")
         command = _tool_text(block.get("input"))
         searchable_command = _command_text(command)
-        inspected_command = _inspection_text(searchable_command)
         failed = _failed(block)
         failure_class = _failure_class(block)
         truncated = bool(block.get("output_truncated"))
@@ -385,7 +352,7 @@ def analyse_database(
           no_op_calls["chat_ids"].add(chat_id)
 
         for name, pattern in PRIMITIVES.items():
-          if not pattern.search(inspected_command):
+          if not pattern.search(searchable_command):
             continue
           surface = surfaces[name]
           surface["tool_calls"] += 1
@@ -417,7 +384,7 @@ def analyse_database(
         item["count"] += 1
         item["chat_ids"].add(chat_id)
         item["failed_calls"] += int(failed)
-        project_skills, shared_skills = _skill_entry_names(inspected_command)
+        project_skills, shared_skills = _skill_entry_names(searchable_command)
         message_tools.append({
           "tool": tool,
           "signature": signature,

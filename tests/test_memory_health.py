@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -304,6 +305,177 @@ class MemoryHealthTests(unittest.TestCase):
     self.assertTrue(health["needs_attention"])
     self.assertIn("latest_run_still_running", health["reasons"])
 
+  def test_timeout_reads_graph_from_prior_ready_revision_and_marks_current_unassessed(self):
+    repository = self.root / "repository"
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.email", "test@example.com"], check=True)
+    (repository / "graph.json").write_text(json.dumps({
+      "nodes": [{"id": "pinned"}], "edges": [], "problems": [],
+    }))
+    subprocess.run(["git", "-C", str(repository), "add", "graph.json"], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-qm", "pinned"], check=True)
+    ready_commit = subprocess.check_output(
+      ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    (self.root / ".ready").write_text(json.dumps({"commit": ready_commit}))
+    self._runs({
+      "status": "published", "run_id": "prior", "commit": ready_commit,
+      "finished_at": "2026-07-19T05:35:00+00:00",
+    })
+    update_log = self.root / "app-state" / "update-log"
+    update_log.mkdir()
+    (update_log / "2026-07-20.jsonl").write_text("".join([
+      json.dumps({
+        "run_id": "prior", "commit": ready_commit,
+        "timestamp": "2026-07-19T05:35:00+00:00",
+        "followups": ["pinned"],
+      }) + "\n",
+      json.dumps({
+        "run_id": "moving", "commit": "f" * 40,
+        "timestamp": "2026-07-20T05:35:00+00:00",
+        "followups": ["must not leak"],
+      }) + "\n",
+    ]))
+    (repository / "graph.json").write_text(json.dumps({
+      "nodes": [{}, {}, {}], "edges": [{}, {}],
+      "problems": [{"severity": "error"}],
+    }))
+    (self.root / "app-state" / "run-status.json").write_text(json.dumps({
+      "status": "running", "run_id": "moving",
+      "started_at": "2026-07-20T05:30:00+00:00",
+    }))
+
+    health = memory_health.build_health(
+      self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      dependency={"status": "timeout"},
+    )
+
+    self.assertTrue(health["current_run_unassessed"])
+    self.assertEqual(health["last_run"]["run_id"], "moving")
+    self.assertEqual(health["latest_graph"], {
+      "nodes": 1, "edges": 0, "problems": 0,
+      "warnings": 0, "blocking_problems": 0,
+    })
+    self.assertEqual(health["consumed_publication"]["commit"], ready_commit)
+    self.assertTrue(health["consumed_publication"]["publication_matches"])
+    self.assertEqual(health["latest_writer_update"]["followups"], ["pinned"])
+    self.assertNotIn("must not leak", json.dumps(health))
+
+  def test_failed_current_run_still_reads_only_the_prior_ready_publication(self):
+    repository = self.root / "repository"
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+      ["git", "-C", str(repository), "config", "user.name", "Test"], check=True,
+    )
+    subprocess.run(
+      ["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+      check=True,
+    )
+    (repository / "graph.json").write_text(json.dumps({
+      "nodes": [{"id": "pinned"}], "edges": [], "problems": [],
+    }))
+    subprocess.run(["git", "-C", str(repository), "add", "graph.json"], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-qm", "pinned"], check=True)
+    ready_commit = subprocess.check_output(
+      ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    (self.root / ".ready").write_text(json.dumps({"commit": ready_commit}))
+    self._runs(
+      {
+        "status": "published", "run_id": "prior", "commit": ready_commit,
+        "finished_at": "2026-07-19T05:35:00+00:00",
+      },
+      {
+        "status": "degraded", "run_id": "failed-current",
+        "finished_at": "2026-07-20T05:35:00+00:00",
+        "error_code": "writer_failed",
+      },
+    )
+    update_log = self.root / "app-state" / "update-log"
+    update_log.mkdir()
+    (update_log / "2026-07-20.jsonl").write_text("".join([
+      json.dumps({
+        "run_id": "prior", "commit": ready_commit,
+        "timestamp": "2026-07-19T05:35:00+00:00",
+        "followups": ["pinned"],
+      }) + "\n",
+      json.dumps({
+        "run_id": "failed-current", "commit": "f" * 40,
+        "timestamp": "2026-07-20T05:35:00+00:00",
+        "followups": ["must not leak"],
+      }) + "\n",
+    ]))
+    (repository / "graph.json").write_text(json.dumps({
+      "nodes": [{}, {}, {}], "edges": [{}, {}],
+      "problems": [{"severity": "error"}],
+    }))
+
+    health = self._health_on_20th()
+
+    self.assertFalse(health["current_run_unassessed"])
+    self.assertEqual(health["last_run"]["run_id"], "failed-current")
+    self.assertEqual(health["last_failure"]["run_id"], "failed-current")
+    self.assertIn("latest_run_unsuccessful", health["reasons"])
+    self.assertEqual(health["latest_graph"], {
+      "nodes": 1, "edges": 0, "problems": 0,
+      "warnings": 0, "blocking_problems": 0,
+    })
+    self.assertEqual(health["consumed_publication"]["run_id"], "prior")
+    self.assertEqual(health["consumed_publication"]["commit"], ready_commit)
+    self.assertEqual(health["latest_writer_update"]["followups"], ["pinned"])
+    self.assertNotIn("must not leak", json.dumps(health))
+
+  def test_dangling_ready_pointer_is_not_fabricated_as_available_publication(self):
+    (self.root / ".ready").write_text(json.dumps({"commit": "f" * 40}))
+
+    health = self._health_on_20th()
+
+    self.assertFalse(health["available"])
+    self.assertFalse(health["consumed_publication"]["finalized"])
+    self.assertIsNone(health["latest_graph"])
+    self.assertIn("ready_publication_unreadable", health["reasons"])
+
+  def test_matching_run_cannot_make_an_unreadable_ready_revision_available(self):
+    commit = "e" * 40
+    self._runs({
+      "status": "published", "run_id": "missing-object", "commit": commit,
+      "finished_at": "2026-07-20T05:35:00+00:00",
+    })
+    (self.root / ".ready").write_text(json.dumps({"commit": commit}))
+
+    health = self._health_on_20th()
+
+    self.assertFalse(health["available"])
+    self.assertTrue(health["consumed_publication"]["publication_matches"])
+    self.assertFalse(health["consumed_publication"]["finalized"])
+    self.assertIn("ready_publication_unreadable", health["reasons"])
+
+  def test_moving_unpublished_memory_without_ready_never_leaks_live_bytes(self):
+    (self.root / "repository" / "graph.json").write_text(json.dumps({
+      "nodes": [{"private": "moving"}], "edges": [], "problems": [],
+    }))
+    update_log = self.root / "app-state" / "update-log"
+    update_log.mkdir()
+    (update_log / "2026-07-20.jsonl").write_text(json.dumps({
+      "run_id": "moving", "timestamp": "2026-07-20T05:35:00+00:00",
+      "followups": ["must not leak"],
+    }) + "\n")
+    (self.root / "app-state" / "run-status.json").write_text(json.dumps({
+      "status": "running", "run_id": "moving",
+      "started_at": "2026-07-20T05:30:00+00:00",
+    }))
+
+    health = memory_health.build_health(
+      self.root, now=dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),
+      dependency={"status": "timeout"},
+    )
+
+    self.assertTrue(health["current_run_unassessed"])
+    self.assertIsNone(health["latest_graph"])
+    self.assertIsNone(health["latest_writer_update"])
+    self.assertNotIn("must not leak", json.dumps(health))
+
   def test_stale_status_file_does_not_hide_a_newer_terminal_run(self):
     self._runs({
       "status": "published", "run_id": "newer",
@@ -384,6 +556,68 @@ class MemoryHealthTests(unittest.TestCase):
 
     self.assertEqual(health["consecutive_unsuccessful_runs"], 1)
     self.assertEqual(health["last_failure"]["error_code"], "latest")
+
+  def test_waits_for_ready_pointer_to_match_the_terminal_publication(self):
+    status = self.root / "app-state" / "run-status.json"
+    status.write_text(json.dumps({
+      "status": "running", "run_id": "today",
+      "started_at": "2026-07-20T05:30:00+00:00",
+    }))
+    clock = {"now": 0.0, "published": False}
+
+    def monotonic():
+      return clock["now"]
+
+    def sleep(seconds):
+      clock["now"] += seconds
+      if not clock["published"]:
+        clock["published"] = True
+        status.write_text(json.dumps({
+          "status": "published", "run_id": "today", "commit": "abc123",
+          "started_at": "2026-07-20T05:30:00+00:00",
+          "finished_at": "2026-07-20T06:20:00+00:00",
+        }))
+        (self.root / ".ready").write_text(json.dumps({"commit": "abc123"}))
+
+    result = memory_health.await_finalized_run(
+      self.root, timeout_seconds=5, poll_seconds=1,
+      monotonic=monotonic, sleep=sleep,
+    )
+
+    self.assertEqual(result["status"], "finalized")
+    self.assertEqual(result["run"]["commit"], "abc123")
+    self.assertTrue(result["run"]["publication_matches"])
+    self.assertEqual(result["waited_seconds"], 1.0)
+
+  def test_published_status_without_matching_ready_pointer_times_out(self):
+    (self.root / "app-state" / "run-status.json").write_text(json.dumps({
+      "status": "published", "run_id": "today", "commit": "new",
+      "finished_at": "2026-07-20T06:20:00+00:00",
+    }))
+    (self.root / ".ready").write_text(json.dumps({"commit": "old"}))
+    clock = {"now": 0.0}
+
+    result = memory_health.await_finalized_run(
+      self.root, timeout_seconds=2, poll_seconds=1,
+      monotonic=lambda: clock["now"],
+      sleep=lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+
+    self.assertEqual(result["status"], "timeout")
+    self.assertFalse(result["run"]["publication_matches"])
+
+  def test_health_records_the_exact_consumed_publication(self):
+    self._runs({
+      "status": "published", "run_id": "today", "commit": "abc123",
+      "finished_at": "2026-07-20T05:35:00+00:00",
+    })
+    (self.root / ".ready").write_text(json.dumps({"commit": "abc123"}))
+
+    health = self._health_on_20th()
+
+    self.assertEqual(health["consumed_publication"]["run_id"], "today")
+    self.assertEqual(health["consumed_publication"]["commit"], "abc123")
+    self.assertTrue(health["consumed_publication"]["finalized"])
 
   def test_full_retry_queue_requires_attention(self):
     self._runs({

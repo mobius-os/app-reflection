@@ -54,10 +54,10 @@ deliberate and all in service of "autonomous":
     agent decides its own sub-steps via tool use. The wrapper's
     two-hour wall clock is the one execution bound.
 
-One reliability layer protects the brief: when the main session ends
-in error and tonight's brief file is missing, `run()` spawns one rescue
-session whose only goal is a minimal brief from whatever the main run
-left behind. The rescue never spawns another rescue.
+The outer shell wrapper owns the minimum-brief safety net. A process cannot
+reliably write its own post-mortem when that process is what timed out or was
+killed, so this runner reports one honest exit code and leaves failure
+publication to its surviving supervisor.
 
 Importability: every heavyweight import (the SDK) is inside `run()`,
 so `import backend.scripts.reflection_runner` (and `py_compile`) works
@@ -160,10 +160,8 @@ GENERIC_MODEL_RC = 64
 USAGE_LIMIT_RC = 65
 # A CLI auth failure (a 401 / expired credential). Named AUTH_FAILURE_RC for
 # the existing call sites; conceptually "provider auth expired." Distinct from
-# a generic model error so the guaranteed-brief layer can skip the doomed CLI
-# rescue (which would just 401 again and burn the budget) and have the Python
-# runner write a static brief itself, so a brief lands even when the model is
-# unreachable. The CLI mislabels a 401 ResultMessage as subtype="success"
+# a generic model error so the outer wrapper can name the failure accurately.
+# The CLI mislabels a 401 ResultMessage as subtype="success"
 # while setting is_error=True, so the only reliable signal is the error/result
 # STRING — `_is_auth_failure` matches it.
 AUTH_FAILURE_RC = 66
@@ -183,9 +181,8 @@ _AUTH_FAILURE_MARKERS = (
 # Substrings that mark a result/error string as a provider USAGE/RATE limit
 # (a weekly cap, a 429, quota exhaustion) rather than a transient model error.
 # A heuristic, matched case-insensitively and kept deliberately conservative:
-# a miss just falls through to GENERIC_MODEL_RC and the ordinary CLI rescue,
-# so a false negative costs nothing; a false positive would only skip a rescue
-# that was likely doomed anyway.
+# a miss falls through to GENERIC_MODEL_RC. The outer wrapper still writes a
+# safety notice either way; this classification changes only the explanation.
 _USAGE_LIMIT_MARKERS = (
   "usage limit",
   "rate limit",
@@ -216,11 +213,8 @@ def _is_auth_failure(text: str | None) -> bool:
 def _is_usage_limit(text: str | None) -> bool:
   """True when a result/error string names a provider usage/rate limit.
 
-  Companion to `_is_auth_failure`: an account that has hit its weekly cap
-  won't recover within the night, so a CLI rescue would just burn budget on
-  another blocked call. Routing this to USAGE_LIMIT_RC both labels the night
-  honestly and lets the guaranteed-brief layer write a static "blocked night"
-  brief instead of a doomed rescue. See `_USAGE_LIMIT_MARKERS`.
+  Companion to `_is_auth_failure`: routing a weekly/rate cap to
+  USAGE_LIMIT_RC lets the outer wrapper publish an accurate safety notice.
   """
   if not text:
     return False
@@ -257,9 +251,8 @@ def todays_brief_path() -> Path | None:
   The brief lands in the Reflection app's NUMERIC storage dir
   (`/data/apps/<id>/reports/<date>.html`); the numeric id is staged
   by fetch.sh at inputs/app_id before the runner starts. A missing or
-  empty stage means the path can't be resolved here — callers treat
-  that as "assume no brief" and let the rescue agent resolve the id
-  itself.
+  empty stage means the path can't be resolved here — callers treat it as
+  "assume no brief" and let the outer wrapper own the missing deliverable.
   """
   storage_dir = reflection_storage_dir()
   if storage_dir is None:
@@ -271,7 +264,7 @@ def todays_brief_path() -> Path | None:
   )
 
 
-def brief_rescue_needed(brief_path: Path | None) -> bool:
+def brief_missing(brief_path: Path | None) -> bool:
   """True unless the expected brief is already on disk."""
   if brief_path is None:
     return True
@@ -284,33 +277,7 @@ def configured_fallback_needed(
   brief_path: Path | None,
 ) -> bool:
   """A configured second agent gets one turn after any failed empty run."""
-  return rc != 0 and fallback is not None and brief_rescue_needed(brief_path)
-
-
-def build_fallback_goal() -> str:
-  """Builds the goal message for the guaranteed-brief rescue pass."""
-  from datetime import date
-  today = date.today().isoformat()
-  runs_dir = DATA_DIR / "apps" / "reflection" / "runs" / today
-  inputs_dir = DATA_DIR / "apps" / "reflection" / "inputs"
-  return "\n".join([
-    f"The main Reflection run of {today} ended before it "
-    "could deliver the brief. You are a focused rescue pass with ONE "
-    "goal: the partner must not wake to nothing.",
-    "",
-    "Do NOT restart the night's phases. Instead:",
-    f"1. Skim what the run left behind: {runs_dir}/ (interviews, "
-    f"working notes) and `git -C {DATA_DIR} log --oneline -10` for "
-    "what it committed.",
-    "2. Write a minimal self-contained HTML brief — a heading plus a "
-    "few honest paragraphs covering what got done and what was cut "
-    f"off mid-flight — to {DATA_DIR}/apps/$APP_ID/reports/{today}.html, "
-    f"where APP_ID is the number in {inputs_dir}/app_id (mkdir -p the "
-    "reports dir first). The partner opens the conversation about the "
-    "brief on tap in the Reflection app — you do NOT create a chat.",
-    "3. Commit with pm-commit and stop. The brief file is the one "
-    "non-negotiable deliverable; skip anything that threatens it.",
-  ])
+  return rc != 0 and fallback is not None and brief_missing(brief_path)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -331,74 +298,6 @@ def _atomic_write_text(path: Path, content: str) -> None:
     except OSError:
       pass
     raise
-
-
-def _write_static_floor_brief(brief_path: Path, message_html: str) -> bool:
-  """Atomically writes a minimal, self-contained HTML floor brief.
-
-  The guaranteed-brief layer's whole point is "the partner never wakes to
-  nothing." When the night failed for a reason a CLI rescue can't fix (a 401,
-  or a weekly usage cap), spawning a rescue session would just fail the same
-  way and burn the budget — defeating the guarantee exactly when it matters.
-  So the Python runner writes the brief ITSELF: a heading and one honest line,
-  valid standalone HTML with no template dependency.
-
-  Written to a temp file and `os.replace`d into place so a crash or a
-  `timeout` SIGKILL mid-write can't leave a TRUNCATED `.html` the UI would
-  still list as tonight's brief. Returns True on success; any OS error is
-  logged and swallowed (a failed write must never crash the run — the exit
-  code is the record).
-  """
-  from datetime import date
-  today = date.today().isoformat()
-  html = (
-    "<!DOCTYPE html>\n"
-    '<html lang="en">\n'
-    "<head>\n"
-    '  <meta charset="utf-8">\n'
-    '  <meta name="viewport" content="width=device-width, '
-    'initial-scale=1">\n'
-    f"  <title>Reflection — {today}</title>\n"
-    "</head>\n"
-    "<body>\n"
-    f"  <h1>Reflection — {today}</h1>\n"
-    f"  {message_html}\n"
-    "</body>\n"
-    "</html>\n"
-  )
-  try:
-    _atomic_write_text(brief_path, html)
-    return True
-  except OSError as exc:
-    _log(f"ERROR could not write static floor brief: {exc!r}")
-    return False
-
-
-def write_static_auth_failure_brief(brief_path: Path) -> bool:
-  """Static floor brief for an auth-failure night (see `_write_static_floor_brief`)."""
-  return _write_static_floor_brief(
-    brief_path,
-    "<p>Tonight's reflection couldn't run — the CLI failed to "
-    "authenticate; I'll resume tomorrow.</p>",
-  )
-
-
-def write_static_usage_limit_brief(brief_path: Path) -> bool:
-  """Static floor brief for a usage/rate-limit night (see `_write_static_floor_brief`)."""
-  return _write_static_floor_brief(
-    brief_path,
-    "<p>Tonight's reflection couldn't run — the model's usage limit "
-    "was reached; I'll resume once it resets.</p>",
-  )
-
-
-def write_static_timeout_brief(brief_path: Path) -> bool:
-  """Static floor when the one wall-clock boundary ends an unfinished run."""
-  return _write_static_floor_brief(
-    brief_path,
-    "<p>Tonight's reflection reached its wall-clock safety boundary. "
-    "Any completed work was kept, but the remaining areas were not assessed.</p>",
-  )
 
 
 def _log(message: str) -> None:
@@ -897,12 +796,17 @@ def build_goal(settings: dict) -> str:
     "                          separately as storage_miss_count_in_window: treat them",
     "                          as efficiency evidence, not hard failures)",
     "                          — read to orient phase 4",
+    "  - memory-dependency.json  the wrapper's finalized-handoff receipt,",
+    "                          including how long it waited and the exact run",
+    "                          + .ready commit equality. On timeout, continue",
+    "                          with only the prior pinned publication named by",
+    "                          memory-health; the current run is unassessed.",
     "  - memory-health.json   content-free Memory run/publish health, retry",
     "                          backlog, graph counts, and writer contract. Treat",
     "                          one recovered failure as advisory; diagnose a",
-    "                          current/repeated failure. `last_run` may be a",
-    "                          newer in-progress attempt; assess",
-    "                          `latest_terminal_run` as the completed outcome.",
+    "                          current/repeated failure. `consumed_publication`",
+    "                          names the immutable revision this run received;",
+    "                          `latest_terminal_run` is its completed outcome.",
     "                          recall_activity is the ordered interval since the",
     "                          last completed Reflection run, not a recent-day",
     "                          sample or an automatic verdict. Compare it with",
@@ -1461,13 +1365,11 @@ async def _run_claude_session(
       _log("WARN stream ended without a terminal ResultMessage")
       return GENERIC_MODEL_RC
     if auth_failure:
-      # Distinct from the generic model error: the guaranteed-brief
-      # layer must NOT spawn another CLI session (it would just 401
-      # again) — it writes a static brief itself instead.
+      # Distinct from the generic model error so the outer wrapper can explain
+      # the blocked night without starting another doomed CLI session.
       return AUTH_FAILURE_RC
     if usage_limit:
-      # Same reasoning as auth: a weekly/rate cap won't clear tonight,
-      # so route to a static floor brief rather than a doomed rescue.
+      # Same reasoning as auth: a weekly/rate cap won't clear tonight.
       return USAGE_LIMIT_RC
     if result_error:
       return GENERIC_MODEL_RC
@@ -1565,94 +1467,6 @@ async def _run_agent_choice(
   )
 
 
-async def _maybe_write_fallback_brief(
-  rc: int,
-  *,
-  provider: str,
-  system_prompt: str,
-  env: dict[str, str],
-  model: str | None,
-  effort: str | None,
-  log_fh,
-) -> None:
-  """Guaranteed-brief layer: rescues any completed run that has no brief.
-
-  When the main session ends and tonight's brief file is missing, spawn one
-  focused rescue session whose only goal is a minimal brief built from whatever
-  the run left behind. A zero exit proves the provider loop completed; it does
-  not prove the agent honored the publication contract.
-
-  Blocked-night case (rc in {AUTH_FAILURE_RC, USAGE_LIMIT_RC}): the
-  night died because the model is unreachable for the rest of it — a
-  401, or a usage/rate cap that won't reset before morning. Spawning
-  another CLI session would just fail the same way, defeating the
-  guarantee exactly when it's needed — so the Python runner writes a
-  minimal static brief ITSELF (no CLI) and stops. When the brief path
-  can't be resolved (app id unstaged), there's nowhere to write, so
-  fall through to the normal rescue as a last resort.
-
-  Recursion guard: this helper is called exactly once, from run(),
-  after the MAIN session only. The rescue session it spawns goes
-  through the plain session helper with no further fallback, so a
-  failing rescue ends the night instead of recursing.
-  Best-effort throughout — the rescue must never turn a recorded
-  failure into a crash, and the main run's exit code is preserved
-  either way so cron_outcome stays honest about the night.
-  """
-  try:
-    brief = todays_brief_path()
-    if not brief_rescue_needed(brief):
-      return
-    if brief is not None and rc in (AUTH_FAILURE_RC, USAGE_LIMIT_RC):
-      # The model is unreachable for the rest of the night (a 401 that
-      # would just 401 again, or a usage cap that won't reset before
-      # morning) — do NOT spawn another doomed CLI session. Write the
-      # static floor brief directly so the partner still wakes to
-      # something honest about why the night didn't run.
-      if rc == AUTH_FAILURE_RC:
-        _log(
-          f"main run failed auth (rc={rc}) with no brief at {brief} — "
-          "writing static auth-failure brief without the CLI"
-        )
-        wrote = write_static_auth_failure_brief(brief)
-        kind = "static auth brief"
-      else:
-        _log(
-          f"main run hit a usage limit (rc={rc}) with no brief at "
-          f"{brief} — writing static usage-limit brief without the CLI"
-        )
-        wrote = write_static_usage_limit_brief(brief)
-        kind = "static usage-limit brief"
-      _log(
-        f"guaranteed-brief fallback finished ({kind}) "
-        f"brief_written={'yes' if wrote else 'no'}"
-      )
-      return
-    _log(
-      f"main run ended (rc={rc}) with no brief at "
-      f"{brief or '(unresolved path)'} — running guaranteed-brief "
-      "fallback"
-    )
-    goal = build_fallback_goal()
-    if provider == "codex":
-      fallback_rc = await _run_codex_session(
-        goal=goal, system_prompt=system_prompt, env=env,
-        model=model, effort=effort, log_fh=log_fh,
-      )
-    else:
-      fallback_rc = await _run_claude_session(
-        goal=goal, system_prompt=system_prompt, env=env, model=model,
-        effort=effort, log_fh=log_fh,
-      )
-    wrote = brief is not None and brief.is_file()
-    _log(
-      f"guaranteed-brief fallback finished rc={fallback_rc} "
-      f"brief_written={'yes' if wrote else 'no'}"
-    )
-  except Exception as exc:
-    _log(f"ERROR guaranteed-brief fallback crashed: {exc!r}")
-
-
 async def run() -> int:
   """Runs the whole Reflection session and returns a process exit code.
 
@@ -1666,10 +1480,9 @@ async def run() -> int:
   usage/rate cap, AUTH_FAILURE_RC (66) for a CLI auth failure (a 401).
   The wrapper maps the exit code into the `cron_outcome` event, so this
   is the one signal the activity log records about whether the night
-  ran. Any completed run that left no brief triggers the guaranteed-brief
-  rescue. A configured distinct second agent is tried first only after a failed
-  empty run; if it also fails or exits cleanly without publishing, the bounded
-  rescue remains the final floor.
+  ran. A configured distinct second agent is tried once after a failed empty
+  run. Whether either agent produced the required brief is judged by the outer
+  wrapper, which survives this process and owns the deterministic floor.
   """
   settings = load_settings()
   agents = _resolve_agents(settings)
@@ -1713,11 +1526,6 @@ async def run() -> int:
       provider = fallback["provider"]
       model = fallback.get("model")
       effort = fallback.get("effort")
-    await _maybe_write_fallback_brief(
-      rc, provider=provider, system_prompt=system_prompt, env=env,
-      model=model, effort=effort, log_fh=log_fh,
-    )
-    finalize_brief_document(todays_brief_path())
     if rc == 0:
       _log("done")
     return rc
@@ -1766,15 +1574,7 @@ async def _run_with_sigterm_shutdown() -> int:
   except asyncio.CancelledError:
     if not sigterm_received:
       raise
-    brief = todays_brief_path()
-    wrote = False
-    if brief is not None and not brief.is_file():
-      wrote = write_static_timeout_brief(brief)
     _log("SIGTERM graceful shutdown complete")
-    _log(
-      "wall-clock floor "
-      f"brief_written={'yes' if wrote else 'already-present' if brief and brief.is_file() else 'no'}"
-    )
     return 128 + signal.SIGTERM
   finally:
     if installed:

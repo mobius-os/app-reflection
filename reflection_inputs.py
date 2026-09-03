@@ -26,6 +26,7 @@ _MANIFEST_INPUTS = (
   ("per-app-digest.json", True),
   ("tool-friction.json", True),
   ("housekeeping.json", True),
+  ("memory-dependency.json", True),
   ("memory-health.json", True),
   ("personalization-profile.json", True),
   ("resource-snapshot.json", True),
@@ -128,23 +129,15 @@ def advance_checkpoint(
   checkpoint: Path,
   *,
   started_at: str,
-  report: Path,
+  brief_written: bool,
   exit_code: int,
   dry_run: bool,
   inputs_complete: bool = True,
 ) -> bool:
   """Advance only after this real run successfully wrote its own brief."""
-  if exit_code != 0 or dry_run or not inputs_complete:
+  if exit_code != 0 or dry_run or not inputs_complete or not brief_written:
     return False
   started = _manifest_time(started_at)
-  try:
-    modified = datetime.datetime.fromtimestamp(
-      report.stat().st_mtime, datetime.timezone.utc,
-    )
-  except OSError:
-    return False
-  if modified < started:
-    return False
   _atomic_json(checkpoint, {
     "schema": 1,
     "since": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -200,6 +193,10 @@ def _manifest_status(inputs: Path, name: str, current: bool) -> tuple[str, str |
         return ("partial" if state == "partial" else "unavailable"), (
           f"housekeeping status is {state}"
         )
+    elif name == "memory-dependency.json":
+      state = str(_json_object(path).get("status") or "unavailable")
+      if state not in {"finalized", "unavailable", "timeout"}:
+        return "unavailable", f"invalid Memory dependency status {state}"
     elif name == "memory-health.json":
       if not _json_object(path).get("available"):
         return "unavailable", "Memory health handoff is unavailable"
@@ -330,6 +327,22 @@ def _api_json(base: str, token: str, path: str, timeout: int = 20):
   )
   with urllib.request.urlopen(request, timeout=timeout) as response:
     return json.loads(response.read().decode("utf-8"))
+
+
+def app_is_installed(base: str, token: str, slug: str) -> bool:
+  """Check the authenticated live-app inventory, never lingering app files."""
+  value = _api_json(base.rstrip("/"), token, "/api/apps/")
+  rows = value.get("apps") if isinstance(value, dict) else value
+  if not isinstance(rows, list):
+    raise ValueError("app discovery returned an invalid payload")
+  wanted = slug.strip().casefold()
+  return any(
+    isinstance(row, dict) and any(
+      isinstance(row.get(key), str) and row[key].strip().casefold() == wanted
+      for key in ("slug", "name")
+    )
+    for row in rows
+  )
 
 
 def _chat_rows(value) -> list[dict]:
@@ -986,10 +999,14 @@ def _main(argv: list[str]) -> int:
   complete = subparsers.add_parser("complete-run")
   complete.add_argument("checkpoint", type=Path)
   complete.add_argument("started_at")
-  complete.add_argument("report", type=Path)
+  complete.add_argument("brief_written", choices=("true", "false"))
   complete.add_argument("exit_code", type=int)
   complete.add_argument("dry_run", choices=("true", "false"))
   complete.add_argument("inputs_complete", choices=("true", "false"))
+  installed = subparsers.add_parser("app-installed")
+  installed.add_argument("base")
+  installed.add_argument("token")
+  installed.add_argument("slug")
   answers = subparsers.add_parser("question-answers")
   answers.add_argument("base")
   answers.add_argument("token")
@@ -1033,10 +1050,14 @@ def _main(argv: list[str]) -> int:
       print("true" if advance_checkpoint(
         args.checkpoint,
         started_at=args.started_at,
-        report=args.report,
+        brief_written=args.brief_written == "true",
         exit_code=args.exit_code,
         dry_run=args.dry_run == "true",
         inputs_complete=args.inputs_complete == "true",
+      ) else "false")
+    elif args.command == "app-installed":
+      print("true" if app_is_installed(
+        args.base, args.token, args.slug,
       ) else "false")
     elif args.command == "question-answers":
       print(stage_question_answers(
