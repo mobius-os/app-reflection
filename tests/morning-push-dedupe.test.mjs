@@ -29,7 +29,12 @@ test('morning push is idempotent per day and fails open', async () => {
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
   await mkdir(join(dataDir, 'cron-logs'), { recursive: true })
   const runner = join(dataDir, 'runner.py')
-  await writeFile(runner, 'raise SystemExit(0)\n')
+  await writeFile(runner, `
+import datetime, os, pathlib
+root = pathlib.Path(os.environ["DATA_DIR"]) / "apps" / "1" / "reports"
+root.mkdir(parents=True, exist_ok=True)
+(root / f"{datetime.date.today().isoformat()}.html").write_text("<html>brief</html>\\n")
+`)
 
   // fetch.sh names the brief with the server-local date (`date +%F`); the
   // dedupe guard compares sent_at (UTC) against the current UTC date. Both
@@ -42,7 +47,6 @@ test('morning push is idempotent per day and fails open', async () => {
   ].join('-')
   const reports = join(dataDir, 'apps', '1', 'reports')
   await mkdir(reports, { recursive: true })
-  await writeFile(join(reports, `${localDate}.html`), '<html>brief</html>\n')
 
   let history = []
   let historyStatus = 200

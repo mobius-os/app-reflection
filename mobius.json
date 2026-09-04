@@ -56,6 +56,7 @@
     "housekeeping.py",
     "resource_monitor.py",
     "memory_health.py",
+    "reflection_floor_brief.py",
     "experiment_status.py",
     "personalization_profile.py",
     "tool_friction.py",

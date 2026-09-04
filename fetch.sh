@@ -43,10 +43,18 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 RUNTIME_DIR="$DATA_DIR/apps/$APP_ID"
 RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 INPUT_HELPER="$SCRIPT_DIR/reflection_inputs.py"
-# Wall-clock cap for the whole night. Generous (the agent does real,
-# multi-phase work) but bounded so a wedged run can't hold the lock past
-# the next night's schedule. Overridable for tests.
+MEMORY_HEALTH="$SCRIPT_DIR/memory_health.py"
+FLOOR_BRIEF="$SCRIPT_DIR/reflection_floor_brief.py"
+# Wall-clock cap for the agent phase. Generous (the agent does real,
+# multi-phase work) but bounded so a wedged model can't hold the lock past the
+# next night's schedule. The preceding Memory wait has its own smaller bound.
 RUN_TIMEOUT="${REFLECTION_TIMEOUT:-7200}"
+# Reflection starts while Memory is commonly still publishing. Wait on that
+# exact current run rather than guessing a later cron time. If Memory is absent
+# there is nothing to wait for; if it is moving, the bounded gate prevents
+# Reflection from reviewing a half-published graph forever.
+MEMORY_WAIT_TIMEOUT="${REFLECTION_MEMORY_WAIT_TIMEOUT:-5400}"
+MEMORY_WAIT_POLL="${REFLECTION_MEMORY_WAIT_POLL:-15}"
 # Rotate only between runs, while this wrapper owns the no-overlap lock and
 # before the runner opens its long-lived append descriptor. One primary archive
 # plus one fixed failure fallback is enough because run metrics/activity events
@@ -55,6 +63,8 @@ LOG_MAX_BYTES="${REFLECTION_LOG_MAX_BYTES:-1048576}"
 [[ "$LOG_MAX_BYTES" =~ ^[0-9]+$ ]] || LOG_MAX_BYTES=1048576
 RUN_METRICS="$RUNTIME_DIR/reflection-run-metrics.jsonl"
 RUN_CHECKPOINT="$RUNTIME_DIR/reflection-checkpoint.json"
+RUN_REPORT="$RUNTIME_DIR/reports/$DATE.html"
+REPORT_RECEIPT="$DATA_DIR/cron-logs/reflection-report-$APP_ID.receipt.json"
 MODEL_USAGE="$INPUTS/model-usage.json"
 LATEST_EFFORT="$INPUTS/latest-effort.json"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
@@ -83,7 +93,8 @@ log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
 # run + the Reflection app can tell a real success from a no-op):
 #   0  success           3  service token missing
 #   2  app id missing    5  skipped (a prior run still holds the lock)
-#   124 wall-clock timeout    other  agent run error
+#   68 agent omitted its required brief
+#   124 agent wall-clock timeout    other  agent run error
 exec 9>"$LOCK"
 if ! flock -n 9; then
   log "another reflection run holds the lock; skipping this night (exit 5)"
@@ -174,6 +185,98 @@ export SERVICE_TOKEN AGENT_TOKEN="$SERVICE_TOKEN"
 auth=(-H "Authorization: Bearer $SERVICE_TOKEN")
 
 log "start (app_id=$APP_ID date=$DATE dry=${REFLECTION_DRY:-0} timeout=${RUN_TIMEOUT}s)"
+
+# A timestamp cannot prove publication: a retained file may be future-dated or
+# share this run's whole-second mtime. Capture an exact pre-run identity before
+# any agent or floor writer can touch today's report.
+if ! python3 "$FLOOR_BRIEF" start-receipt \
+    "$REPORT_RECEIPT" "$RUN_REPORT" "$RUN_ID" >>"$LOG" 2>&1; then
+  log "ERROR could not record the pre-run brief fingerprint"
+  exit 1
+fi
+
+# --- heartbeat: prove liveness for the whole supervised run ----------
+# Start before the Memory dependency wait: a healthy wait must not look like a
+# wedged Reflection job. fd 9 is closed in the child so the helper cannot keep
+# the no-overlap lock alive after the wrapper exits.
+heartbeat_loop() {
+  local sleep_pid=""
+  trap '[[ -z "$sleep_pid" ]] || kill "$sleep_pid" 2>/dev/null || true; exit 0' TERM INT
+  while true; do
+    date -Iseconds >"$HEARTBEAT" 2>/dev/null || true
+    sleep 60 &
+    sleep_pid=$!
+    wait "$sleep_pid" 2>/dev/null || true
+    sleep_pid=""
+  done
+}
+heartbeat_loop 9>&- &
+HEARTBEAT_PID=$!
+cleanup() {
+  if [[ -n "${HEARTBEAT_PID:-}" ]]; then
+    kill "$HEARTBEAT_PID" 2>/dev/null || true
+    wait "$HEARTBEAT_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# --- finalized Memory handoff ----------------------------------------
+# Memory's run-status becomes terminal after the writer finishes, and a
+# published run is consumable only when the atomic .ready pointer names the
+# same commit. The helper waits only while that boundary is moving. Its compact
+# receipt is staged with the rest of Reflection's inputs so every conclusion
+# can name the exact immutable Memory revision it assessed.
+MEMORY_DEPENDENCY="$INPUTS/memory-dependency.json"
+rm -f -- "$MEMORY_DEPENDENCY"
+MEMORY_INSTALLED=false
+MEMORY_UNAVAILABLE_REASON="memory_not_installed"
+if memory_installed_result="$(
+  python3 "$INPUT_HELPER" app-installed \
+    "$API_BASE_URL" "$SERVICE_TOKEN" memory 2>>"$LOG"
+)"; then
+  [[ "$memory_installed_result" == "true" ]] && MEMORY_INSTALLED=true
+else
+  MEMORY_UNAVAILABLE_REASON="app_inventory_unavailable"
+  log "WARN installed-app inventory unavailable; treating optional Memory as unavailable"
+fi
+
+if [[ "$MEMORY_INSTALLED" == "true" && -r "$MEMORY_HEALTH" ]]; then
+  python3 "$MEMORY_HEALTH" await-finalized \
+    --memory-root "$DATA_DIR/shared/memory" \
+    --timeout "$MEMORY_WAIT_TIMEOUT" \
+    --poll "$MEMORY_WAIT_POLL" \
+    --output "$MEMORY_DEPENDENCY" 2>>"$LOG"
+  memory_wait_rc=$?
+  if [[ "$memory_wait_rc" == "67" ]]; then
+    log "WARN Memory is still moving after ${MEMORY_WAIT_TIMEOUT}s; proceeding from its prior pinned publication and marking the current run unassessed"
+  elif [[ "$memory_wait_rc" != "0" ]]; then
+    log "WARN Memory dependency check failed (rc=$memory_wait_rc); proceeding without Memory evidence"
+    MEMORY_INSTALLED=false
+    MEMORY_UNAVAILABLE_REASON="dependency_check_failed"
+    rm -f -- "$MEMORY_DEPENDENCY"
+  fi
+else
+  [[ "$MEMORY_INSTALLED" == "true" ]] && MEMORY_UNAVAILABLE_REASON="dependency_helper_unavailable"
+  python3 - "$MEMORY_DEPENDENCY" "$MEMORY_UNAVAILABLE_REASON" <<'PY' 2>>"$LOG" || true
+import json, os, pathlib, sys, tempfile
+target = pathlib.Path(sys.argv[1])
+target.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump({"version": 1, "status": "unavailable", "reason": sys.argv[2], "run": None}, handle)
+    handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+os.replace(temporary, target)
+PY
+fi
+if [[ ! -f "$MEMORY_DEPENDENCY" ]]; then
+  python3 - "$MEMORY_DEPENDENCY" <<'PY' 2>>"$LOG" || true
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "version": 1, "status": "unavailable",
+    "reason": "dependency_check_failed", "run": None,
+}) + "\n", encoding="utf-8")
+PY
+fi
 
 # --- gather read-only inputs for the agent ----------------------------
 # The agent reads these from inputs/ as its starting context. It can (and
@@ -509,18 +612,26 @@ fi
 # memory-health.json — a compact operational contract between the two apps.
 # It exposes status, recovery/backlog counters, and graph counts only: never
 # chat bodies, note contents, proposed facts, or other private Memory data.
-MEMORY_HEALTH="$SCRIPT_DIR/memory_health.py"
-if [[ -r "$MEMORY_HEALTH" ]]; then
+if [[ "$MEMORY_INSTALLED" == "true" && -r "$MEMORY_HEALTH" ]]; then
   if ! python3 "$MEMORY_HEALTH" \
       --memory-root "$DATA_DIR/shared/memory" \
       --since "$SINCE" \
+      --dependency "$MEMORY_DEPENDENCY" \
       --output "$INPUTS/memory-health.json" 2>>"$LOG"; then
     CHECKPOINT_READY=false
     log "WARN Memory health handoff failed"
   fi
 else
-  CHECKPOINT_READY=false
-  log "WARN Memory health helper missing at $MEMORY_HEALTH"
+  python3 - "$INPUTS/memory-health.json" "$MEMORY_UNAVAILABLE_REASON" <<'PY' 2>>"$LOG" || true
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "version": 1, "available": False, "needs_attention": False,
+    "reasons": [sys.argv[2]], "current_run_unassessed": False,
+    "writer_contract": {"owner": "memory", "reflection_may_write_graph": False,
+      "reflection_role": "observe, diagnose, and surface bounded recommendations"},
+}) + "\n", encoding="utf-8")
+PY
+  log "Memory evidence is unavailable ($MEMORY_UNAVAILABLE_REASON); continuing Reflection"
 fi
 
 # Memory owns this profile. Reflection receives a bounded read-only snapshot
@@ -826,42 +937,6 @@ if ! python3 "$INPUT_HELPER" manifest \
 fi
 log "gathered one manifested input bundle (meta model, activity, chats, feedback, app digest, tool friction, housekeeping, resource evidence) into $INPUTS/"
 
-# --- heartbeat: prove liveness while the long run is in flight --------
-# A background loop touches the heartbeat file every 60s. A monitor (or a
-# morning glance) can `stat` it to tell "still reflection" from "wedged".
-# Killed in the cleanup trap below.
-#
-# fd 9 (the flock handle) is CLOSED in the child (`9>&-`) so the lock is
-# held ONLY by the main process. Without this, the backgrounded child
-# inherits fd 9 and keeps the lock alive past the parent's exit until the
-# child is reaped — so the NEXT night's run would spuriously see "another
-# run holds the lock" and skip. The cleanup trap kills the child and
-# waits for it so the lock is fully released by the time we exit.
-heartbeat_loop() {
-  local sleep_pid=""
-  # A backgrounded shell function gets its own PID, but a plain `sleep 60`
-  # inside it is a separate child. Killing only the function used to orphan
-  # that sleep until its timeout (and kept captured stdout pipes open in tests).
-  # Retire the active child before the heartbeat process exits.
-  trap '[[ -z "$sleep_pid" ]] || kill "$sleep_pid" 2>/dev/null || true; exit 0' TERM INT
-  while true; do
-    date -Iseconds >"$HEARTBEAT" 2>/dev/null || true
-    sleep 60 &
-    sleep_pid=$!
-    wait "$sleep_pid" 2>/dev/null || true
-    sleep_pid=""
-  done
-}
-heartbeat_loop 9>&- &
-HEARTBEAT_PID=$!
-cleanup() {
-  if [[ -n "${HEARTBEAT_PID:-}" ]]; then
-    kill "$HEARTBEAT_PID" 2>/dev/null || true
-    wait "$HEARTBEAT_PID" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
-
 # --- run the agent: full tools, real token, no sandbox ----------------
 # The runner loads the reflection skill as the system prompt, sends the
 # goal as the first user message, and drives the multi-turn loop. `timeout`
@@ -883,6 +958,112 @@ else
   elif [[ "$RC" != "0" ]]; then
     log "WARN agent run exited non-zero (rc=$RC)"
   fi
+fi
+
+# --- deterministic outer brief floor --------------------------------
+# The model process cannot guarantee its own post-mortem: it may be the thing
+# that times out, crashes, or is killed. Once it exits, this wrapper checks for
+# a brief whose exact identity changed since the pre-run receipt. If none
+# exists, a stdlib-only helper writes one honest safety notice only when doing
+# so cannot destroy an earlier same-day substantive report.
+FLOOR_BRIEF_WRITTEN=false
+BRIEF_WRITTEN_THIS_RUN=false
+STATE_ADJUSTMENT_NEEDED=false
+STATE_ADJUSTMENT_BASE="$(git -C "$DATA_DIR" rev-parse HEAD 2>/dev/null || true)"
+if [[ "${REFLECTION_DRY:-0}" != "1" ]]; then
+  BRIEF_WRITTEN_THIS_RUN="$(python3 "$FLOOR_BRIEF" check-receipt \
+    "$REPORT_RECEIPT" "$RUN_REPORT" "$RUN_ID" 2>>"$LOG" || printf false)"
+  if [[ "$BRIEF_WRITTEN_THIS_RUN" == "true" ]]; then
+    python3 "$FLOOR_BRIEF" finalize-report "$RUN_REPORT" "$DATE" \
+      >>"$LOG" 2>&1 || log "WARN could not normalize current-run brief metadata"
+  fi
+fi
+if [[ "$RC" != "0" && "${REFLECTION_DRY:-0}" != "1" ]]; then
+  if python3 "$FLOOR_BRIEF" restore-streak \
+    "$REPORT_RECEIPT" "$RUN_REPORT" "$RUN_ID" \
+    >>"$LOG" 2>&1; then
+    STATE_ADJUSTMENT_NEEDED=true
+  else
+    log "WARN could not restore the pre-run streak after failure"
+  fi
+  restore_report_result="$(python3 "$FLOOR_BRIEF" restore-report \
+    "$REPORT_RECEIPT" "$RUN_REPORT" "$RUN_ID" 2>>"$LOG")"
+  restore_report_rc=$?
+  if [[ "$restore_report_result" == "true" ]]; then
+    BRIEF_WRITTEN_THIS_RUN=false
+    log "restored the pre-run same-day brief after the failed retry"
+  elif [[ "$restore_report_rc" != "0" ]]; then
+    # The current bytes came from a failed run and the pre-run snapshot could
+    # not be proven. Never announce them as a successful replacement.
+    BRIEF_WRITTEN_THIS_RUN=false
+    log "ERROR could not restore the pre-run same-day brief; suppressing the failed replacement"
+  elif [[ "$BRIEF_WRITTEN_THIS_RUN" == "true" ]]; then
+    # No same-day report existed before this failed run. The changed file can
+    # only be this run's untrusted partial output, so remove it before the
+    # deterministic floor writer decides whether a report needs creating.
+    BRIEF_WRITTEN_THIS_RUN=false
+    rm -f -- "$RUN_REPORT"
+    log "discarded the failed first-run brief before writing the outer floor"
+  fi
+fi
+if [[ "${REFLECTION_DRY:-0}" != "1" && "$BRIEF_WRITTEN_THIS_RUN" != "true" ]]; then
+  if [[ "$RC" == "0" ]]; then
+    # A clean process exit without its required deliverable is a contract
+    # failure, not a successful quiet night.
+    RC=68
+  fi
+  case "$RC" in
+    65)  FLOOR_REASON="usage_limit" ;;
+    66)  FLOOR_REASON="authentication" ;;
+    68)  FLOOR_REASON="brief_missing" ;;
+    124) FLOOR_REASON="timeout" ;;
+    *)   FLOOR_REASON="runner_failed" ;;
+  esac
+  if [[ -f "$RUN_REPORT" ]]; then
+    log "preserving the existing same-day brief; this failed retry did not publish a replacement"
+  elif [[ -r "$FLOOR_BRIEF" ]] && python3 "$FLOOR_BRIEF" \
+      --storage-dir "$DATA_DIR/apps/$APP_ID" \
+      --date "$DATE" --reason "$FLOOR_REASON" --exit-code "$RC" \
+      >>"$LOG" 2>&1; then
+    FLOOR_BRIEF_WRITTEN=true
+    log "outer brief floor written (reason=$FLOOR_REASON rc=$RC)"
+    # Direct filesystem writes do not pass through the storage API's data
+    # commit. Preserve the notice and headline with the same path-scoped
+    # safety-net commit discipline used by the nightly agent.
+    floor_base="$(git -C "$DATA_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "$floor_base" ]]; then
+      pm-commit --from "$floor_base" "reflection: save $DATE failure brief" -- \
+        "apps/$APP_ID/reports/$DATE.html" "apps/$APP_ID/state.json" \
+        >>"$LOG" 2>&1 || log "WARN outer brief floor could not be committed"
+      STATE_ADJUSTMENT_NEEDED=false
+    fi
+  else
+    log "ERROR outer brief floor could not write tonight's notice"
+  fi
+  if [[ "$FLOOR_BRIEF_WRITTEN" == "true" ]]; then
+    BRIEF_WRITTEN_THIS_RUN="$(python3 "$FLOOR_BRIEF" check-receipt \
+      "$REPORT_RECEIPT" "$RUN_REPORT" "$RUN_ID" 2>>"$LOG" || printf false)"
+  fi
+fi
+
+# The displayed streak is a run outcome, not merely a report-file existence
+# count. Safety notices preserve the prior value; a successful substantive
+# report recalculates consecutive substantive days and naturally starts at one
+# after a failed day.
+if [[ "$RC" == "0" && "$BRIEF_WRITTEN_THIS_RUN" == "true" \
+    && "$FLOOR_BRIEF_WRITTEN" != "true" ]]; then
+  if python3 "$FLOOR_BRIEF" record-success "$RUNTIME_DIR" "$DATE" \
+      >>"$LOG" 2>&1; then
+    STATE_ADJUSTMENT_NEEDED=true
+  else
+    log "WARN could not normalize the substantive brief streak"
+  fi
+fi
+if [[ "$STATE_ADJUSTMENT_NEEDED" == "true" \
+    && -n "$STATE_ADJUSTMENT_BASE" ]]; then
+  pm-commit --from "$STATE_ADJUSTMENT_BASE" \
+    "reflection: reconcile $DATE run state" -- "apps/$APP_ID/state.json" \
+    >>"$LOG" 2>&1 || log "WARN reconciled Reflection state could not be committed"
 fi
 
 # --- deterministic morning-brief push ---------------------------------
@@ -907,9 +1088,11 @@ send_morning_push() {
     log "morning push: skip (dry run)"
     return 0
   }
-  [[ "$RC" == "0" ]] || { log "morning push: skip (rc=$RC)"; return 0; }
-  local brief="$DATA_DIR/apps/$APP_ID/reports/$DATE.html"
-  [[ -f "$brief" ]] || { log "morning push: skip (no brief for $DATE)"; return 0; }
+  local brief="$RUN_REPORT"
+  [[ "$BRIEF_WRITTEN_THIS_RUN" == "true" ]] || {
+    log "morning push: skip (this run did not publish a brief)"
+    return 0
+  }
   # Idempotence guard: the wrapper is the sole intended sender, but an
   # instance whose live (agent-editable) reflection skill predates
   # wrapper-owned delivery may still have the nightly agent curl
@@ -995,14 +1178,14 @@ RUN_CPU_AFTER="$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat 2>/
 python3 - "$RUN_METRICS" "$RUN_STARTED_AT" "$RUN_FINISHED_AT" \
     "$RUN_STARTED_EPOCH" "$RUN_FINISHED_EPOCH" "$RC" \
     "$RUN_DISK_BEFORE" "$RUN_DISK_AFTER" "$RUN_CPU_BEFORE" "$RUN_CPU_AFTER" \
-    "$DATA_DIR/apps/$APP_ID/reports/$DATE.html" "${REFLECTION_DRY:-0}" \
-    "$MODEL_USAGE" "$LATEST_EFFORT" \
+    "${REFLECTION_DRY:-0}" "$MODEL_USAGE" "$LATEST_EFFORT" \
+    "$FLOOR_BRIEF_WRITTEN" "$BRIEF_WRITTEN_THIS_RUN" \
     2>>"$LOG" <<'PY' || log "WARN could not persist reflection run metrics"
 import json, os, pathlib, sys
 
 (path, started_at, finished_at, started_epoch, finished_epoch, rc,
- disk_before, disk_after, cpu_before, cpu_after, report, dry,
- model_usage, latest_effort) = sys.argv[1:]
+ disk_before, disk_after, cpu_before, cpu_after, dry,
+ model_usage, latest_effort, floor_brief_written, brief_written) = sys.argv[1:]
 def integer(value):
     try: return int(value)
     except (TypeError, ValueError): return 0
@@ -1012,13 +1195,13 @@ row = {
     "duration_seconds": max(0, integer(finished_epoch) - integer(started_epoch)),
     "exit_code": integer(rc),
     "dry_run": dry == "1",
-    "brief_written": (
-        pathlib.Path(report).is_file()
-        and pathlib.Path(report).stat().st_mtime >= integer(started_epoch)
-    ),
+    "brief_written": brief_written == "true",
+    "brief_source": "floor" if floor_brief_written == "true" else "agent",
     "disk_used_delta_bytes": integer(disk_after) - integer(disk_before),
     "cgroup_cpu_usage_usec_delta": max(0, integer(cpu_after) - integer(cpu_before)),
 }
+if not row["brief_written"]:
+    row["brief_source"] = "none"
 try:
     receipt = json.load(open(model_usage, encoding="utf-8"))
 except (OSError, ValueError):
@@ -1047,13 +1230,14 @@ PY
 
 checkpoint_result="$(python3 "$INPUT_HELPER" complete-run \
   "$RUN_CHECKPOINT" "$RUN_STARTED_AT" \
-  "$DATA_DIR/apps/$APP_ID/reports/$DATE.html" "$RC" \
+  "$BRIEF_WRITTEN_THIS_RUN" "$RC" \
   "$([[ "${REFLECTION_DRY:-0}" == "1" ]] && printf true || printf false)" \
   "$CHECKPOINT_READY" \
   2>>"$LOG" || true)"
 if [[ "$RC" == "0" && "${REFLECTION_DRY:-0}" != "1" && "$checkpoint_result" != "true" ]]; then
-  log "WARN successful run did not advance its checkpoint (current brief missing or stale)"
+  log "WARN successful run did not advance its checkpoint (no proven current-run brief or incomplete inputs)"
 fi
 
+rm -f -- "${REPORT_RECEIPT}.before"
 log "done (rc=$RC)"
 exit "$RC"

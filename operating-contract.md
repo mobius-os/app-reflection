@@ -68,17 +68,22 @@ no envelope:
      "last_summary": "<one-line headline, ≤200 chars>",
      "last_run": "<UTC ISO timestamp>"}
 
-`streak` counts consecutive calendar days ending today that have a brief file
-in `reports/`. The app renders this header at the top of its screen, and the
-wrapper uses `last_summary` as the body of the morning push — skip this write
-and the streak/summary stay blank and the push falls back to a generic line.
+`streak` counts consecutive successful calendar days ending today that have a
+substantive Reflection brief in `reports/`. The wrapper normalizes that value
+after a successful agent run. Its model-independent safety notice neither
+increments nor resets an existing displayed streak; a later substantive run
+does not count the notice as a successful day. The app renders this header at
+the top of its screen, and the wrapper uses `last_summary` as the body of the
+morning push — skip this write and the streak/summary stay blank and the push
+falls back to a generic line.
 
 ## The morning push
 
 The wrapper (`fetch.sh`) is the SOLE sender of the "Your morning brief is
-ready" notification: it fires deterministically after every successful run
-and dedupes against an already-delivered one. You never send it — the runner
-also hard-blocks the harness push tools.
+ready" notification: it fires deterministically for any brief written during
+the current invocation, including the model-independent safety notice, and
+dedupes against an already-delivered one. You never send it — the runner also
+hard-blocks the harness push tools.
 
 ## Questions for the partner
 

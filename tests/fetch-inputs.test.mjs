@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -44,6 +44,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
   await mkdir(dirname(chatNote), { recursive: true })
   await writeFile(chatNote, 'bounded note\n')
   let failActivity = false
+  let memoryInstalled = false
   const now = new Date().toISOString()
   const activity = [
     { ev: 'app_open', ts: now, app_id: 1 },
@@ -92,7 +93,9 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
       next_before: null,
     })
     if (url.pathname === '/api/apps/') {
-      return json(response, 200, [{ id: 1, name: 'reflection', display_name: 'Reflection' }])
+      const apps = [{ id: 1, name: 'reflection', display_name: 'Reflection' }]
+      if (memoryInstalled) apps.push({ id: 2, name: 'memory', display_name: 'Memory' })
+      return json(response, 200, apps)
     }
     if (url.pathname.startsWith('/api/storage/shared-list/')) {
       return json(response, 200, { entries: [], next_cursor: null })
@@ -289,6 +292,13 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
     // The fake Codex provider leaves one tool in flight; SIGTERM must cancel
     // the asyncio task so _LogBroadcast.close() can preserve its true tail,
     // while the wrapper still records/returns timeout's canonical rc=124.
+    // A lingering Memory status file is present while Memory is not installed;
+    // installed-app state must win, so the runner still starts.
+    await mkdir(join(dataDir, 'shared', 'memory', 'app-state'), { recursive: true })
+    await writeFile(
+      join(dataDir, 'shared', 'memory', 'app-state', 'run-status.json'),
+      JSON.stringify({ status: 'running', run_id: 'uninstalled-stale' }),
+    )
     const fakeBackend = join(dataDir, 'fake-backend')
     const fakeApp = join(fakeBackend, 'app')
     const fakeScripts = join(fakeBackend, 'scripts')
@@ -338,7 +348,7 @@ async def run_codex_sdk_turn(**kwargs):
     assert.match(timeoutLog, /SIGTERM received; cancelling Reflection/)
     assert.match(timeoutLog, /id=term-tool state=incomplete/)
     assert.match(timeoutLog, /UNIQUE-TERM-CONCLUSION/)
-    assert.match(timeoutLog, /wall-clock floor brief_written=yes/)
+    assert.match(timeoutLog, /outer brief floor written \(reason=timeout rc=124\)/)
     assert.match(timeoutLog, /agent run hit the 3s timeout/)
     assert.match(timeoutLog, /done \(rc=124\)/)
     const timeoutBrief = await readFile(
@@ -346,6 +356,183 @@ async def run_codex_sdk_turn(**kwargs):
       'utf8',
     )
     assert.match(timeoutBrief, /wall-clock safety boundary/)
+
+    // A model process can return zero without honoring its publication
+    // contract. The wrapper, not another model session inside that process,
+    // must turn this into a truthful non-zero outcome plus a minimal brief.
+    const today = new Date().toISOString().slice(0, 10)
+    const report = join(dataDir, 'apps', '1', 'reports', `${today}.html`)
+    await rm(report, { force: true })
+    const noBriefRunner = join(dataDir, 'no-brief-runner.py')
+    await writeFile(noBriefRunner, 'raise SystemExit(0)\n')
+    let missingBriefError
+    try {
+      await run({
+        REFLECTION_DRY: '0',
+        REFLECTION_TIMEOUT: '5',
+        REFLECTION_RUNNER: noBriefRunner,
+      })
+    } catch (error) {
+      missingBriefError = error
+    }
+    assert.equal(missingBriefError?.code, 68)
+    const missingBrief = await readFile(report, 'utf8')
+    assert.match(missingBrief, /finished without publishing/)
+    const missingBriefLog = await readFile(join(cronLogs, 'reflection.log'), 'utf8')
+    assert.match(missingBriefLog, /outer brief floor written \(reason=brief_missing rc=68\)/)
+
+    // A failed same-day retry must not destroy or announce an earlier
+    // successful report. A future timestamp is deliberately used to prove the
+    // wrapper relies on its pre-run fingerprint, not wall-clock ordering.
+    const priorBrief = '<html><head><title>Morning brief</title></head><body>valuable earlier result</body></html>'
+    await writeFile(report, priorBrief)
+    await utimes(report, new Date('2030-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'))
+    let retryError
+    try {
+      await run({
+        REFLECTION_DRY: '0', REFLECTION_TIMEOUT: '5',
+        REFLECTION_RUNNER: noBriefRunner,
+      })
+    } catch (error) {
+      retryError = error
+    }
+    assert.equal(retryError?.code, 68)
+    assert.equal(await readFile(report, 'utf8'), priorBrief)
+    const retryMetrics = (await readFile(
+      join(dataDir, 'apps', '1', 'reflection-run-metrics.jsonl'), 'utf8',
+    )).trim().split('\n').map(JSON.parse).at(-1)
+    assert.equal(retryMetrics.brief_written, false)
+    assert.equal(retryMetrics.brief_source, 'none')
+    assert.match(
+      await readFile(join(cronLogs, 'reflection.log'), 'utf8'),
+      /preserving the existing same-day brief/,
+    )
+
+    // A failed runner may overwrite today's path before it exits. Preserve the
+    // exact earlier substantive bytes rather than announcing failed output.
+    const failedReplacementRunner = join(dataDir, 'failed-replacement-runner.py')
+    await writeFile(failedReplacementRunner, `
+import datetime, os, pathlib
+date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+report = pathlib.Path(os.environ["DATA_DIR"]) / "apps" / "1" / "reports" / f"{date}.html"
+report.write_text("<html>partial failed retry</html>", encoding="utf-8")
+raise SystemExit(9)
+`)
+    let replacementError
+    try {
+      await run({
+        REFLECTION_DRY: '0', REFLECTION_TIMEOUT: '5',
+        REFLECTION_RUNNER: failedReplacementRunner,
+      })
+    } catch (error) {
+      replacementError = error
+    }
+    assert.equal(replacementError?.code, 9)
+    assert.equal(await readFile(report, 'utf8'), priorBrief)
+    const replacementMetrics = (await readFile(
+      join(dataDir, 'apps', '1', 'reflection-run-metrics.jsonl'), 'utf8',
+    )).trim().split('\n').map(JSON.parse).at(-1)
+    assert.equal(replacementMetrics.brief_written, false)
+    assert.equal(replacementMetrics.brief_source, 'none')
+    assert.match(
+      await readFile(join(cronLogs, 'reflection.log'), 'utf8'),
+      /restored the pre-run same-day brief after the failed retry/,
+    )
+    await assert.rejects(
+      readFile(join(cronLogs, 'reflection-report-1.receipt.json.before')),
+      { code: 'ENOENT' },
+    )
+
+    // A failed first run has no earlier report to restore. Discard any partial
+    // agent output and publish the deterministic failure notice instead.
+    await rm(report, { force: true })
+    let firstRunReplacementError
+    try {
+      await run({
+        REFLECTION_DRY: '0', REFLECTION_TIMEOUT: '5',
+        REFLECTION_RUNNER: failedReplacementRunner,
+      })
+    } catch (error) {
+      firstRunReplacementError = error
+    }
+    assert.equal(firstRunReplacementError?.code, 9)
+    const firstRunFallback = await readFile(report, 'utf8')
+    assert.match(firstRunFallback, /before it could publish a trustworthy morning brief/)
+    assert.doesNotMatch(firstRunFallback, /partial failed retry/)
+    const firstRunReplacementMetrics = (await readFile(
+      join(dataDir, 'apps', '1', 'reflection-run-metrics.jsonl'), 'utf8',
+    )).trim().split('\n').map(JSON.parse).at(-1)
+    assert.equal(firstRunReplacementMetrics.brief_written, true)
+    assert.equal(firstRunReplacementMetrics.brief_source, 'floor')
+    assert.match(
+      await readFile(join(cronLogs, 'reflection.log'), 'utf8'),
+      /discarded the failed first-run brief before writing the outer floor/,
+    )
+
+    // An installed but still-moving Memory is bounded rather than becoming a
+    // hard dependency. Reflection consumes the prior .ready graph revision,
+    // marks the moving run unassessed, and can still publish successfully.
+    const memoryRoot = join(dataDir, 'shared', 'memory')
+    const memoryRepo = join(memoryRoot, 'repository')
+    const memoryState = join(memoryRoot, 'app-state')
+    await mkdir(join(memoryState, 'run-log'), { recursive: true })
+    await mkdir(memoryRepo, { recursive: true })
+    await execFileAsync('git', ['init', '-q', memoryRepo])
+    await execFileAsync('git', ['-C', memoryRepo, 'config', 'user.name', 'Test'])
+    await execFileAsync('git', ['-C', memoryRepo, 'config', 'user.email', 'test@example.com'])
+    await writeFile(join(memoryRepo, 'graph.json'), JSON.stringify({
+      nodes: [{ id: 'pinned' }], edges: [], problems: [],
+    }))
+    await execFileAsync('git', ['-C', memoryRepo, 'add', 'graph.json'])
+    await execFileAsync('git', ['-C', memoryRepo, 'commit', '-qm', 'pinned'])
+    const { stdout: readyStdout } = await execFileAsync(
+      'git', ['-C', memoryRepo, 'rev-parse', 'HEAD'],
+    )
+    const readyCommit = readyStdout.trim()
+    await writeFile(join(memoryRoot, '.ready'), JSON.stringify({ commit: readyCommit }))
+    await writeFile(join(memoryState, 'run-log', '2026-09-03.jsonl'), JSON.stringify({
+      status: 'published', run_id: 'prior-memory', commit: readyCommit,
+      finished_at: '2026-09-02T05:30:00+00:00',
+    }) + '\n')
+    await writeFile(join(memoryState, 'run-status.json'), JSON.stringify({
+      status: 'running', run_id: 'moving-memory',
+      started_at: '2026-09-03T05:30:00+00:00',
+    }))
+    // The uncommitted live graph is newer moving data and must not leak into
+    // the pinned health handoff.
+    await writeFile(join(memoryRepo, 'graph.json'), JSON.stringify({
+      nodes: [{}, {}, {}], edges: [{}, {}], problems: [{ severity: 'error' }],
+    }))
+    memoryInstalled = true
+    failActivity = false
+    const publishingRunner = join(dataDir, 'publishing-runner.py')
+    await writeFile(publishingRunner, `
+import datetime, os, pathlib, tempfile
+date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+report = pathlib.Path(os.environ["DATA_DIR"]) / "apps" / "1" / "reports" / f"{date}.html"
+report.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(dir=report.parent)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    handle.write(f"<html><head><title>Morning brief — {date}</title></head><body>new run</body></html>")
+os.utime(temporary, (1700000000, 1700000000))
+os.replace(temporary, report)
+`)
+    await run({
+      REFLECTION_DRY: '0', REFLECTION_TIMEOUT: '5',
+      REFLECTION_MEMORY_WAIT_TIMEOUT: '0',
+      REFLECTION_RUNNER: publishingRunner,
+    })
+    const dependency = JSON.parse(await readFile(
+      join(dataDir, 'apps', 'reflection', 'inputs', 'memory-dependency.json'), 'utf8',
+    ))
+    const pinnedHealth = JSON.parse(await readFile(
+      join(dataDir, 'apps', 'reflection', 'inputs', 'memory-health.json'), 'utf8',
+    ))
+    assert.equal(dependency.status, 'timeout')
+    assert.equal(pinnedHealth.current_run_unassessed, true)
+    assert.equal(pinnedHealth.consumed_publication.commit, readyCommit)
+    assert.equal(pinnedHealth.latest_graph.nodes, 1)
+    assert.match(await readFile(report, 'utf8'), /new run/)
   } finally {
     server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))

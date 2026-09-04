@@ -395,6 +395,10 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
     self.assertIn("storage_miss_count_in_window", goal)
     self.assertIn("efficiency evidence, not hard failures", goal)
     self.assertIn("do not repeat a hardened check", goal)
+    self.assertIn("continue", goal)
+    self.assertIn("prior pinned publication", goal)
+    self.assertIn("current run is unassessed", goal)
+    self.assertNotIn("timeout prevents", goal.lower())
 
   def test_goal_names_activity_and_question_engagement_evidence(self):
     with tempfile.TemporaryDirectory() as raw:
@@ -544,29 +548,27 @@ class AgentOverrideTests(unittest.TestCase):
 
 
 class ConfiguredFallbackTests(unittest.IsolatedAsyncioTestCase):
-  async def test_clean_run_without_a_brief_still_runs_the_rescue(self):
+  async def test_clean_run_without_a_brief_does_not_spawn_an_internal_rescue(self):
     with tempfile.TemporaryDirectory() as raw:
       brief = Path(raw) / "missing.html"
-      rescue = mock.AsyncMock(return_value=0)
+      primary = {"provider": "claude", "model": None, "effort": None}
+      runner = mock.AsyncMock(return_value=0)
       with (
-        mock.patch.object(
-          reflection_runner, "todays_brief_path", return_value=brief,
-        ),
-        mock.patch.object(
-          reflection_runner, "_run_claude_session", rescue,
-        ),
+        mock.patch.object(reflection_runner, "LOG_PATH", Path(raw) / "log"),
+        mock.patch.object(reflection_runner, "load_settings", return_value={}),
+        mock.patch.object(reflection_runner, "_resolve_agents", return_value={"primary": primary, "fallback": None}),
+        mock.patch.object(reflection_runner, "build_system_prompt", return_value="system"),
+        mock.patch.object(reflection_runner, "seed_brief_template"),
+        mock.patch.object(reflection_runner, "build_goal", return_value="goal"),
+        mock.patch.object(reflection_runner, "build_env", return_value={}),
+        mock.patch.object(reflection_runner, "_log"),
+        mock.patch.object(reflection_runner, "todays_brief_path", return_value=brief),
+        mock.patch.object(reflection_runner, "_run_agent_choice", runner),
       ):
-        await reflection_runner._maybe_write_fallback_brief(
-          0,
-          provider="claude",
-          system_prompt="system",
-          env={},
-          model=None,
-          effort=None,
-          log_fh=None,
-        )
+        rc = await reflection_runner.run()
 
-    rescue.assert_awaited_once()
+    self.assertEqual(rc, 0)
+    runner.assert_awaited_once()
 
   async def test_generic_primary_failure_tries_the_distinct_configured_fallback(self):
     primary = {"provider": "claude", "model": "claude-primary", "effort": "high"}
