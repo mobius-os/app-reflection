@@ -439,8 +439,34 @@ raise SystemExit(9)
       /restored the pre-run same-day brief after the failed retry/,
     )
     await assert.rejects(
-      readFile(join(dataDir, 'apps', '1', 'reflection-report-receipt.json.before')),
+      readFile(join(cronLogs, 'reflection-report-1.receipt.json.before')),
       { code: 'ENOENT' },
+    )
+
+    // A failed first run has no earlier report to restore. Discard any partial
+    // agent output and publish the deterministic failure notice instead.
+    await rm(report, { force: true })
+    let firstRunReplacementError
+    try {
+      await run({
+        REFLECTION_DRY: '0', REFLECTION_TIMEOUT: '5',
+        REFLECTION_RUNNER: failedReplacementRunner,
+      })
+    } catch (error) {
+      firstRunReplacementError = error
+    }
+    assert.equal(firstRunReplacementError?.code, 9)
+    const firstRunFallback = await readFile(report, 'utf8')
+    assert.match(firstRunFallback, /before it could publish a trustworthy morning brief/)
+    assert.doesNotMatch(firstRunFallback, /partial failed retry/)
+    const firstRunReplacementMetrics = (await readFile(
+      join(dataDir, 'apps', '1', 'reflection-run-metrics.jsonl'), 'utf8',
+    )).trim().split('\n').map(JSON.parse).at(-1)
+    assert.equal(firstRunReplacementMetrics.brief_written, true)
+    assert.equal(firstRunReplacementMetrics.brief_source, 'floor')
+    assert.match(
+      await readFile(join(cronLogs, 'reflection.log'), 'utf8'),
+      /discarded the failed first-run brief before writing the outer floor/,
     )
 
     // An installed but still-moving Memory is bounded rather than becoming a

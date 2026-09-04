@@ -997,6 +997,13 @@ if [[ "$RC" != "0" && "${REFLECTION_DRY:-0}" != "1" ]]; then
     # not be proven. Never announce them as a successful replacement.
     BRIEF_WRITTEN_THIS_RUN=false
     log "ERROR could not restore the pre-run same-day brief; suppressing the failed replacement"
+  elif [[ "$BRIEF_WRITTEN_THIS_RUN" == "true" ]]; then
+    # No same-day report existed before this failed run. The changed file can
+    # only be this run's untrusted partial output, so remove it before the
+    # deterministic floor writer decides whether a report needs creating.
+    BRIEF_WRITTEN_THIS_RUN=false
+    rm -f -- "$RUN_REPORT"
+    log "discarded the failed first-run brief before writing the outer floor"
   fi
 fi
 if [[ "${REFLECTION_DRY:-0}" != "1" && "$BRIEF_WRITTEN_THIS_RUN" != "true" ]]; then
