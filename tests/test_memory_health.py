@@ -283,6 +283,37 @@ class MemoryHealthTests(unittest.TestCase):
     })
     self.assertNotIn("chat_queue_progress", health["last_run"])
 
+  def test_queue_trend_distinguishes_acknowledgements_from_net_catch_up(self):
+    self._runs(
+      {
+        "status": "published",
+        "finished_at": "2026-07-19T05:30:00+00:00",
+        "chat_queue_progress": {
+          "pending_before_ack": 10,
+          "acknowledged": 4,
+          "remaining": 6,
+        },
+      },
+      {
+        "status": "published",
+        "finished_at": "2026-07-20T05:30:00+00:00",
+        "chat_queue_progress": {
+          "pending_before_ack": 12,
+          "acknowledged": 4,
+          "remaining": 8,
+        },
+      },
+    )
+
+    health = self._health_on_20th()
+
+    self.assertEqual(health["queue_trend"], {
+      "previous_remaining": 6,
+      "current_remaining": 8,
+      "net_change": 2,
+      "direction": "growing",
+    })
+
   def test_canonical_running_status_is_not_hidden_by_prior_publish_history(self):
     self._runs({
       "status": "published", "run_id": "yesterday",

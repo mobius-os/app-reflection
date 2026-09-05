@@ -518,6 +518,10 @@ class ReflectionSettingsTests(unittest.TestCase):
 
 
 class UsageLimitClassificationTests(unittest.TestCase):
+  def test_session_limit_routes_to_usage_limit_path(self):
+    message = "You've hit your session limit · resets 6:50am (UTC)"
+    self.assertTrue(reflection_runner._is_usage_limit(message))
+
   def test_monthly_spend_limit_routes_to_static_brief_path(self):
     message = "You've hit your monthly spend limit · raise it in usage settings"
     self.assertTrue(reflection_runner._is_usage_limit(message))
