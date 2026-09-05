@@ -257,6 +257,31 @@ def _safe_queue_progress(row: dict[str, Any] | None) -> dict[str, int] | None:
   return result if len(result) == 3 else None
 
 
+def _queue_trend(rows: list[dict[str, Any]]) -> dict[str, int | str] | None:
+  """Compare net backlog across the two latest assessed writer runs."""
+  if len(rows) < 2:
+    return None
+  previous = _safe_queue_progress(rows[-2])
+  current = _safe_queue_progress(rows[-1])
+  if previous is None or current is None:
+    return None
+  previous_remaining = previous["remaining"]
+  current_remaining = current["remaining"]
+  net_change = current_remaining - previous_remaining
+  if net_change > 0:
+    direction = "growing"
+  elif net_change < 0:
+    direction = "shrinking"
+  else:
+    direction = "flat"
+  return {
+    "previous_remaining": previous_remaining,
+    "current_remaining": current_remaining,
+    "net_change": net_change,
+    "direction": direction,
+  }
+
+
 def _run_time(row: dict[str, Any] | None) -> dt.datetime | None:
   if not row:
     return None
@@ -605,6 +630,7 @@ def build_health(
     "pending_chat_count": pending_count,
     "pending_chat_capacity": pending_capacity,
     "queue_progress": _safe_queue_progress(latest_terminal),
+    "queue_trend": _queue_trend(assessed_runs),
     "recovered_after_failure": recovered_after_failure,
     "recall_activity": recall,
     "recall_hindsight": _recall_hindsight(app_state),

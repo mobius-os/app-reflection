@@ -185,6 +185,7 @@ _AUTH_FAILURE_MARKERS = (
 # safety notice either way; this classification changes only the explanation.
 _USAGE_LIMIT_MARKERS = (
   "usage limit",
+  "session limit",
   "rate limit",
   "rate_limit",
   "429",
@@ -1417,6 +1418,7 @@ async def _run_codex_session(
         "effort": effort,
       },
       system_prompt=system_prompt,
+      data_dir=str(DATA_DIR),
     )
   except Exception as exc:
     _log(f"ERROR codex runner failed: {exc!r}")
