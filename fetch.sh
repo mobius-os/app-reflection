@@ -38,9 +38,10 @@ LOCK="$DATA_DIR/cron-logs/reflection.lock"
 HEARTBEAT="$DATA_DIR/cron-logs/reflection.heartbeat"
 TOKEN_FILE="$DATA_DIR/service-token.txt"
 DATE="$(date +%F)"
-INPUTS="$DATA_DIR/apps/reflection/inputs"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 RUNTIME_DIR="$DATA_DIR/apps/$APP_ID"
+APP_STORAGE_DIR="$RUNTIME_DIR"
+INPUTS="$APP_STORAGE_DIR/inputs"
 RUNNER="${REFLECTION_RUNNER:-$SCRIPT_DIR/reflection_runner.py}"
 INPUT_HELPER="$SCRIPT_DIR/reflection_inputs.py"
 MEMORY_HEALTH="$SCRIPT_DIR/memory_health.py"
@@ -81,7 +82,7 @@ RUN_CPU_BEFORE="$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat 2>
 # just set) so the runner and any subprocess it forks inherit them.
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$DATA_DIR/cli-auth/claude}"
 export CODEX_HOME="${CODEX_HOME:-$DATA_DIR/cli-auth/codex}"
-export API_BASE_URL DATA_DIR
+export API_BASE_URL DATA_DIR APP_STORAGE_DIR
 
 mkdir -p "$DATA_DIR/cron-logs"
 log() { echo "[$(date -Iseconds)] reflection: $*" >>"$LOG"; }
@@ -104,7 +105,7 @@ fi
 # Everything below mutates run state and therefore belongs behind the lock.
 # An overlapping invocation must not clear the active run's inputs before it
 # discovers that the lock is held.
-mkdir -p "$INPUTS" "$RUNTIME_DIR"
+mkdir -p "$INPUTS" "$RUNTIME_DIR/runs"
 # Older releases kept operational receipts beside catalog source. Preserve the
 # last complete state once, then keep every future write in numeric app storage
 # so source review shows code rather than the previous run's cursor.
@@ -112,13 +113,40 @@ for runtime_name in \
     reflection-run-metrics.jsonl reflection-checkpoint.json \
     resource-history.jsonl resource-monitor-state.json \
     resource-decisions.jsonl meta-state.md meta-learning.jsonl \
-    experiments.jsonl; do
+    experiments.jsonl settings.json; do
   legacy="$DATA_DIR/apps/reflection/$runtime_name"
   canonical="$RUNTIME_DIR/$runtime_name"
   if [[ -f "$legacy" && ! -e "$canonical" ]]; then
     cp -p -- "$legacy" "$canonical"
   fi
 done
+
+# Interview receipts from older releases are user-visible run evidence, not
+# source. Import them exactly once without replacing anything already present
+# in canonical numeric storage. Keep the legacy copy untouched: preservation
+# is more important than tidying a now-read-only historical directory.
+LEGACY_RUNS="$DATA_DIR/apps/reflection/runs"
+RUNS_IMPORT_MARKER="$RUNTIME_DIR/.legacy-runs-imported-v1"
+if [[ -d "$LEGACY_RUNS" && ! -e "$RUNS_IMPORT_MARKER" ]]; then
+  import_ok=1
+  while IFS= read -r -d '' legacy_dir; do
+    relative="${legacy_dir#"$LEGACY_RUNS"/}"
+    [[ "$legacy_dir" == "$LEGACY_RUNS" ]] && relative=""
+    mkdir -p -- "$RUNTIME_DIR/runs/$relative" || import_ok=0
+  done < <(find "$LEGACY_RUNS" -type d -print0)
+  while IFS= read -r -d '' legacy_file; do
+    relative="${legacy_file#"$LEGACY_RUNS"/}"
+    canonical_file="$RUNTIME_DIR/runs/$relative"
+    if [[ ! -e "$canonical_file" ]]; then
+      cp -p -- "$legacy_file" "$canonical_file" || import_ok=0
+    fi
+  done < <(find "$LEGACY_RUNS" -type f -print0)
+  if [[ "$import_ok" -eq 1 ]]; then
+    touch "$RUNS_IMPORT_MARKER"
+  else
+    log "WARN could not import legacy Reflection run receipts"
+  fi
+fi
 rm -f -- "$MODEL_USAGE"
 # Optional engagement inputs must describe THIS run's predecessor. Without
 # clearing them first, a night with no new answer file would inherit an older
@@ -909,9 +937,6 @@ except Exception as exc:
     print(f"(could not read skill history: {exc})")
 PY
 
-# Record the app id where the runner's goal message and the agent can
-# find it (the agent writes reports to apps/<app_id>/reports/).
-printf '%s\n' "$APP_ID" >"$INPUTS/app_id"
 EFFORT_SUMMARY="$SCRIPT_DIR/effort_summary.py"
 if [[ -r "$EFFORT_SUMMARY" ]]; then
   if ! python3 "$EFFORT_SUMMARY" --metrics "$RUN_METRICS" \

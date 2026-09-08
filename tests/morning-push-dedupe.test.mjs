@@ -140,8 +140,8 @@ test('dry rehearsal cannot notify or replace the last real effort receipt', asyn
   await writeFile(join(dataDir, 'service-token.txt'), 'test-service-token\n')
   await mkdir(join(dataDir, 'cron-logs'), { recursive: true })
   await mkdir(join(dataDir, 'apps', '1', 'reports'), { recursive: true })
-  await mkdir(join(dataDir, 'apps', 'reflection', 'inputs'), { recursive: true })
-  const effort = join(dataDir, 'apps', 'reflection', 'inputs', 'latest-effort.json')
+  await mkdir(join(dataDir, 'apps', '1', 'inputs'), { recursive: true })
+  const effort = join(dataDir, 'apps', '1', 'inputs', 'latest-effort.json')
   await writeFile(effort, '{"real":true}\n')
   const d = new Date()
   const localDate = [

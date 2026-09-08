@@ -16,15 +16,14 @@ stays here.
 
 ## Storage vs source
 
-- `/data/apps/reflection/` is this app's SOURCE tree (code, the seeded brief
-  template, the wrapper-staged `inputs/`). App STORAGE is the numeric
-  directory `/data/apps/$APP_ID/`, where
-  `APP_ID="$(cat /data/apps/reflection/inputs/app_id)"` (staged by the wrapper
-  before you start). Reports, `state.json`, `settings.json`, and
-  `question-answers/` live in numeric storage only — a report written to the
-  source dir is invisible to the app.
+- `/data/apps/reflection/` is this app's SOURCE tree: code, documentation, and
+  the seeded brief template only. The wrapper exports `APP_STORAGE_DIR` as the
+  installed app's numeric directory (`/data/apps/<numeric-id>`). All mutable
+  runtime data lives there: staged `inputs/`, `runs/`, reports, settings,
+  ledgers, state, and question answers. A runtime file written to the source
+  tree has no owner and is invisible to the app's evidence readers.
 - Owner settings (`exclude_apps`, agent and schedule choices) are read from
-  `/data/apps/$APP_ID/settings.json` —
+  `$APP_STORAGE_DIR/settings.json` —
   the numeric-storage path, not the source tree.
 - `inputs/personalization-profile.json` is a bounded read-only snapshot owned
   by Memory. Use its confirmed, evidence-backed facts to rank relevance. It is
@@ -40,7 +39,7 @@ stays here.
 
 ## The brief
 
-- Path: `/data/apps/$APP_ID/reports/<YYYY-MM-DD>.html` (`mkdir -p` the
+- Path: `$APP_STORAGE_DIR/reports/<YYYY-MM-DD>.html` (`mkdir -p` the
   reports dir first; the date is today's).
 - Template: `/data/apps/reflection/reflection-brief-template.html`, re-seeded
   from the app before every run. If it is ever unreadable, hand-write a
@@ -61,7 +60,7 @@ stays here.
 
 ## Header state — also the push body
 
-After the brief, write `/data/apps/$APP_ID/state.json` — a bare JSON object,
+After the brief, write `$APP_STORAGE_DIR/state.json` — a bare JSON object,
 no envelope:
 
     {"streak": <n>,
@@ -124,8 +123,37 @@ hard-blocks the harness push tools.
   brief from the Reflection app; the platform injects that brief into the new
   chat's first turn on its own.
 
+## Run helpers (agent-invoked)
+
+- Interview receipts: append one JSON object per staged candidate to
+  `$APP_STORAGE_DIR/runs/<date>/interview-outcomes.jsonl` with
+  `subject_id`, `subject_kind` (`chat` | `app_run` | `memory_writer`),
+  `method` (`interview` | `interview_unavailable` | `evidence_review` |
+  `summary_sufficient` | `skipped_stub`), `verification` (`verified` |
+  `contradicted` | `unverified` | `not_applicable`), `outcome`, `evidence`
+  (list of checkable pointers; required when `verified`), and optional
+  `friction`, `skill_signal`, `memory_signal`, `next_action`, `reason`. An
+  `interview` row also copies the fork receipt's `provider`,
+  `source_session_id`, `forked_session_id`, `exact_session_fork: true`.
+  Validate before phase 2:
+  `python3 /data/apps/reflection/interview_outcomes.py --ledger <that file>
+  --expected-subjects $APP_STORAGE_DIR/inputs/chats-status.json
+  --output $APP_STORAGE_DIR/runs/<date>/interview-status.json`.
+  Readable coaching notes go beside it in `interviews.md`.
+- Resource decisions: after any cleanup, quota, retention, or cadence decision,
+  `python3 /data/apps/reflection/resource_monitor.py record --ledger
+  $APP_STORAGE_DIR/resource-decisions.jsonl --area '<stable area>'
+  --evidence '<metric, trend, active/reference check>' --action '<what changed
+  or why nothing>' --result '<measured outcome>' --next-review-at '<ISO>'
+  --review-trigger '<condition permitting an earlier check>'
+  [--bytes-reclaimed <int>]` (quote each value as one argument).
+
 ## Committing
 
 - Record `/data`'s revision before each change, then use
   `pm-commit --from <revision> '<area>: <what and why>' -- <exact paths>`.
   Exact-path commits keep unrelated owner and agent work out of your undo unit.
+- `apps/reflection` is a git submodule: commit its source with
+  `PM_COMMIT_ROOT=/data/apps/reflection pm-commit …`, then bump the gitlink
+  with a normal `pm-commit -- apps/reflection`. Skill edits under
+  `shared/skills/` commit in the main `/data` repo.

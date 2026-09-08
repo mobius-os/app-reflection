@@ -103,12 +103,9 @@ for _pkg_root in (
         break
 
 # --- Fixed locations (the container's data layout) -------------------
-# These are intentionally hard-coded rather than env-derived: Reflection
-# runs from cron with a near-empty environment, and the wrapper exports
-# only the few vars the agent's own shell needs (SERVICE_TOKEN,
-# API_BASE_URL, CLAUDE_CONFIG_DIR). The runner's own paths are a
-# deployment constant, not per-instance state — same posture as
-# recover_chat_runner.py's module-level Path constants.
+# Shared deployment paths are stable. The installed app's numeric storage is
+# different: fetch.sh resolves that runtime identity from its cron argument and
+# exports APP_STORAGE_DIR so every participant uses one canonical data home.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 SKILL_PATH = DATA_DIR / "shared" / "skills" / "reflection.md"
 LOG_PATH = DATA_DIR / "cron-logs" / "reflection.log"
@@ -227,23 +224,25 @@ def reflection_storage_dir() -> Path | None:
   """Returns the Reflection app's canonical numeric storage directory.
 
   Catalog-app source lives at ``/data/apps/reflection`` while app-owned storage
-  lives at ``/data/apps/<numeric-id>``. ``fetch.sh`` stages that id before the
-  runner starts. Keeping the resolution in one helper prevents settings and
-  reports from silently drifting back to the source tree.
+  lives at ``/data/apps/<numeric-id>``. ``fetch.sh`` exports that exact path
+  before the runner starts. Validate the boundary here rather than accepting a
+  caller-controlled path outside the installed-app storage namespace.
   """
-  app_id_file = DATA_DIR / "apps" / "reflection" / "inputs" / "app_id"
+  raw = os.environ.get("APP_STORAGE_DIR", "").strip()
+  if not raw:
+    return None
+  candidate = Path(raw)
+  expected_parent = (DATA_DIR / "apps").resolve()
   try:
-    app_id = app_id_file.read_text(encoding="utf-8").strip()
+    resolved = candidate.resolve()
   except OSError:
     return None
-  if (
-    not app_id.isascii()
-    or not app_id.isdecimal()
-    or app_id.startswith("0")
-    or len(app_id) > 18
-  ):
+  if resolved.parent != expected_parent:
     return None
-  return DATA_DIR / "apps" / app_id
+  app_id = resolved.name
+  if not app_id.isascii() or not app_id.isdecimal() or app_id.startswith("0"):
+    return None
+  return resolved
 
 
 def todays_brief_path() -> Path | None:
@@ -251,8 +250,8 @@ def todays_brief_path() -> Path | None:
 
   The brief lands in the Reflection app's NUMERIC storage dir
   (`/data/apps/<id>/reports/<date>.html`); the numeric id is staged
-  by fetch.sh at inputs/app_id before the runner starts. A missing or
-  empty stage means the path can't be resolved here — callers treat it as
+  by fetch.sh as APP_STORAGE_DIR before the runner starts. A missing or
+  invalid value means the path can't be resolved here — callers treat it as
   "assume no brief" and let the outer wrapper own the missing deliverable.
   """
   storage_dir = reflection_storage_dir()
@@ -355,7 +354,11 @@ def _write_model_usage(
   usage: object,
 ) -> None:
   """Write one exact provider receipt for the wrapper's bounded run ledger."""
-  inputs = DATA_DIR / "apps" / "reflection" / "inputs"
+  storage_dir = reflection_storage_dir()
+  if storage_dir is None:
+    _log("WARN could not persist model usage receipt: APP_STORAGE_DIR is unavailable")
+    return
+  inputs = storage_dir / "inputs"
   chats = _read_json(inputs / "chats-status.json")
   memory = _read_json(inputs / "memory-health.json")
   manifest = _read_json(inputs / "input-manifest.json")
@@ -580,21 +583,11 @@ def finalize_brief_document(
 
 
 def load_settings() -> dict:
-  """Reads the app's numeric-storage settings, tolerating old installations.
-
-  The mini-app writes ``/data/apps/<numeric-id>/settings.json`` through the
-  storage API. Older runner builds incorrectly read the catalog source tree at
-  ``/data/apps/reflection/settings.json``, so retain that path only as a legacy
-  fallback when canonical numeric storage has no settings file. If the
-  canonical file exists but is malformed, fail closed to defaults instead of
-  reviving a stale legacy choice.
-  """
+  """Reads the only settings file the app owns: numeric app storage."""
   storage_dir = reflection_storage_dir()
   if storage_dir is None:
     return {}
-  canonical = storage_dir / "settings.json"
-  legacy = DATA_DIR / "apps" / "reflection" / "settings.json"
-  path = canonical if canonical.is_file() else legacy
+  path = storage_dir / "settings.json"
   if not path.is_file():
     return {}
   try:
@@ -746,7 +739,10 @@ def build_goal(settings: dict) -> str:
   today = date.today().isoformat()
   exclude = _bounded_excludes(settings.get("exclude_apps"))
   cron = _safe_cron_hint(settings.get("cron"))
-  inputs_dir = DATA_DIR / "apps" / "reflection" / "inputs"
+  storage_dir = reflection_storage_dir()
+  if storage_dir is None:
+    raise RuntimeError("APP_STORAGE_DIR is missing or invalid")
+  inputs_dir = storage_dir / "inputs"
   lines = [
     f"It is the night of {today}. Begin tonight's Reflection run.",
     "",
@@ -767,7 +763,7 @@ def build_goal(settings: dict) -> str:
     "                          so do not raise a watch about it.",
     "  - meta-state-status.json  identity, age, hash, and cold-start status for",
     "                          the canonical live model. meta-state.md is a",
-    f"                          read-only snapshot; Read {(reflection_storage_dir() or DATA_DIR / 'apps' / 'reflection') / 'meta-state.md'}",
+    f"                          read-only snapshot; Read {storage_dir / 'meta-state.md'}",
     "                          before editing that same live path.",
     "  - meta-learning.jsonl  recent durable discoveries about your own",
     "                          effectiveness; use it to avoid rediscovery and",
@@ -880,9 +876,7 @@ def build_goal(settings: dict) -> str:
     "($AGENT_TOKEN / $SERVICE_TOKEN) and full tools — no sandbox. "
     "Commit as you go with pm-commit.",
   ]
-  storage_dir = reflection_storage_dir()
-  if storage_dir is not None:
-    lines.append(f"Canonical app settings path: {storage_dir / 'settings.json'}.")
+  lines.append(f"Canonical app settings path: {storage_dir / 'settings.json'}.")
   if cron:
     lines.append(
       f"Saved schedule preference: {cron}. If the installed Reflection cron "

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import io
+import os
 from datetime import date
 from pathlib import Path
 import tempfile
@@ -146,7 +147,8 @@ class ClaudeSessionDrainTests(unittest.TestCase):
   def test_model_usage_receipt_keeps_cost_and_work_context(self):
     with tempfile.TemporaryDirectory() as raw:
       root = Path(raw)
-      inputs = root / "apps" / "reflection" / "inputs"
+      storage = root / "apps" / "56"
+      inputs = storage / "inputs"
       inputs.mkdir(parents=True)
       (inputs / "chats-status.json").write_text('{"chat_count":7}')
       (inputs / "memory-health.json").write_text(
@@ -161,7 +163,10 @@ class ClaudeSessionDrainTests(unittest.TestCase):
           "total_tokens": 5000, "cost_usd": 2.25,
         },
       }))
-      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+      with (
+        mock.patch.object(reflection_runner, "DATA_DIR", root),
+        mock.patch.dict(os.environ, {"APP_STORAGE_DIR": str(storage)}),
+      ):
         reflection_runner._write_model_usage(
           provider="claude", model="test", goal="abc",
           system_prompt="system", cost_usd=1.5,
@@ -201,9 +206,13 @@ class ClaudeSessionDrainTests(unittest.TestCase):
   def test_model_usage_receipt_bounds_attempts_before_totalling(self):
     with tempfile.TemporaryDirectory() as raw:
       root = Path(raw)
-      inputs = root / "apps" / "reflection" / "inputs"
+      storage = root / "apps" / "56"
+      inputs = storage / "inputs"
       inputs.mkdir(parents=True)
-      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+      with (
+        mock.patch.object(reflection_runner, "DATA_DIR", root),
+        mock.patch.dict(os.environ, {"APP_STORAGE_DIR": str(storage)}),
+      ):
         for index in range(5):
           reflection_runner._write_model_usage(
             provider="test", model=None, goal="", system_prompt="",
@@ -223,9 +232,13 @@ class ClaudeSessionDrainTests(unittest.TestCase):
   def test_model_usage_receipt_does_not_call_unreported_cost_zero(self):
     with tempfile.TemporaryDirectory() as raw:
       root = Path(raw)
-      inputs = root / "apps" / "reflection" / "inputs"
+      storage = root / "apps" / "56"
+      inputs = storage / "inputs"
       inputs.mkdir(parents=True)
-      with mock.patch.object(reflection_runner, "DATA_DIR", root):
+      with (
+        mock.patch.object(reflection_runner, "DATA_DIR", root),
+        mock.patch.dict(os.environ, {"APP_STORAGE_DIR": str(storage)}),
+      ):
         reflection_runner._write_model_usage(
           provider="test", model=None, goal="", system_prompt="",
           cost_usd=None, usage={"total_tokens": 1},
@@ -380,7 +393,8 @@ class CodexLogBroadcastTests(unittest.TestCase):
 
 class AdaptiveReflectionGoalTests(unittest.TestCase):
   def test_goal_stages_meta_model_and_bounded_system_evidence(self):
-    goal = reflection_runner.build_goal({})
+    with mock.patch.dict(os.environ, {"APP_STORAGE_DIR": "/data/apps/56"}):
+      goal = reflection_runner.build_goal({})
     self.assertIn("meta-state.md", goal)
     self.assertIn("meta-learning.jsonl", goal)
     self.assertIn("resource-snapshot.json", goal)
@@ -403,10 +417,13 @@ class AdaptiveReflectionGoalTests(unittest.TestCase):
   def test_goal_names_activity_and_question_engagement_evidence(self):
     with tempfile.TemporaryDirectory() as raw:
       data_dir = Path(raw)
-      inputs = data_dir / "apps" / "reflection" / "inputs"
+      storage = data_dir / "apps" / "56"
+      inputs = storage / "inputs"
       inputs.mkdir(parents=True)
-      (inputs / "app_id").write_text("56\n", encoding="utf-8")
-      with mock.patch.object(reflection_runner, "DATA_DIR", data_dir):
+      with (
+        mock.patch.object(reflection_runner, "DATA_DIR", data_dir),
+        mock.patch.dict(os.environ, {"APP_STORAGE_DIR": str(storage)}),
+      ):
         goal = reflection_runner.build_goal({
           "verbosity": "terse",
           "cron": "15 5 * * *",
@@ -433,13 +450,18 @@ class ReflectionSettingsTests(unittest.TestCase):
   def setUp(self):
     self.tmp = tempfile.TemporaryDirectory()
     self.data_dir = Path(self.tmp.name)
-    self.inputs = self.data_dir / "apps" / "reflection" / "inputs"
+    self.storage = self.data_dir / "apps" / "56"
+    self.inputs = self.storage / "inputs"
     self.inputs.mkdir(parents=True)
-    (self.inputs / "app_id").write_text("56\n", encoding="utf-8")
     self.patch = mock.patch.object(reflection_runner, "DATA_DIR", self.data_dir)
     self.patch.start()
+    self.env_patch = mock.patch.dict(
+      os.environ, {"APP_STORAGE_DIR": str(self.storage)},
+    )
+    self.env_patch.start()
 
   def tearDown(self):
+    self.env_patch.stop()
     self.patch.stop()
     self.tmp.cleanup()
 
@@ -466,10 +488,10 @@ class ReflectionSettingsTests(unittest.TestCase):
     )
     self.assertEqual(reflection_runner.load_settings()["focus"], "current")
 
-  def test_legacy_source_settings_remain_a_compatibility_fallback(self):
+  def test_source_settings_are_not_a_parallel_runtime_owner(self):
     legacy = self.data_dir / "apps" / "reflection" / "settings.json"
     self.write_json(legacy, {"provider": "claude", "verbosity": "chatty"})
-    self.assertEqual(reflection_runner.load_settings()["verbosity"], "chatty")
+    self.assertEqual(reflection_runner.load_settings(), {})
 
   def test_malformed_numeric_settings_do_not_revive_stale_legacy_values(self):
     self.write_json(
@@ -477,20 +499,19 @@ class ReflectionSettingsTests(unittest.TestCase):
       {"provider": "claude", "focus": "stale"},
     )
     canonical = self.data_dir / "apps" / "56" / "settings.json"
-    canonical.parent.mkdir(parents=True)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_text("{not json", encoding="utf-8")
     self.assertEqual(reflection_runner.load_settings(), {})
 
-  def test_missing_or_invalid_staged_id_does_not_read_legacy_settings(self):
+  def test_missing_or_invalid_storage_identity_does_not_read_legacy_settings(self):
     legacy = self.data_dir / "apps" / "reflection" / "settings.json"
     self.write_json(legacy, {"provider": "claude", "focus": "stale"})
-    (self.inputs / "app_id").unlink()
-    self.assertEqual(reflection_runner.load_settings(), {})
-    (self.inputs / "app_id").write_text("../reflection\n", encoding="utf-8")
-    self.assertEqual(reflection_runner.load_settings(), {})
-    for invalid_id in ("056\n", "１２\n"):
-      (self.inputs / "app_id").write_text(invalid_id, encoding="utf-8")
-      self.assertEqual(reflection_runner.load_settings(), {})
+    for invalid_path in (
+      "", str(self.data_dir / "apps" / "reflection"),
+      str(self.data_dir / "apps" / "056"), str(self.data_dir / "outside"),
+    ):
+      with mock.patch.dict(os.environ, {"APP_STORAGE_DIR": invalid_path}):
+        self.assertEqual(reflection_runner.load_settings(), {})
 
   def test_goal_ignores_legacy_brief_controls_and_rejects_non_cron_input(self):
     goal = reflection_runner.build_goal({

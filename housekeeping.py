@@ -38,6 +38,13 @@ from pathlib import Path
 from typing import Iterable
 
 VERSION = 2
+
+# Age gate for reclaiming orphan contrib checkouts (dirs that no ledger record
+# references and no live worktree registers). Conservative on purpose: a
+# just-created scratch dir stays untouched, and the reclaim only fires once the
+# work is clearly abandoned. The reaper's peer knob for browser profiles uses
+# the same 2-day horizon.
+ORPHAN_MIN_AGE_DAYS = 2.0
 ACTIONABLE_STATUSES = {"prepared", "draft", "open", "submitting"}
 MERGED_QUARANTINE = dt.timedelta(hours=24)
 
@@ -359,6 +366,129 @@ def _is_exact_upstream_ancestor(path: Path, upstream_ref: str) -> bool:
   ).returncode == 0
 
 
+def _orphan_git_root(path: Path) -> Path | None:
+  """The git working directory for an orphan contrib entry, if any.
+
+  Contrib checkouts live either directly at the entry or under a conventional
+  nested subdir (``worktree``/``worktree-secure``/``worktree-current``). Returns
+  None when the entry holds no git working tree at all -- pure leftover files.
+  """
+  for candidate in (
+    path,
+    path / "worktree",
+    path / "worktree-secure",
+    path / "worktree-current",
+  ):
+    if (candidate / ".git").exists():
+      return candidate
+  return None
+
+
+def _orphan_removal_safety(root: Path, upstream_ref: str) -> tuple[bool, str]:
+  """Whether an unreferenced, unregistered checkout is safe to delete.
+
+  Safe means no work can be lost. A dirty tree is never safe. A clean linked
+  worktree is safe because its branch ref and commits live in the shared
+  platform object store, not the working dir. A clean standalone clone owns the
+  only copy of its history, so it is safe only when every commit is already
+  upstream (``git cherry`` shows nothing unique).
+  """
+  status = _run(
+    "git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=normal",
+  )
+  if status.returncode:
+    return False, "status-unavailable"
+  if status.stdout.strip():
+    return False, "dirty"
+  if (root / ".git").is_file():
+    return True, "clean-linked-worktree"
+  upstream_ok, reason = _all_patches_upstream(root, upstream_ref)
+  if upstream_ok:
+    return True, "clean-all-upstream"
+  return False, reason or "unique-local-history"
+
+
+def _sweep_orphan_contrib_dirs(
+  *,
+  data_dir: Path,
+  referenced_paths: set[Path],
+  registered_paths: set[Path],
+  candidate_paths: set[Path],
+  active_cwds: Iterable[Path],
+  upstream_ref: str,
+  observed_at: dt.datetime,
+  apply: bool,
+  min_age_days: float = ORPHAN_MIN_AGE_DAYS,
+) -> dict:
+  """Reclaim (or, in dry mode, report) abandoned contrib checkouts that neither
+  the contribution ledger nor the live worktree list owns.
+
+  These orphan directories are invisible to the record- and worktree-driven
+  scans above, so they accumulated unbounded until now. Only provably
+  recoverable, inactive, old entries are removed; everything else is preserved
+  and surfaced for a human.
+  """
+  contrib = data_dir / "contrib"
+  result: dict = {
+    "removed": [],
+    "removed_bytes": 0,
+    "preserved": Counter(),
+    "reclaimable_pending": [],
+  }
+  try:
+    entries = sorted(contrib.iterdir())
+  except OSError:
+    return result
+  owned = referenced_paths | candidate_paths
+  now_ts = observed_at.timestamp()
+  for entry in entries:
+    if not entry.is_dir():
+      continue
+    try:
+      resolved = entry.resolve()
+    except OSError:
+      continue
+    # Skip anything an earlier ledger/worktree/candidate scan already owns,
+    # including a checkout nested inside this top-level entry.
+    if any(resolved == owner or _within(owner, resolved) for owner in owned):
+      continue
+    if any(resolved == reg or _within(reg, resolved) for reg in registered_paths):
+      continue
+    if _is_active(resolved, active_cwds):
+      result["preserved"]["orphan-active"] += 1
+      continue
+    try:
+      age_days = max(0.0, (now_ts - entry.stat().st_mtime) / 86400)
+    except OSError:
+      continue
+    if age_days < min_age_days:
+      result["preserved"]["orphan-recent"] += 1
+      continue
+    git_root = _orphan_git_root(entry)
+    if git_root is None:
+      safe, reason = True, "no-git-leftover"
+    else:
+      safe, reason = _orphan_removal_safety(git_root, upstream_ref)
+    record = {"path": str(entry), "reason": reason, "age_days": round(age_days, 1)}
+    if not safe:
+      result["preserved"][f"orphan-{reason}"] += 1
+      continue
+    if not apply:
+      result["reclaimable_pending"].append(record)
+      continue
+    size = _directory_bytes(entry)
+    try:
+      shutil.rmtree(entry)
+    except OSError as exc:
+      result["preserved"]["orphan-remove-failed"] += 1
+      record["error"] = str(exc)[:200]
+      result["reclaimable_pending"].append(record)
+      continue
+    result["removed"].append({**record, "bytes": size})
+    result["removed_bytes"] += size
+  return result
+
+
 def _live_main_reconciliation(platform: Path, items: list[dict]) -> dict:
   """Attach one current-local-main verdict to the existing worktree inventory."""
   main_ref = next(
@@ -655,6 +785,25 @@ def run_housekeeping(
         continue
       empty_dirs_removed += 1
 
+  registered_paths: set[Path] = set()
+  for row in platform_rows:
+    raw = row.get("worktree")
+    if isinstance(raw, str):
+      try:
+        registered_paths.add(Path(raw).resolve())
+      except OSError:
+        continue
+  orphan_result = _sweep_orphan_contrib_dirs(
+    data_dir=data_dir,
+    referenced_paths=referenced_paths,
+    registered_paths=registered_paths,
+    candidate_paths=set(candidates),
+    active_cwds=active,
+    upstream_ref=upstream_ref,
+    observed_at=observed_at,
+    apply=apply,
+  )
+
   disk_after = shutil.disk_usage(data_dir).used
   status = "ok"
   if ledger_errors:
@@ -682,9 +831,17 @@ def run_housekeeping(
       "exceptions_count": len(exceptions),
       "preserved": dict(sorted(preserved.items())),
       "bytes_reclaimed": max(0, disk_before - disk_after) if apply else 0,
+      "orphans": {
+        "removed_count": len(orphan_result["removed"]),
+        "removed_bytes": orphan_result["removed_bytes"],
+        "preserved": dict(sorted(orphan_result["preserved"].items())),
+        "reclaimable_pending_count": len(orphan_result["reclaimable_pending"]),
+      },
     },
     "live_main": live_main,
     "cleaned": cleaned,
+    "orphans_removed": orphan_result["removed"],
+    "orphans_reclaimable": orphan_result["reclaimable_pending"],
     "would_clean": [] if apply else list(candidates.values()),
     "needs_reasoning": exceptions,
     "needs_reasoning_omitted": 0,
