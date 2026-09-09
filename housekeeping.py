@@ -37,7 +37,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
-VERSION = 2
+VERSION = 3
 
 # Age gate for reclaiming orphan contrib checkouts (dirs that no ledger record
 # references and no live worktree registers). Conservative on purpose: a
@@ -433,6 +433,7 @@ def _sweep_orphan_contrib_dirs(
     "removed": [],
     "removed_bytes": 0,
     "preserved": Counter(),
+    "preserved_items": [],
     "reclaimable_pending": [],
   }
   try:
@@ -466,12 +467,18 @@ def _sweep_orphan_contrib_dirs(
       continue
     git_root = _orphan_git_root(entry)
     if git_root is None:
-      safe, reason = True, "no-git-leftover"
+      # A plain directory can be the only copy of a patch, bundle, handoff, or
+      # other source that has no Git object store to recover it from. Age and
+      # lack of a ledger owner prove only that it is unreferenced, not that its
+      # contents are disposable. Preserve it and make the exact path visible
+      # to Reflection for deliberate follow-up.
+      safe, reason = False, "non-git-unproven"
     else:
       safe, reason = _orphan_removal_safety(git_root, upstream_ref)
     record = {"path": str(entry), "reason": reason, "age_days": round(age_days, 1)}
     if not safe:
       result["preserved"][f"orphan-{reason}"] += 1
+      result["preserved_items"].append(record)
       continue
     if not apply:
       result["reclaimable_pending"].append(record)
@@ -841,6 +848,7 @@ def run_housekeeping(
     "live_main": live_main,
     "cleaned": cleaned,
     "orphans_removed": orphan_result["removed"],
+    "orphans_preserved": orphan_result["preserved_items"],
     "orphans_reclaimable": orphan_result["reclaimable_pending"],
     "would_clean": [] if apply else list(candidates.values()),
     "needs_reasoning": exceptions,
