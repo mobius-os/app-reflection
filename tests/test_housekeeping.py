@@ -1,6 +1,7 @@
 import json
 import datetime as dt
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -324,6 +325,33 @@ class HousekeepingTests(unittest.TestCase):
       for item in result["needs_reasoning"]
     ))
     self.assertEqual(result["cleaned"], [])
+
+  def test_old_non_git_orphan_is_preserved_and_reported(self):
+    orphan = self.contrib / "handoff-only"
+    orphan.mkdir()
+    unique = orphan / "handoff.patch"
+    unique.write_text("only copy\n", encoding="utf-8")
+    old = (self.now - dt.timedelta(days=3)).timestamp()
+    os.utime(orphan, (old, old))
+
+    result = self.run_helper()
+
+    self.assertTrue(unique.is_file())
+    self.assertEqual(result["orphans_removed"], [])
+    self.assertEqual(
+      result["summary"]["orphans"]["preserved"][
+        "orphan-non-git-unproven"
+      ],
+      1,
+    )
+    self.assertEqual(
+      result["orphans_preserved"],
+      [{
+        "path": str(orphan),
+        "reason": "non-git-unproven",
+        "age_days": 3.0,
+      }],
+    )
 
   def test_dry_run_reports_without_mutating(self):
     path, head = self.add_worktree("dry")

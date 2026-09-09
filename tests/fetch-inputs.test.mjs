@@ -130,7 +130,7 @@ test('fetch stages an exact activity snapshot and fails closed while retaining i
 
   try {
     await run()
-    const inputs = join(dataDir, 'apps', 'reflection', 'inputs')
+    const inputs = join(dataDir, 'apps', '1', 'inputs')
     const snapshot = await readFile(join(inputs, 'activity.jsonl'), 'utf8')
     const status = JSON.parse(await readFile(join(inputs, 'activity-status.json'), 'utf8'))
     const digest = JSON.parse(await readFile(join(inputs, 'per-app-digest.json'), 'utf8'))
@@ -523,10 +523,10 @@ os.replace(temporary, report)
       REFLECTION_RUNNER: publishingRunner,
     })
     const dependency = JSON.parse(await readFile(
-      join(dataDir, 'apps', 'reflection', 'inputs', 'memory-dependency.json'), 'utf8',
+      join(dataDir, 'apps', '1', 'inputs', 'memory-dependency.json'), 'utf8',
     ))
     const pinnedHealth = JSON.parse(await readFile(
-      join(dataDir, 'apps', 'reflection', 'inputs', 'memory-health.json'), 'utf8',
+      join(dataDir, 'apps', '1', 'inputs', 'memory-health.json'), 'utf8',
     ))
     assert.equal(dependency.status, 'timeout')
     assert.equal(pinnedHealth.current_run_unassessed, true)

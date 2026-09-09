@@ -18,7 +18,10 @@ from typing import Any
 
 
 KINDS = {"chat", "app_run", "memory_writer"}
-METHODS = {"interview", "evidence_review", "summary_sufficient", "skipped_stub"}
+METHODS = {
+  "interview", "interview_unavailable", "evidence_review",
+  "summary_sufficient", "skipped_stub",
+}
 VERDICTS = {"verified", "contradicted", "unverified", "not_applicable"}
 TEXT_FIELDS = (
   "subject_id", "subject_kind", "method", "verification", "outcome",

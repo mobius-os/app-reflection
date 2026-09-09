@@ -24,6 +24,22 @@ class InterviewOutcomeTests(unittest.TestCase):
       self.assertEqual(result["methods"], {"interview": 1})
       self.assertEqual(result["followups"][0]["subject_id"], "chat-1")
 
+  def test_interview_unavailable_is_an_honest_valid_disposition(self):
+    with tempfile.TemporaryDirectory() as raw:
+      path = Path(raw) / "outcomes.jsonl"
+      path.write_text(json.dumps({
+        "subject_id": "chat-1", "subject_kind": "chat",
+        "method": "interview_unavailable", "verification": "unverified",
+        "outcome": "Exact-session fork failed; no coaching completed.",
+        "evidence": [],
+        "reason": "fork-chat.sh exited non-zero after timeout.",
+      }) + "\n")
+      result = interview_outcomes.build_status(path, expected_ids=["chat-1"])
+      self.assertEqual(result["invalid_outcomes"], 0)
+      self.assertEqual(result["methods"], {"interview_unavailable": 1})
+      self.assertEqual(result["verification"], {"unverified": 1})
+      self.assertTrue(result["coverage"]["complete"])
+
   def test_verified_requires_evidence_and_invalid_is_visible(self):
     with tempfile.TemporaryDirectory() as raw:
       path = Path(raw) / "outcomes.jsonl"
