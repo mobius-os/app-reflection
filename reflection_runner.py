@@ -107,7 +107,7 @@ for _pkg_root in (
 # different: fetch.sh resolves that runtime identity from its cron argument and
 # exports APP_STORAGE_DIR so every participant uses one canonical data home.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-SKILL_PATH = DATA_DIR / "shared" / "skills" / "reflection.md"
+SKILL_PATH = Path(__file__).resolve().with_name("reflection.md")
 LOG_PATH = DATA_DIR / "cron-logs" / "reflection.log"
 CLAUDE_CONFIG_DIR = DATA_DIR / "cli-auth" / "claude"
 CODEX_HOME = DATA_DIR / "cli-auth" / "codex"
@@ -428,35 +428,14 @@ def _write_model_usage(
 
 
 def load_skill() -> str:
-  """Returns the reflection skill text used as the system prompt.
-
-  The agent-editable skill at /data/shared/skills/reflection.md is the
-  source of truth (it can rewrite itself between runs). If it is
-  missing — a fresh instance whose init_skills.py hasn't run, or a
-  removed file — fall back to the baked seed so the run still has a
-  contract, rather than starting with an empty system prompt (which
-  the SDK transport would serialize as `--system-prompt ""`, wiping
-  any default).
-  """
-  if SKILL_PATH.is_file():
-    try:
-      text = SKILL_PATH.read_text(encoding="utf-8")
-      if text.strip():
-        return text
-    except OSError:
-      pass
-  for fallback in (
-    Path("/app/scripts/seed-skills/reflection.md"),
-    Path(__file__).resolve().parent / "seed-skills" / "reflection.md",
-  ):
-    if fallback.is_file():
-      try:
-        return fallback.read_text(encoding="utf-8")
-      except OSError:
-        continue
-  raise FileNotFoundError(
-    f"reflection skill not found at {SKILL_PATH} or any baked fallback"
-  )
+  """Return the app-owned, agent-editable Reflection procedure."""
+  try:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+  except OSError as exc:
+    raise RuntimeError(f"reflection skill not found at {SKILL_PATH}") from exc
+  if not text.strip():
+    raise RuntimeError(f"reflection skill is empty at {SKILL_PATH}")
+  return text
 
 
 def load_operating_contract() -> str:
