@@ -28,7 +28,7 @@ export async function fetchModelConfig(token) {
     const data = await statusRes.json()
     connected = new Set(
       Object.entries(data || {})
-        .filter(([, value]) => value && value.authenticated)
+        .filter(([, value]) => value && value.configured)
         .map(([key]) => key),
     )
   }

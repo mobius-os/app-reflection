@@ -107,7 +107,7 @@ for _pkg_root in (
 # different: fetch.sh resolves that runtime identity from its cron argument and
 # exports APP_STORAGE_DIR so every participant uses one canonical data home.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-SKILL_PATH = Path(__file__).resolve().with_name("reflection.md")
+SKILL_SEED_PATH = Path(__file__).resolve().with_name("reflection.md")
 LOG_PATH = DATA_DIR / "cron-logs" / "reflection.log"
 CLAUDE_CONFIG_DIR = DATA_DIR / "cli-auth" / "claude"
 CODEX_HOME = DATA_DIR / "cli-auth" / "codex"
@@ -143,6 +143,13 @@ CODEX_MAX_PENDING_TOOLS = 64
 # defaults to Claude (the production default provider); the owner can
 # override per-instance via numeric app storage without touching code.
 DEFAULT_PROVIDER = "claude"
+RETIRED_MODEL_IDS = {
+  "claude-opus-4-5-20251001": "claude-opus-4-5-20251101",
+  "claude-sonnet-4-5-20251001": "claude-sonnet-4-5-20250929",
+  "claude-opus-4-6-20251015": "claude-opus-4-6",
+  "claude-opus-4-7-20251215": "claude-opus-4-7",
+  "claude-sonnet-4-7-20251215": "claude-sonnet-4-6",
+}
 
 # The runner shares the process exit-code space with its wrapper
 # (`app-reflection/fetch.sh` in the catalog app), whose OWN config errors take the low
@@ -427,14 +434,47 @@ def _write_model_usage(
     _log(f"WARN could not persist model usage receipt: {exc!r}")
 
 
+def editable_skill_path() -> Path:
+  """Return the durable app-owned procedure, or the package seed in dev."""
+  storage = reflection_storage_dir()
+  return storage / "reflection.md" if storage is not None else SKILL_SEED_PATH
+
+
+def _migrate_legacy_skill_text(text: str) -> str:
+  """Retarget Reflection's own known instructions without rewriting learning."""
+  text = text.replace(
+    "This skill is agent-editable (it lives under `/data/shared/skills/`) — "
+    "improve it in phase 2.",
+    "This skill is agent-editable. Its durable app-owned copy lives at "
+    "`/data/apps/$APP_ID/reflection.md` — improve it in phase 2.",
+  )
+  return text.replace(
+    "**Edit THIS skill (`/data/shared/skills/reflection.md`) too.**",
+    "**Edit THIS app-owned skill (`/data/apps/$APP_ID/reflection.md`) too.**",
+  )
+
+
 def load_skill() -> str:
-  """Return the app-owned, agent-editable Reflection procedure."""
+  """Return the app-owned procedure, importing durable legacy edits once."""
+  skill_path = editable_skill_path()
+  if skill_path != SKILL_SEED_PATH and not skill_path.exists():
+    legacy = DATA_DIR / "shared" / "skills" / "reflection.md"
+    source = legacy if legacy.is_file() else SKILL_SEED_PATH
+    try:
+      seeded = source.read_text(encoding="utf-8")
+      if source == legacy:
+        seeded = _migrate_legacy_skill_text(seeded)
+      if not seeded.strip():
+        raise RuntimeError(f"reflection skill is empty at {source}")
+      _atomic_write_text(skill_path, seeded)
+    except OSError as exc:
+      raise RuntimeError(f"could not seed reflection skill from {source}") from exc
   try:
-    text = SKILL_PATH.read_text(encoding="utf-8")
+    text = skill_path.read_text(encoding="utf-8")
   except OSError as exc:
-    raise RuntimeError(f"reflection skill not found at {SKILL_PATH}") from exc
+    raise RuntimeError(f"reflection skill not found at {skill_path}") from exc
   if not text.strip():
-    raise RuntimeError(f"reflection skill is empty at {SKILL_PATH}")
+    raise RuntimeError(f"reflection skill is empty at {skill_path}")
   return text
 
 
@@ -561,6 +601,17 @@ def finalize_brief_document(
     return False
 
 
+def _migrate_agent_models(settings: dict) -> tuple[dict, bool]:
+  migrated = dict(settings)
+  changed = False
+  for key in ("model", "fallback_model"):
+    replacement = RETIRED_MODEL_IDS.get(settings.get(key))
+    if replacement:
+      migrated[key] = replacement
+      changed = True
+  return (migrated, True) if changed else (settings, False)
+
+
 def load_settings() -> dict:
   """Reads the only settings file the app owns: numeric app storage."""
   storage_dir = reflection_storage_dir()
@@ -573,7 +624,12 @@ def load_settings() -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
   except (json.JSONDecodeError, OSError):
     return {}
-  return data if isinstance(data, dict) else {}
+  if not isinstance(data, dict):
+    return {}
+  migrated, changed = _migrate_agent_models(data)
+  if changed:
+    _atomic_write_text(path, json.dumps(migrated, separators=(",", ":")))
+  return migrated
 
 
 def _bounded_owner_text(value: object, max_chars: int = 500) -> str:

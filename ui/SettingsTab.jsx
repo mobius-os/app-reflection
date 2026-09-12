@@ -11,6 +11,7 @@ import { fetchModelConfig } from '../providers.js'
 import { ModelPicker } from './ModelPicker.jsx'
 import { BackgroundAgentList } from './BackgroundAgentList.jsx'
 import { agentSlotLabel, canReorderAgentSlots, reorderAgentSlots } from './backgroundAgentOrder.js'
+import { migrateAgentModels } from '../model-selection.js'
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -47,7 +48,9 @@ export function SettingsTab({ appId, storage, token, onSetupComplete }) {
     ;(async () => {
       const res = await storage.getJSON('settings.json')
       if (cancelled) return
-      const s = res.data && typeof res.data === 'object' ? res.data : null
+      const loaded = res.data && typeof res.data === 'object' ? res.data : null
+      const s = migrateAgentModels(loaded)
+      if (s !== loaded) storage.putJSON('settings.json', s).catch(() => {})
       if (s) {
         setSettingsExtra(withoutLegacyBriefControls(s))
         const parsedHour = parseCronHour(s.cron)
