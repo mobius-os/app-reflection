@@ -10,7 +10,7 @@
 # chats, reviews Memory's update log, edits skills, fixes apps, writes
 # the brief to reports/<date>.html via the storage API, and commits —
 # all itself, instructed by its skill
-# (/data/shared/skills/reflection.md), per Möbius's "code empowers the
+# (reflection.md beside this runner), per Möbius's "code empowers the
 # agent; it does not police it." Reversibility comes from git, not from
 # walls. So this file gathers a little read-only context for the agent,
 # exports the few env vars its shell needs, runs the runner under a lock
@@ -837,12 +837,13 @@ fi
 # semantic tail carries friction without letting hundreds of SDK output/text
 # deltas crowd it out; git history prevents a later run from re-adding an
 # experiment that an earlier run deliberately removed.
-python3 - "$RUN_METRICS" "$LOG_ARCHIVE" "$LOG_FALLBACK_ARCHIVE" "$LOG" "$DATA_DIR" >"$INPUTS/reflection-run-history.txt" 2>>"$LOG" <<'PY' || true
+python3 - "$RUN_METRICS" "$LOG_ARCHIVE" "$LOG_FALLBACK_ARCHIVE" "$LOG" "$DATA_DIR" "$SCRIPT_DIR" "$APP_ID" >"$INPUTS/reflection-run-history.txt" 2>>"$LOG" <<'PY' || true
 import json, pathlib, subprocess, sys
 
-(
-    metrics_path, archive_path, fallback_archive_path, log_path, data_dir,
-) = map(pathlib.Path, sys.argv[1:])
+metrics_path, archive_path, fallback_archive_path, log_path, data_dir, script_dir = (
+    map(pathlib.Path, sys.argv[1:7])
+)
+app_id = sys.argv[7]
 print("# Reflection run history (bounded; newest last)\n")
 print("## Run metrics")
 try:
@@ -929,7 +930,7 @@ print("\n## Recent edits to reflection.md")
 try:
     result = subprocess.run(
         ["git", "-C", str(data_dir), "log", "--oneline", "-10", "--",
-         "shared/skills/reflection.md"],
+         f"apps/{app_id}/reflection.md"],
         text=True, capture_output=True, timeout=10, check=False,
     )
     print(result.stdout.strip() or "(no recorded edits)")

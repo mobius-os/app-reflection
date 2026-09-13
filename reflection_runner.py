@@ -86,15 +86,13 @@ from pathlib import Path
 # ModuleNotFoundError, killing the whole Codex primary/fallback night with no
 # brief.
 #
-# This runner has no single home, so a bare `parent.parent` is not enough: it
-# ships in the platform repo (backend/scripts/, where parent.parent holds `app`)
-# and installs as this catalog-app copy under /data/apps/reflection/ (whose
-# parent.parent is /data/apps — which holds NO `app` package). So search the
-# known backend roots and put the FIRST that actually contains the `app` package
-# on sys.path — the import then resolves wherever the runner runs. These roots
-# are container deployment constants, same posture as the hard-coded paths below.
+# This runner is app-owned, while the Codex adapter it imports remains a shared
+# platform primitive. An installed app lives below /data/apps, whose parent has
+# no `app` Python package, so a bare `parent.parent` is not enough. Search the
+# known platform backend roots and use the FIRST that contains that package.
+# These roots are container deployment constants, like the fixed paths below.
 for _pkg_root in (
-    Path(__file__).resolve().parent.parent,  # <backend>/scripts/ layout (platform + baked)
+    Path(__file__).resolve().parent.parent,  # development layouts that colocate backend
     Path("/data/platform/backend"),           # served platform clone
     Path("/app"),                             # baked image floor
 ):
@@ -107,7 +105,7 @@ for _pkg_root in (
 # different: fetch.sh resolves that runtime identity from its cron argument and
 # exports APP_STORAGE_DIR so every participant uses one canonical data home.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-SKILL_PATH = DATA_DIR / "shared" / "skills" / "reflection.md"
+SKILL_SEED_PATH = Path(__file__).resolve().with_name("reflection.md")
 LOG_PATH = DATA_DIR / "cron-logs" / "reflection.log"
 CLAUDE_CONFIG_DIR = DATA_DIR / "cli-auth" / "claude"
 CODEX_HOME = DATA_DIR / "cli-auth" / "codex"
@@ -143,6 +141,24 @@ CODEX_MAX_PENDING_TOOLS = 64
 # defaults to Claude (the production default provider); the owner can
 # override per-instance via numeric app storage without touching code.
 DEFAULT_PROVIDER = "claude"
+RETIRED_MODEL_IDS_PATH = Path(__file__).resolve().with_name(
+  "retired-model-ids.json"
+)
+
+
+def _load_retired_model_ids() -> dict[str, str]:
+  policy = json.loads(RETIRED_MODEL_IDS_PATH.read_text(encoding="utf-8"))
+  if not isinstance(policy, dict) or any(
+      not isinstance(retired, str) or not isinstance(replacement, str)
+      for retired, replacement in policy.items()
+  ):
+    raise ValueError("retired-model-ids.json must map model IDs to model IDs")
+  return policy
+
+
+# The browser and unattended runner consume the same packaged policy so a
+# model retirement remains one app-owned edit.
+RETIRED_MODEL_IDS = _load_retired_model_ids()
 
 # The runner shares the process exit-code space with its wrapper
 # (`app-reflection/fetch.sh` in the catalog app), whose OWN config errors take the low
@@ -427,36 +443,48 @@ def _write_model_usage(
     _log(f"WARN could not persist model usage receipt: {exc!r}")
 
 
-def load_skill() -> str:
-  """Returns the reflection skill text used as the system prompt.
+def editable_skill_path() -> Path:
+  """Return the durable app-owned procedure, or the package seed in dev."""
+  storage = reflection_storage_dir()
+  return storage / "reflection.md" if storage is not None else SKILL_SEED_PATH
 
-  The agent-editable skill at /data/shared/skills/reflection.md is the
-  source of truth (it can rewrite itself between runs). If it is
-  missing — a fresh instance whose init_skills.py hasn't run, or a
-  removed file — fall back to the baked seed so the run still has a
-  contract, rather than starting with an empty system prompt (which
-  the SDK transport would serialize as `--system-prompt ""`, wiping
-  any default).
-  """
-  if SKILL_PATH.is_file():
-    try:
-      text = SKILL_PATH.read_text(encoding="utf-8")
-      if text.strip():
-        return text
-    except OSError:
-      pass
-  for fallback in (
-    Path("/app/scripts/seed-skills/reflection.md"),
-    Path(__file__).resolve().parent / "seed-skills" / "reflection.md",
-  ):
-    if fallback.is_file():
-      try:
-        return fallback.read_text(encoding="utf-8")
-      except OSError:
-        continue
-  raise FileNotFoundError(
-    f"reflection skill not found at {SKILL_PATH} or any baked fallback"
+
+def _migrate_legacy_skill_text(text: str) -> str:
+  """Retarget Reflection's own known instructions without rewriting learning."""
+  text = text.replace(
+    "This skill is agent-editable (it lives under `/data/shared/skills/`) — "
+    "improve it in phase 2.",
+    "This skill is agent-editable. Its durable app-owned copy lives at "
+    "`/data/apps/$APP_ID/reflection.md` — improve it in phase 2.",
   )
+  return text.replace(
+    "**Edit THIS skill (`/data/shared/skills/reflection.md`) too.**",
+    "**Edit THIS app-owned skill (`/data/apps/$APP_ID/reflection.md`) too.**",
+  )
+
+
+def load_skill() -> str:
+  """Return the app-owned procedure, importing durable legacy edits once."""
+  skill_path = editable_skill_path()
+  if skill_path != SKILL_SEED_PATH and not skill_path.exists():
+    legacy = DATA_DIR / "shared" / "skills" / "reflection.md"
+    source = legacy if legacy.is_file() else SKILL_SEED_PATH
+    try:
+      seeded = source.read_text(encoding="utf-8")
+      if source == legacy:
+        seeded = _migrate_legacy_skill_text(seeded)
+      if not seeded.strip():
+        raise RuntimeError(f"reflection skill is empty at {source}")
+      _atomic_write_text(skill_path, seeded)
+    except OSError as exc:
+      raise RuntimeError(f"could not seed reflection skill from {source}") from exc
+  try:
+    text = skill_path.read_text(encoding="utf-8")
+  except OSError as exc:
+    raise RuntimeError(f"reflection skill not found at {skill_path}") from exc
+  if not text.strip():
+    raise RuntimeError(f"reflection skill is empty at {skill_path}")
+  return text
 
 
 def load_operating_contract() -> str:
@@ -582,6 +610,17 @@ def finalize_brief_document(
     return False
 
 
+def _migrate_agent_models(settings: dict) -> tuple[dict, bool]:
+  migrated = dict(settings)
+  changed = False
+  for key in ("model", "fallback_model"):
+    replacement = RETIRED_MODEL_IDS.get(settings.get(key))
+    if replacement:
+      migrated[key] = replacement
+      changed = True
+  return (migrated, True) if changed else (settings, False)
+
+
 def load_settings() -> dict:
   """Reads the only settings file the app owns: numeric app storage."""
   storage_dir = reflection_storage_dir()
@@ -594,7 +633,12 @@ def load_settings() -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
   except (json.JSONDecodeError, OSError):
     return {}
-  return data if isinstance(data, dict) else {}
+  if not isinstance(data, dict):
+    return {}
+  migrated, changed = _migrate_agent_models(data)
+  if changed:
+    _atomic_write_text(path, json.dumps(migrated, separators=(",", ":")))
+  return migrated
 
 
 def _bounded_owner_text(value: object, max_chars: int = 500) -> str:

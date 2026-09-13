@@ -111,6 +111,61 @@ class BriefTemplateSeedTests(unittest.TestCase):
       )
 
 
+class ReflectionSkillOwnershipTests(unittest.TestCase):
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.data_dir = Path(self.tmp.name)
+    self.storage = self.data_dir / "apps" / "56"
+    self.seed = self.data_dir / "package" / "reflection.md"
+    self.seed.parent.mkdir(parents=True)
+    self.seed.write_text("packaged seed\n", encoding="utf-8")
+    self.patches = (
+      mock.patch.object(reflection_runner, "DATA_DIR", self.data_dir),
+      mock.patch.object(reflection_runner, "SKILL_SEED_PATH", self.seed),
+      mock.patch.dict(os.environ, {"APP_STORAGE_DIR": str(self.storage)}),
+    )
+    for patch in self.patches:
+      patch.start()
+
+  def tearDown(self):
+    for patch in reversed(self.patches):
+      patch.stop()
+    self.tmp.cleanup()
+
+  def test_existing_evolved_skill_is_never_reseeded(self):
+    current = self.storage / "reflection.md"
+    current.parent.mkdir(parents=True)
+    current.write_text("owner-evolved procedure\n", encoding="utf-8")
+    legacy = self.data_dir / "shared" / "skills" / "reflection.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("stale legacy procedure\n", encoding="utf-8")
+
+    self.assertEqual(reflection_runner.load_skill(), "owner-evolved procedure\n")
+
+  def test_first_run_imports_the_legacy_evolved_skill(self):
+    legacy = self.data_dir / "shared" / "skills" / "reflection.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+      "This skill is agent-editable (it lives under `/data/shared/skills/`) — "
+      "improve it in phase 2.\n"
+      "**Edit THIS skill (`/data/shared/skills/reflection.md`) too.**\n"
+      "legacy owner learning\n",
+      encoding="utf-8",
+    )
+
+    migrated = reflection_runner.load_skill()
+    self.assertIn("legacy owner learning", migrated)
+    self.assertIn("/data/apps/$APP_ID/reflection.md", migrated)
+    self.assertNotIn("THIS skill (`/data/shared/skills/reflection.md`)", migrated)
+    self.assertEqual(
+      (self.storage / "reflection.md").read_text(encoding="utf-8"), migrated,
+    )
+
+  def test_new_install_seeds_the_packaged_procedure_once(self):
+    self.assertEqual(reflection_runner.load_skill(), "packaged seed\n")
+    self.seed.write_text("later package update\n", encoding="utf-8")
+    self.assertEqual(reflection_runner.load_skill(), "packaged seed\n")
+
 class ClaudeSessionDrainTests(unittest.TestCase):
   def test_repeated_system_messages_log_each_session_id_once(self):
     SystemMessage = type("SystemMessage", (), {})
@@ -476,6 +531,27 @@ class ReflectionSettingsTests(unittest.TestCase):
       reflection_runner.load_settings(),
       {"provider": "codex", "focus": "queues"},
     )
+
+  def test_retired_model_ids_are_migrated_atomically_once(self):
+    canonical = self.data_dir / "apps" / "56" / "settings.json"
+    retired = reflection_runner.RETIRED_MODEL_IDS
+    for old, current in retired.items():
+      self.write_json(canonical, {"model": old, "fallback_model": old, "keep": 7})
+      with mock.patch.object(reflection_runner, "_atomic_write_text", wraps=reflection_runner._atomic_write_text) as write:
+        self.assertEqual(reflection_runner.load_settings(), {
+          "model": current, "fallback_model": current, "keep": 7,
+        })
+        write.assert_called_once()
+      self.assertEqual(reflection_runner.load_settings()["model"], current)
+    unknown = {"model": "future-model", "fallback_model": "gpt-5.5"}
+    self.write_json(canonical, unknown)
+    self.assertEqual(reflection_runner.load_settings(), unknown)
+
+  def test_runner_migration_consumes_the_packaged_retired_model_policy(self):
+    packaged = json.loads(
+      reflection_runner.RETIRED_MODEL_IDS_PATH.read_text(encoding="utf-8")
+    )
+    self.assertEqual(reflection_runner.RETIRED_MODEL_IDS, packaged)
 
   def test_numeric_settings_win_over_a_legacy_source_copy(self):
     self.write_json(
