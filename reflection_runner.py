@@ -143,6 +143,10 @@ CODEX_MAX_PENDING_TOOLS = 64
 # defaults to Claude (the production default provider); the owner can
 # override per-instance via numeric app storage without touching code.
 DEFAULT_PROVIDER = "claude"
+# Retired -> replacement model IDs. KEEP IN LOCKSTEP with the twin table
+# RETIRED_MODEL_IDS in model-selection.js: the UI migrates the same
+# settings.json, so a runner-only edit here leaves the UI stale (and vice
+# versa). A future retirement is one paired edit across both tables.
 RETIRED_MODEL_IDS = {
   "claude-opus-4-5-20251001": "claude-opus-4-5-20251101",
   "claude-sonnet-4-5-20251001": "claude-sonnet-4-5-20250929",
