@@ -322,6 +322,10 @@ async def run_codex_sdk_turn(**kwargs):
     const fakeRunner = join(fakeScripts, 'reflection_runner.py')
     await copyFile(join(appRoot, 'reflection_runner.py'), fakeRunner)
     await copyFile(join(appRoot, 'reflection.md'), join(fakeScripts, 'reflection.md'))
+    await copyFile(
+      join(appRoot, 'retired-model-ids.json'),
+      join(fakeScripts, 'retired-model-ids.json'),
+    )
     // The runner resolves its operating contract beside itself and fails
     // loudly without it (a contract-less home is a broken install). A
     // relocated runner home must therefore carry the contract too.

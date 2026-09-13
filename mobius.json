@@ -65,6 +65,7 @@
     "interview_outcomes.py",
     "learning_loop.py",
     "constants.js",
+    "retired-model-ids.json",
     "model-selection.js",
     "theme.js",
     "domain.js",

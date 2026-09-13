@@ -547,6 +547,12 @@ class ReflectionSettingsTests(unittest.TestCase):
     self.write_json(canonical, unknown)
     self.assertEqual(reflection_runner.load_settings(), unknown)
 
+  def test_runner_migration_consumes_the_packaged_retired_model_policy(self):
+    packaged = json.loads(
+      reflection_runner.RETIRED_MODEL_IDS_PATH.read_text(encoding="utf-8")
+    )
+    self.assertEqual(reflection_runner.RETIRED_MODEL_IDS, packaged)
+
   def test_numeric_settings_win_over_a_legacy_source_copy(self):
     self.write_json(
       self.data_dir / "apps" / "reflection" / "settings.json",

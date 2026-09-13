@@ -1,14 +1,8 @@
-// Retired → replacement model IDs. KEEP IN LOCKSTEP with the twin table
-// RETIRED_MODEL_IDS in reflection_runner.py: the unattended cron runner
-// migrates the same settings.json, so a UI-only edit here leaves the runner
-// stale and it can pass a retired id into model selection.
-export const RETIRED_MODEL_IDS = Object.freeze({
-  'claude-opus-4-5-20251001': 'claude-opus-4-5-20251101',
-  'claude-sonnet-4-5-20251001': 'claude-sonnet-4-5-20250929',
-  'claude-opus-4-6-20251015': 'claude-opus-4-6',
-  'claude-opus-4-7-20251215': 'claude-opus-4-7',
-  'claude-sonnet-4-7-20251215': 'claude-sonnet-4-6',
-})
+import retiredModelIds from './retired-model-ids.json' with { type: 'json' }
+
+// The browser and unattended runner consume the same packaged policy so a
+// model retirement remains one app-owned edit.
+export const RETIRED_MODEL_IDS = Object.freeze(retiredModelIds)
 
 export function migrateAgentModels(settings) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return settings

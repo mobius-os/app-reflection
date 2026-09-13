@@ -86,15 +86,13 @@ from pathlib import Path
 # ModuleNotFoundError, killing the whole Codex primary/fallback night with no
 # brief.
 #
-# This runner has no single home, so a bare `parent.parent` is not enough: it
-# ships in the platform repo (backend/scripts/, where parent.parent holds `app`)
-# and installs as this catalog-app copy under /data/apps/reflection/ (whose
-# parent.parent is /data/apps — which holds NO `app` package). So search the
-# known backend roots and put the FIRST that actually contains the `app` package
-# on sys.path — the import then resolves wherever the runner runs. These roots
-# are container deployment constants, same posture as the hard-coded paths below.
+# This runner is app-owned, while the Codex adapter it imports remains a shared
+# platform primitive. An installed app lives below /data/apps, whose parent has
+# no `app` Python package, so a bare `parent.parent` is not enough. Search the
+# known platform backend roots and use the FIRST that contains that package.
+# These roots are container deployment constants, like the fixed paths below.
 for _pkg_root in (
-    Path(__file__).resolve().parent.parent,  # <backend>/scripts/ layout (platform + baked)
+    Path(__file__).resolve().parent.parent,  # development layouts that colocate backend
     Path("/data/platform/backend"),           # served platform clone
     Path("/app"),                             # baked image floor
 ):
@@ -143,17 +141,24 @@ CODEX_MAX_PENDING_TOOLS = 64
 # defaults to Claude (the production default provider); the owner can
 # override per-instance via numeric app storage without touching code.
 DEFAULT_PROVIDER = "claude"
-# Retired -> replacement model IDs. KEEP IN LOCKSTEP with the twin table
-# RETIRED_MODEL_IDS in model-selection.js: the UI migrates the same
-# settings.json, so a runner-only edit here leaves the UI stale (and vice
-# versa). A future retirement is one paired edit across both tables.
-RETIRED_MODEL_IDS = {
-  "claude-opus-4-5-20251001": "claude-opus-4-5-20251101",
-  "claude-sonnet-4-5-20251001": "claude-sonnet-4-5-20250929",
-  "claude-opus-4-6-20251015": "claude-opus-4-6",
-  "claude-opus-4-7-20251215": "claude-opus-4-7",
-  "claude-sonnet-4-7-20251215": "claude-sonnet-4-6",
-}
+RETIRED_MODEL_IDS_PATH = Path(__file__).resolve().with_name(
+  "retired-model-ids.json"
+)
+
+
+def _load_retired_model_ids() -> dict[str, str]:
+  policy = json.loads(RETIRED_MODEL_IDS_PATH.read_text(encoding="utf-8"))
+  if not isinstance(policy, dict) or any(
+      not isinstance(retired, str) or not isinstance(replacement, str)
+      for retired, replacement in policy.items()
+  ):
+    raise ValueError("retired-model-ids.json must map model IDs to model IDs")
+  return policy
+
+
+# The browser and unattended runner consume the same packaged policy so a
+# model retirement remains one app-owned edit.
+RETIRED_MODEL_IDS = _load_retired_model_ids()
 
 # The runner shares the process exit-code space with its wrapper
 # (`app-reflection/fetch.sh` in the catalog app), whose OWN config errors take the low
