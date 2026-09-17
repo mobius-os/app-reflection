@@ -538,7 +538,7 @@ catalog skill only when its inventory description matches the issue. List
 what's installed if you need the full set:
 
 ```bash
-curl -s -H "Authorization: Bearer $AGENT_TOKEN" "$API_BASE_URL/api/apps/" | python3 -m json.tool
+mapi /api/apps/ | python3 -m json.tool
 ```
 
 Before reviewing, scan `/data/apps/reflection/inputs/app-feedback.md` if present. It contains structured feedback that mini-apps mirrored to `shared/app-feedback/<app-slug>/`; treat it as partner/app signal alongside interviews, the digest, and Memory.
