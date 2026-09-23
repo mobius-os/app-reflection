@@ -95,8 +95,13 @@ export function makeStorage(appId, token) {
   async function listReportDates() {
     if (ms && typeof ms.list === 'function') {
       try {
-        const entries = await ms.list('reports/')
-        return { dates: datesFromEntries(entries) }
+        const listing = typeof ms.listWithStatus === 'function'
+          ? await ms.listWithStatus('reports/')
+          : { entries: await ms.list('reports/'), complete: window.mobius?.online !== false }
+        return {
+          dates: datesFromEntries(listing.entries),
+          complete: listing.complete === true,
+        }
       } catch {
         return { error: 0 }
       }

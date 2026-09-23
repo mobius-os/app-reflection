@@ -39,10 +39,14 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
       setStreak(nextStreak)
       setLastSummary(nextSummary)
 
-      if (listRes.dates) {
-        // list() returns an array whether online (server-authoritative) or
-        // offline (derived from the read-through cache) — trust it either way.
-        setDates(listRes.dates)
+      if (listRes.dates && (listRes.complete || listRes.dates.length > 0)) {
+        // A complete last-known snapshot is authoritative. A partial snapshot
+        // may still add an opened brief, but an empty partial result must never
+        // erase rows or masquerade as "No Briefs Yet".
+        setDates((previous) => listRes.complete
+          ? listRes.dates
+          : [...new Set([...previous, ...listRes.dates])]
+              .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)))
         setPhase('ready')
       } else if (dates.length) {
         // Standalone listing failed but we already have rows on screen — keep
