@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { makeStorage } from '../storage-core.js'
+import { reconcileReportDates } from '../report-list-state.js'
 
 test('report discovery stays honest through online, offline, and reconnect listings', async (t) => {
   const previousWindow = globalThis.window
@@ -51,5 +52,33 @@ test('report discovery stays honest through online, offline, and reconnect listi
   assert.deepEqual(await storage.listReportDates(), {
     dates: ['2026-09-22', '2026-09-21'],
     complete: true,
+  })
+})
+
+test('report rows preserve partial results and replace from complete snapshots', () => {
+  assert.deepEqual(reconcileReportDates(['2026-09-22'], { dates: [], complete: false }), {
+    dates: ['2026-09-22'], usable: true,
+  })
+  assert.deepEqual(reconcileReportDates(['2026-09-22'], {
+    dates: ['2026-09-23'], complete: false,
+  }), {
+    dates: ['2026-09-23', '2026-09-22'], usable: true,
+  })
+  assert.deepEqual(reconcileReportDates(['2026-09-22'], { dates: [], complete: true }), {
+    dates: [], usable: true,
+  })
+})
+
+test('a standalone first-run 404 is a complete empty report directory', async (t) => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.window = previousWindow
+    globalThis.fetch = previousFetch
+  })
+  delete globalThis.window
+  globalThis.fetch = async () => ({ status: 404, ok: false })
+  assert.deepEqual(await makeStorage('4', 'app-token').listReportDates(), {
+    dates: [], complete: true,
   })
 })
