@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "While you sleep, Möbius learns from recent work, improves its own approach, anticipates what may help next, and leaves a one-page morning brief.",
   "author": "mobius-os",
   "license": "MIT",
@@ -81,7 +81,8 @@
     "ui/ModelPicker.jsx",
     "ui/BackgroundAgentList.jsx",
     "ui/backgroundAgentOrder.js",
-    "ui/SettingsTab.jsx"
+    "ui/SettingsTab.jsx",
+    "report-list-state.js"
   ],
   "skills": [
     "reflection.md"

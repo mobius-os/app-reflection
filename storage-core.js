@@ -95,8 +95,16 @@ export function makeStorage(appId, token) {
   async function listReportDates() {
     if (ms && typeof ms.list === 'function') {
       try {
-        const entries = await ms.list('reports/')
-        return { dates: datesFromEntries(entries) }
+        const listing = typeof ms.listWithStatus === 'function'
+          ? await ms.listWithStatus('reports/')
+          : await (async () => {
+              const entries = await ms.list('reports/')
+              return { entries, complete: entries !== null && window.mobius?.online !== false }
+            })()
+        return {
+          dates: datesFromEntries(listing.entries),
+          complete: listing.complete === true,
+        }
       } catch {
         return { error: 0 }
       }
@@ -110,7 +118,7 @@ export function makeStorage(appId, token) {
         const url = `${listBase}/reports/`
           + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : '')
         const r = await fetch(url, { headers })
-        if (r.status === 404) return { dates: [] } // dir not created yet = empty
+        if (r.status === 404) return { dates: [], complete: true } // dir not created yet = empty
         if (!r.ok) return { error: r.status }
         const data = await r.json()
         for (const e of data.entries || []) {
@@ -127,7 +135,7 @@ export function makeStorage(appId, token) {
       return { error: 0 }
     }
     out.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
-    return { dates: out }
+    return { dates: out, complete: true }
   }
 
   // Subscribe to a JSON path through window.mobius.storage.subscribe so the

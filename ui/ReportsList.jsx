@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronRight } from '@openai/apps-sdk-ui/components/Icon'
 import { dayOfMonth, relativeLabel, subLabel, weekdayInitial } from '../domain.js'
+import { reconcileReportDates } from '../report-list-state.js'
 import { StreakBar } from './StreakBar.jsx'
 
 // ---------------------------------------------------------------------------
@@ -39,10 +40,13 @@ export function ReportsList({ appId, storage, online, onOpen, onSetup }) {
       setStreak(nextStreak)
       setLastSummary(nextSummary)
 
-      if (listRes.dates) {
-        // list() returns an array whether online (server-authoritative) or
-        // offline (derived from the read-through cache) — trust it either way.
-        setDates(listRes.dates)
+      const listingUsable = Array.isArray(listRes.dates)
+        && (listRes.complete === true || listRes.dates.length > 0)
+      if (listingUsable) {
+        // A complete last-known snapshot is authoritative. A partial snapshot
+        // may still add an opened brief, but an empty partial result must never
+        // erase rows or masquerade as "No Briefs Yet".
+        setDates((previous) => reconcileReportDates(previous, listRes).dates)
         setPhase('ready')
       } else if (dates.length) {
         // Standalone listing failed but we already have rows on screen — keep
