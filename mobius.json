@@ -53,7 +53,6 @@
     "reflection_runner.py",
     "reflection.md",
     "operating-contract.md",
-    "reflection-platform-dev.md",
     "reflection_inputs.py",
     "housekeeping.py",
     "resource_monitor.py",
