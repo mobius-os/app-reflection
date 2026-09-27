@@ -547,7 +547,7 @@ button.rf-card { cursor: pointer; }
   overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
 }
 @media (hover:hover) and (pointer:fine) {
-  .mobius-agent-priority-handle:not(:disabled):hover { color:var(--text); background:var(--surface2); }
+  .mobius-agent-priority-handle:not(:disabled):hover { color:var(--text); background:var(--surface-2); }
 }
 @media (prefers-reduced-motion:reduce) { .mobius-agent-priority-row { transition:none; } }
 .mobius-model-trigger {
