@@ -1,119 +1,43 @@
 # Reflection
 
-The nightly self-improvement loop for [Möbius](https://github.com/mobius-os). While you sleep, a real agent steps back from individual tasks and looks at the larger picture: how you work, what the system learned, what caused friction, what may matter tomorrow or next week, and how Möbius itself should evolve. In the morning it leaves a concise brief with the useful outcomes and only the decisions worth your attention.
+Möbius learns from the friction its agents actually hit.
 
-It always ships a brief, even on quiet or failed nights. The agent writes the
-useful report; if its process ends without one, the surviving wrapper writes a
-small, honest safety notice without spending another model turn.
+1. **Agents log friction as it happens.** Every chat gets Reflection's
+   `log_friction` tool and a short note on when to use it. Each entry records
+   the exact moment it was logged, so it can be revisited later.
+2. **Once a day, if new friction is waiting, Reflection works through it in
+   the background.** It traces each root cause, checks whether it has been
+   fixed since, and asks the logging agent why it acted as it did when the
+   friction seems to come from its instructions. Then it writes a report. On
+   days with no new friction, nothing runs.
+3. **It asks before fixing anything.** Its questions wait beside the report.
+   Only a fix you approve is made; problems already fixed since are reported
+   without a question.
+
+The app has three tabs: **Reports** (each run's report with its chat, where
+you answer), **Backlog** (waiting, needs your decision, done, each linked to
+the chat where it happened), and **Settings** (which agent runs it, the daily
+run time, and run now).
+
+## Pieces
+
+| File | Role |
+|---|---|
+| `service.py` | The `log_friction` tool: appends to `friction.jsonl` in app storage |
+| `reflection-core.md` | The note every chat gets about when to log friction |
+| `fetch.sh` | Daily job: opens a Reflection chat when anything is pending |
+| `friction_queue.py` | Lists entries still without an outcome; records outcomes |
+| `reflection.md` | What the Reflection chat does |
+| `index.jsx`, `friction.js`, `schedule.js` | The app screen |
 
 ## Install
 
-### Via the App Store (recommended)
-
-Open the **App Store** mini-app in Möbius, find **Reflection**, tap **Install**.
-
-### Via paste-a-URL
-
-In the App Store, choose **Install from URL** and paste:
+Open the **App Store** in Möbius, find **Reflection**, and tap **Install**, or
+install from URL:
 
 ```
 https://raw.githubusercontent.com/mobius-os/app-reflection/main/mobius.json
 ```
-
-Möbius fetches the manifest, shows you the requested permissions and schedule, and installs with one tap.
-
-## What a run does
-
-The run is one multi-turn goal, not a fixed checklist. It works from recent activity, chats, logs, code, prior Reflection learning, and current web research, then chooses the few highest-leverage moves. A night may:
-
-1. **Review yesterday's work.** Find repeated effort, weak procedures, unfinished loops, avoidable failures, and things a future agent should know.
-2. **Evolve its own approach.** Rewrite its compact operating model, append durable learning, prune stale prompt rules, and improve the Reflection skill when evidence shows a better way to work.
-3. **Anticipate what is likely to help.** Prepare context, research, fixes, or small improvements for the next day and week. This can include checking relevant releases or practices for tools and dependencies you actually use—not generic news gathering.
-4. **Improve the system.** Harden an app or workflow, simplify a recurring process, improve observability, reduce unnecessary usage, or turn repeated cleanup into a bounded lifecycle rule.
-5. **Learn about you carefully.** Update its model only from observed patterns and feedback, keeping hypotheses distinct from confirmed preferences.
-6. **Write the brief.** A standalone HTML brief lands in `reports/<date>.html`; optional decision cards are saved for the next run, but unanswered questions never block useful work.
-
-When you leave feedback in the morning, that closes the loop: the agent can act on your notes and records what your answers taught it, so the next night's run wastes fewer of your taps.
-
-## How Reflection evolves
-
-`meta-state.md` is Reflection's concise current operating model: observed working
-patterns, system strengths and friction, near-term hypotheses, a small watchlist,
-and the cadence for revisiting each item. Reflection rewrites it when evidence
-changes the model. `meta-learning.jsonl` is the bounded explanation of why the
-model or prompt changed, so a later run does not have to rediscover the lesson.
-The staged copy is read-only evidence; a companion status file names and hashes
-the canonical live file so the agent reads that path before rewriting it.
-
-Reflection also receives `memory-health.json`, a content-free handoff containing
-Memory's recent run outcome, recovery/backlog counters, and graph health counts.
-Memory is optional. Reflection checks the authenticated installed-app list
-rather than inferring installation from leftover files. When an installed
-Memory is still publishing, Reflection waits for a bounded interval; if the
-run remains in motion, Reflection proceeds using the prior immutable revision
-named by Memory's atomic publication pointer and marks the moving run
-unassessed. The handoff records the exact immutable Memory commit consumed.
-Memory remains the sole graph writer. Reflection observes and diagnoses that
-loop, then surfaces bounded recommendations instead of silently becoming a
-second consolidator.
-
-The editable Reflection skill is its procedure, not a diary. Reflection changes
-that prompt only when a finding generalizes to future runs, and removes rules
-that have become stale or redundant. This lets the approach evolve without the
-prompt growing forever.
-
-Web research is driven by the user's real work and a near-term horizon. For
-example, Reflection may check whether a frequently used tool has a relevant new
-release, whether a dependency changed in a way that affects an active project,
-or whether tomorrow's likely task can be prepared in advance. Each watch records
-when it was checked and when it is worth checking again.
-
-## Bounded resource evidence
-
-`resource_monitor.py` records a small daily snapshot in `resource-history.jsonl`.
-It always reads cheap filesystem and cgroup counters and takes one compact,
-owner-aware memory sample, but walks `/data` only on the first run, on its weekly
-cadence, when disk pressure rises, or when daily growth is unusual. The memory
-sample keeps only aggregate Möbius, browser, agent, app-service, and tool
-categories; process command lines and per-chat labels are discarded. The
-`/data` volume and container-root/host-backing view have separate scope and
-device identities; growth is calculated only across matching identities, so a
-remount cannot be mistaken for reclaimed host space. Deep scans have a
-wall-clock budget and histories are bounded, so the observer cannot quietly
-become the resource leak.
-
-Reflection records each cleanup or policy decision in
-`resource-decisions.jsonl`: the evidence, action, measured result, next review
-date, and trigger that warrants an earlier look. Once an area has been hardened
-and its analytics remain healthy, Reflection lengthens its review cadence
-instead of rerunning the same diagnostics. It automatically cleans only data
-that is demonstrably regenerable, expired, inactive, and narrowly targeted;
-user content, credentials, databases, and uncertain backups remain proposals.
-The wrapper also retains 60 compact run-metric rows (duration, exit status,
-disk delta, cgroup CPU delta, whether the brief shipped, and whether it came
-from the agent or the safety floor), alongside only a short log tail, so
-Reflection can reduce its own footprint without creating an ever-growing
-observability store.
-
-## No sandbox, by design
-
-The agent runs with **full tools and a real token** — it is the agent, trusted, not a locked-down script. That is deliberate: Möbius's philosophy is *code empowers the agent; it does not police it*. Safety comes from instruction, not tool-denial — every change it makes is in `/data`'s git history and reversible, it never auto-applies anything risky (security changes with behavior impact, destructive data ops, dependency major-bumps, anything that hits paid APIs or notifies other people), and it surfaces those as proposals in the brief instead.
-
-## Customize
-
-From the app's **Settings** tab:
-
-- **Agent / Model** — Claude or Codex; any model from a connected provider.
-- **Run time** — when the cron fires. Defaults to 06:00 local (DST handled); untick "use my local time" to pin to UTC.
-
-Schedule changes take effect within 10 minutes (the cron sync runs every 10). What it prioritizes, how it interviews, and how long the brief runs live in the editable reflection skill, which the agent revises itself as it learns what's worth doing.
-
-## Streak
-
-The streak counts consecutive successful days with a substantive Reflection
-brief. Quiet successful nights still count. A model-independent safety notice
-neither increments nor resets the displayed prior streak; the next successful
-substantive run starts a new streak when the intervening day was only a notice.
 
 ## License
 
