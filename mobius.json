@@ -1,40 +1,21 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "3.0.1",
-  "description": "While you sleep, Möbius learns from recent work, improves its own approach, anticipates what may help next, and leaves a one-page morning brief.",
+  "version": "4.0.0",
+  "description": "Agents log friction as it happens; on days with new friction, Reflection looks into it, reports, and asks you before fixing anything.",
   "author": "mobius-os",
   "license": "MIT",
   "homepage": "https://github.com/mobius-os/app-reflection",
   "entry": "index.jsx",
   "icon": "icon.png",
   "offline_capable": true,
-  "permissions": {
-    "cross_app_access": "read",
-    "share_with_apps": "none",
-    "chat_log_access": "summary_with_deleted"
-  },
-  "storage_seeds": {
-    "settings.json": {
-      "hour": 6,
-      "minute": 0,
-      "timezone": null,
-      "cron": "0 6 * * *",
-      "exclude_apps": [],
-      "provider": null,
-      "model": null,
-      "primary_agent_mode": "system",
-      "secondary_agent_mode": "system",
-      "fallback_provider": null,
-      "fallback_model": null
-    }
-  },
   "offline": {
     "reads": true,
-    "writes": "queued",
-    "execution": "none",
-    "reads_detail": "The reports list, each opened brief body, and the streak/state are read through window.mobius.storage (list/getText/get), so they render offline from the runtime read-through cache. A brief opens offline after it has been opened once online (its body is mirrored on that read)."
+    "writes": "none",
+    "execution": "none"
   },
+  "embeds_agent": true,
+  "permissions": {},
   "schedule": {
     "default": "0 6 * * *",
     "user_configurable": true,
@@ -43,48 +24,44 @@
   "runtime": {
     "imports": [
       "react",
-      "react-dom",
+      "marked",
+      "dompurify",
       "@openai/apps-sdk-ui/components/Icon"
     ],
     "esm_deps": []
   },
-  "embeds_agent": true,
   "source_files": [
-    "reflection_runner.py",
+    "friction.js",
+    "schedule.js",
+    "friction_queue.py",
+    "service.py",
     "reflection.md",
-    "operating-contract.md",
-    "reflection_inputs.py",
-    "housekeeping.py",
-    "resource_monitor.py",
-    "memory_health.py",
-    "reflection_floor_brief.py",
-    "experiment_status.py",
-    "personalization_profile.py",
-    "tool_friction.py",
-    "effort_summary.py",
-    "interview_outcomes.py",
-    "learning_loop.py",
-    "constants.js",
-    "retired-model-ids.json",
-    "model-selection.js",
-    "theme.js",
-    "domain.js",
-    "providers.js",
-    "storage-core.js",
-    "storage.js",
-    "ui/ChatBubbleIcon.jsx",
-    "ui/ChatPanel.jsx",
-    "ui/ReportQuestions.jsx",
-    "ui/ReportDetail.jsx",
-    "ui/StreakBar.jsx",
-    "ui/ReportsList.jsx",
-    "ui/ModelPicker.jsx",
-    "ui/BackgroundAgentList.jsx",
-    "ui/backgroundAgentOrder.js",
-    "ui/SettingsTab.jsx",
-    "report-list-state.js"
+    "reflection-core.md"
   ],
   "skills": [
     "reflection.md"
+  ],
+  "system_prompt": "reflection-core.md",
+  "service": {
+    "entry": "service.py"
+  },
+  "tools": [
+    {
+      "name": "log_friction",
+      "description": "Record friction you just hit: anything that made this work harder than it should have been. One short, self-contained description of what happened and what it cost. Returns immediately; carry on with the task.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "friction": {
+            "type": "string",
+            "description": "What happened and what it cost, in one short text."
+          }
+        },
+        "required": [
+          "friction"
+        ]
+      },
+      "always_load": true
+    }
   ]
 }

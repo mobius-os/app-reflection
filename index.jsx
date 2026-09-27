@@ -1,285 +1,464 @@
-// Reflection — thin app shell. The module tree is declared in mobius.json's
-// source_files; the multi-file installer fetches each path and Rolldown bundles
-// from this entry, resolving the relative imports below at compile time.
-//
-//   constants.js  — shared scalar tables, report template blocks, and chat sizing constants
-//   theme.js      — the single app stylesheet (CSS)
-//   domain.js     — pure + DOM-level report, schedule, date, and split helpers
-//   providers.js  — provider/model API loading helpers
-//   storage.js    — storage layer, online signal, and chat split persistence keys
-//   ui/*.jsx      — one React component per file
-//
-// Only App lives here: it owns top-level tab/detail state, persistence wiring,
-// app-ready/dead-letter signals, and mounts the report/settings UI.
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { X } from '@openai/apps-sdk-ui/components/Icon'
-import { CSS } from './theme.js'
-import { makeStorage, useOnline } from './storage.js'
-import { ReportDetail } from './ui/ReportDetail.jsx'
-import { ReportsList } from './ui/ReportsList.jsx'
-import { SettingsTab } from './ui/SettingsTab.jsx'
+// Reflection: each run's report (with its chat, where the agent asks before
+// fixing anything), the friction backlog, and when and with which agent it runs.
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import { ArrowLeft, Chat, ChevronRight, Lightbulb, Play, Reload } from '@openai/apps-sdk-ui/components/Icon'
+import { backlogSections, frictionRows, isRunChat, reportHeadline } from './friction.js'
+import { dailyCron, scheduleTime } from './schedule.js'
 
-export {
-  extractReportQuestions,
-  hardenReportHtml,
-  isDarkColor,
-  reportThemeStyle,
-  sanitizeQuestions,
-} from './domain.js'
-export { makeStorage } from './storage.js'
+// Shapes follow the shared app-component catalog (mobius-ui:* labels).
+const CSS = `
+  .ma-root { box-sizing: border-box; position: relative; min-height: 100dvh; overflow-x: clip;
+    background: var(--bg); color: var(--text); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  /* One centered 760px column, header included, like Skills and Integrations. */
+  .ma-header { position: sticky; top: 0; z-index: 2; background: var(--bg); }
+  .ma-header-inner { max-width: 760px; margin-inline: auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
+    padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--border); }
+  .ma-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .ma-mark { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; object-fit: cover; }
+  .ma-brand-text { min-width: 0; line-height: 1.15; }
+  .ma-title { margin: 0; font-size: 18px; font-weight: 700; }
+  .ma-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .rf-needs { color: var(--accent); font-weight: 600; }
+  .rf-page { max-width: 760px; margin: 0 auto; padding: 16px 16px 48px; }
+  .ma-seg { display: flex; gap: 2px; height: 44px; margin-bottom: 18px; background: var(--surface-2, var(--surface));
+    border-radius: 10px; box-shadow: inset 0 0 0 1px var(--border); }
+  .ma-seg-btn { flex: 1; box-sizing: border-box; min-height: 44px; padding: 6px 14px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--muted); font-family: var(--font); font-size: 13px; font-weight: 650; cursor: pointer;
+    transition: background .15s, color .15s; }
+  .ma-seg-btn:hover { color: var(--text); }
+  .ma-seg-btn.is-active { background: var(--accent); color: var(--accent-fg); }
+  .rf-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .rf-count { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 11px; }
+  .is-active .rf-count { background: var(--accent-fg); color: var(--accent); }
+  .ma-card { box-sizing: border-box; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 44px; padding: 15px 16px;
+    text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px;
+    font-family: var(--font); transition: border-color .16s ease, transform .12s ease; }
+  button.ma-card { cursor: pointer; }
+  button.ma-card:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+  button.ma-card:active { transform: scale(.992); }
+  .ma-card.is-featured { border-left: 3px solid var(--accent); }
+  .ma-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ma-card-title { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.35; }
+  .ma-card-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--muted); }
+  .ma-card-chevron { flex: 0 0 auto; font-size: 20px; color: var(--muted); opacity: .7; }
+  .rf-item { flex-direction: column; align-items: stretch; gap: 8px; }
+  .rf-text { margin: 0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .rf-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+  .rf-tag { padding: 2px 9px; border-radius: 999px; font-weight: 650; border: 1px solid var(--border); }
+  .rf-tag.is-accent { color: var(--accent); border-color: var(--accent); }
+  .rf-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 -10px -8px; }
+  .rf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .rf-section { margin: 0 0 26px; }
+  .rf-section h2 { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .rf-quiet { margin: 0; padding: 4px 2px; font-size: 14px; color: var(--muted); }
+  .ma-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
+    min-height: 50dvh; max-width: 440px; margin: 0 auto; padding: 32px 24px; color: var(--muted); }
+  .ma-empty-mark { width: 64px; height: 64px; margin-bottom: 10px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
+    color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); font-size: 30px; }
+  .ma-empty-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .ma-empty-text { margin: 0; font-size: 14px; line-height: 1.6; }
+  .ma-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 10px 16px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: var(--font);
+    font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .14s ease, transform .1s ease; }
+  .ma-btn svg { font-size: 18px; }
+  .ma-btn:active { transform: scale(.97); }
+  .ma-btn:disabled { opacity: .5; cursor: default; transform: none; }
+  .ma-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .ma-btn-secondary { background: var(--surface-2, var(--surface)); }
+  .ma-btn-ghost { background: transparent; border-color: transparent; color: var(--accent); padding: 10px; }
+  .ma-btn-ghost:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .ma-btn:focus-visible, .ma-card:focus-visible, .ma-seg-btn:focus-visible, .ma-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .ma-input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font: 15px var(--font); }
+  .rf-back { margin: 0 0 8px -10px; }
+  .rf-report { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+  .rf-report h1 { font-size: 20px; letter-spacing: -0.01em; margin: 4px 0 12px; }
+  .rf-report h2 { font-size: 16px; margin: 22px 0 8px; }
+  .rf-report p, .rf-report ul, .rf-report ol { margin: 0 0 12px; }
+  .rf-report li { margin: 4px 0; }
+  .rf-report code { font-size: 13px; }
+  .rf-chat { margin-top: 22px; height: 70vh; min-height: 420px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+  .rf-form { display: flex; flex-direction: column; gap: 20px; }
+  .rf-label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 650; }
+  .rf-hint { font-size: 13px; font-weight: 400; color: var(--muted); line-height: 1.5; }
+  .rf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .rf-status { font-size: 13px; color: var(--muted); }
+  .rf-loading { padding: 40px 4px; text-align: center; color: var(--muted); font-size: 14px; }
+`
 
-const SETUP_COMPLETIONS_KEY = 'mobius:setup-complete:v1'
+const OUTCOME_LABELS = {
+  asked: 'Asked you',
+  resolved: 'Resolved since',
+  joined: 'Same cause as another',
+  explained: 'Explained',
+}
+const PROVIDERS = { claude: 'Claude', codex: 'Codex' }
+const TABS = [['reports', 'Reports'], ['backlog', 'Backlog'], ['settings', 'Settings']]
 
-function markSetupComplete(appId) {
-  if (appId == null || typeof window === 'undefined') return
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(SETUP_COMPLETIONS_KEY) || '{}')
-    const data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-    data[String(appId)] = { completedAt: new Date().toISOString() }
-    window.localStorage.setItem(SETUP_COMPLETIONS_KEY, JSON.stringify(data))
-  } catch {}
-  if (window.parent && window.parent !== window) {
-    window.parent.postMessage(
-      { type: 'moebius:setup-complete', appId },
-      window.location.origin,
-    )
-  }
+function when(iso) {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  return at.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
+function api(token, path, options = {}) {
+  return fetch(path, {
+    ...options,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...options.headers },
+  })
+}
+
+// Opens a chat in the owner's workspace. App frames have an opaque origin, so
+// `*` is required for this one hop; the shell accepts it only from this frame.
+function openChat(chatId) {
+  window.parent.postMessage({ type: 'moebius:open-chat', chatId }, '*')
+}
+
+// The live file; the runtime's cached copy only when offline. (Its cached read
+// answers with the last-seen copy first, which hides new friction and reports.)
+async function readText(appId, token, path) {
+  try {
+    const r = await api(token, `/api/storage/apps/${appId}/${path}`, { cache: 'no-store' })
+    if (r.status === 404) return null
+    if (r.ok) return await r.text()
+  } catch {}
+  return window.mobius?.storage?.getText?.(path).catch(() => null) ?? null
+}
+
+// Runs (the chats the daily job opened) with their reports, the friction log
+// joined with outcomes, and the next run time. All reload together; while a
+// run is working the view refreshes so its status and report appear.
+function useData(appId, token) {
+  const [data, setData] = useState(null)
+  const [failed, setFailed] = useState(false)
+  const load = useCallback(async () => {
+    try {
+      const [chatsResponse, friction, outcomes, schedules] = await Promise.all([
+        api(token, '/api/app-chats'),
+        readText(appId, token, 'friction.jsonl'),
+        readText(appId, token, 'outcomes.jsonl'),
+        api(token, '/api/apps/schedules').then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      ])
+      if (!chatsResponse.ok) throw new Error(String(chatsResponse.status))
+      const chats = await chatsResponse.json()
+      const runs = await Promise.all(chats.filter(isRunChat)
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .map(async (chat) => ({ ...chat, report: await readText(appId, token, `reports/${chat.id}.md`) })))
+      const schedule = schedules.find((s) => s.id === Number(appId)) || null
+      setData({ runs, rows: frictionRows(friction, outcomes), schedule })
+      setFailed(false)
+    } catch {
+      setFailed(true)
+    }
+  }, [appId, token])
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') load() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [load])
+  const running = data?.runs.some((run) => run.running)
+  useEffect(() => {
+    if (!running) return undefined
+    const timer = setInterval(load, 15000)
+    return () => clearInterval(timer)
+  }, [running, load])
+  return [data, failed, load]
+}
+
+function statusLine({ runs, rows, schedule }) {
+  const runTime = scheduleTime(schedule)
+  const parts = []
+  if (runs.some((run) => run.running)) parts.push('Working now')
+  const decisions = runs.filter((run) => run.awaiting_owner).length
+  if (decisions) parts.push(<span className="rf-needs">{decisions} {decisions === 1 ? 'needs' : 'need'} you</span>)
+  const waiting = rows.filter((row) => !row.outcome).length
+  if (waiting) parts.push(`${waiting} waiting`)
+  if (runTime) parts.push(`Next run ${runTime}`)
+  if (!parts.length) return 'All caught up'
+  return parts.map((part, i) => <span key={i}>{i ? ' · ' : ''}{part}</span>)
+}
+
+function Header({ appId, status }) {
+  return (
+    <header className="ma-header">
+      <div className="ma-header-inner">
+        <div className="ma-brand">
+          <img className="ma-mark" src={`/api/apps/${appId}/icon?size=64`} alt="" aria-hidden="true" />
+          <div className="ma-brand-text">
+            <h1 className="ma-title">Reflection</h1>
+            {status && <span className="ma-subtitle">{status}</span>}
+          </div>
+        </div>
+      </div>
+    </header>
+  )
+}
+
+function Empty({ title, children }) {
+  return (
+    <div className="ma-empty">
+      <div className="ma-empty-mark" aria-hidden="true"><Lightbulb /></div>
+      <div className="ma-empty-title">{title}</div>
+      <p className="ma-empty-text">{children}</p>
+    </div>
+  )
+}
+
+function RunChat({ chatId }) {
+  const mount = useRef(null)
+  useEffect(() => {
+    let handle = null
+    let gone = false
+    Promise.resolve(window.mobius?.chat?.({ mount: mount.current, chatId, picker: false }))
+      .then((h) => { if (gone) h?.destroy?.(); else handle = h })
+      .catch(() => {})
+    return () => { gone = true; handle?.destroy?.() }
+  }, [chatId])
+  return <div ref={mount} className="rf-chat" aria-label="Reflection chat" />
+}
+
+function Report({ run, onBack }) {
+  const html = run.report ? DOMPurify.sanitize(marked.parse(run.report)) : ''
+  return (
+    <article>
+      <button type="button" className="ma-btn ma-btn-ghost rf-back" onClick={onBack}><ArrowLeft /> Reports</button>
+      {html
+        ? <div className="rf-report" dangerouslySetInnerHTML={{ __html: html }} />
+        : <p className="rf-quiet">{run.running ? 'This run is still working. Its report will appear here.' : 'This run ended without a report.'}</p>}
+      <RunChat chatId={run.id} />
+    </article>
+  )
+}
+
+function runTag(run) {
+  if (run.awaiting_owner) return <span className="rf-tag is-accent">Needs your answer</span>
+  if (run.running) return <span className="rf-tag">Working</span>
+  if (!run.report) return <span className="rf-tag">No report</span>
+  return null
+}
+
+function Reports({ runs, onOpen }) {
+  if (!runs.length) {
+    return (
+      <Empty title="No reports yet">
+        When agents have logged friction, Reflection looks into it at the daily
+        run time and reports here, asking before it fixes anything.
+      </Empty>
+    )
+  }
+  return (
+    <ul className="rf-list" aria-label="Reports">
+      {runs.map((run) => (
+        <li key={run.id}>
+          <button type="button" className={`ma-card${run.awaiting_owner ? ' is-featured' : ''}`} onClick={() => onOpen(run)}>
+            <div className="ma-card-main">
+              <div className="ma-card-title">{reportHeadline(run.report) || run.title}</div>
+              <div className="ma-card-sub">{runTag(run)}<span>{when(run.created_at)}</span></div>
+            </div>
+            <ChevronRight className="ma-card-chevron" aria-hidden="true" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function FrictionItem({ row, run, onOpen }) {
+  const chatId = row.call?.chat_id
+  return (
+    <li className="ma-card rf-item">
+      <p className="rf-text">{row.friction}</p>
+      <div className="ma-card-sub">
+        {row.outcome && <span className="rf-tag is-accent">{OUTCOME_LABELS[row.outcome.outcome] || row.outcome.outcome}</span>}
+        <span>{[when(row.at), PROVIDERS[row.call?.provider]].filter(Boolean).join(' · ')}</span>
+      </div>
+      {row.outcome?.note && <p className="rf-note">{row.outcome.note}</p>}
+      {(chatId || run) && (
+        <div className="rf-actions">
+          {chatId && <button type="button" className="ma-btn ma-btn-ghost" onClick={() => openChat(chatId)}><Chat /> Where it happened</button>}
+          {run && <button type="button" className="ma-btn ma-btn-ghost" onClick={() => onOpen(run)}><ChevronRight /> Report</button>}
+        </div>
+      )}
+    </li>
+  )
+}
+
+function Backlog({ runs, rows, runTime, onOpen }) {
+  if (!rows.length) {
+    return (
+      <Empty title="No friction logged yet">
+        Agents log friction here as it happens: a missing tool, a misleading
+        error, an unclear instruction.
+      </Empty>
+    )
+  }
+  const { pending, decision, done, working } = backlogSections(rows, runs)
+  const byId = new Map(runs.map((run) => [run.id, run]))
+  const section = (title, list, empty) => (
+    <section className="rf-section" aria-label={title}>
+      <h2>{title} · {list.length}</h2>
+      {list.length
+        ? <ul className="rf-list">{list.map((row) => (
+          <FrictionItem key={row.id || row.at} row={row} run={byId.get(row.outcome?.run)} onOpen={onOpen} />
+        ))}</ul>
+        : <p className="rf-quiet">{empty}</p>}
+    </section>
+  )
+  return (
+    <>
+      {section(
+        working ? 'Being worked on now' : 'Waiting for the next run',
+        pending,
+        runTime ? `Nothing waiting. The next run is at ${runTime}.` : 'Nothing waiting.',
+      )}
+      {section('Needs your decision', decision, 'Nothing needs your decision.')}
+      {section('Done', done, 'Nothing settled yet.')}
+    </>
+  )
+}
+
+function Settings({ appId, token, schedule, pendingCount, running, onChange }) {
+  const [models, setModels] = useState([])
+  const [agent, setAgent] = useState('')
+  const [time, setTime] = useState(scheduleTime(schedule) || '06:00')
+  const [status, setStatus] = useState('')
+  const [busy, setBusy] = useState(false)
+  // The time is shown and saved in the schedule's own zone; a schedule without
+  // one takes this device's zone.
+  const timezone = (schedule?.zone_cron && schedule.timezone)
+    || Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  useEffect(() => {
+    const store = window.mobius?.storage
+    Promise.all([
+      api(token, '/api/auth/providers/status').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+      api(token, '/api/auth/providers/models').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+      store?.get?.('settings.json').catch(() => null),
+    ]).then(([connected, catalog, settings]) => {
+      setModels(Object.keys(PROVIDERS)
+        .filter((provider) => connected?.[provider]?.configured && Array.isArray(catalog?.[provider]))
+        .map((provider) => ({ provider, models: catalog[provider].filter((m) => typeof m?.id === 'string') })))
+      if (settings?.provider) setAgent(`${settings.provider}:${settings.model || ''}`)
+    })
+  }, [token])
+
+  const save = async () => {
+    setBusy(true)
+    setStatus('Saving…')
+    // Model ids may themselves contain a colon; only the first one separates.
+    const cut = agent.indexOf(':')
+    const [provider, model] = cut > 0 ? [agent.slice(0, cut), agent.slice(cut + 1)] : [null, null]
+    try {
+      await window.mobius.storage.set('settings.json', { provider: provider || null, model: model || null })
+      const r = await api(token, `/api/apps/${appId}/schedule`, {
+        method: 'POST', body: JSON.stringify({ cron: dailyCron(time), timezone }),
+      })
+      setStatus(r.ok ? 'Saved.' : 'The time could not be saved. Try again.')
+      if (r.ok) onChange()
+    } catch {
+      setStatus('Could not save. Try again.')
+    }
+    setBusy(false)
+  }
+
+  const runNow = async () => {
+    setBusy(true)
+    const r = await api(token, `/api/apps/${appId}/run-job`, { method: 'POST' }).catch(() => null)
+    setStatus(r?.ok ? 'Started. The run appears under Reports in a moment.' : 'Could not start a run.')
+    setBusy(false)
+    if (r?.ok) setTimeout(onChange, 4000)
+  }
+
+  return (
+    <div className="rf-form">
+      <label className="rf-label">
+        Agent
+        <span className="rf-hint">Who works through the friction. Automatic uses your background agents in order.</span>
+        <select className="ma-input" value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <option value="">Automatic (your background agents)</option>
+          {models.map((group) => (
+            <optgroup key={group.provider} label={PROVIDERS[group.provider]}>
+              {group.models.map((m) => <option key={m.id} value={`${group.provider}:${m.id}`}>{m.name || m.id}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      <label className="rf-label">
+        Daily run time
+        <span className="rf-hint">When Reflection picks up new friction ({timezone}). Days with nothing new cost nothing.</span>
+        <input className="ma-input" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+      </label>
+      <div className="rf-row">
+        <button type="button" className="ma-btn ma-btn-primary" onClick={save} disabled={busy}>Save</button>
+        <button type="button" className="ma-btn ma-btn-secondary" onClick={runNow} disabled={busy || running || !pendingCount}>
+          <Play /> {running ? 'Running' : `Run now${pendingCount ? ` (${pendingCount} waiting)` : ''}`}
+        </button>
+        <span className="rf-status" role="status">{status}</span>
+      </div>
+    </div>
+  )
+}
 
 export default function App({ appId, token }) {
   const [tab, setTab] = useState('reports')
-  const [openDate, setOpenDate] = useState(null)
-  const detailNavRef = useRef(null)
-  const tabRefs = useRef([])
-  const online = useOnline()
-  const storage = useMemo(() => makeStorage(appId, token), [appId, token])
-  const selectTab = (next) => {
-    if (next === 'settings') closeDetail()
-    setTab(next)
+  const [openId, setOpenId] = useState(null)
+  const [data, failed, reload] = useData(appId, token)
+  useEffect(() => { if (data || failed) window.mobius?.signal?.('app_ready') }, [data, failed])
+
+  const open = data?.runs.find((run) => run.id === openId)
+  let body
+  if (!data) {
+    body = failed
+      ? (
+        <div className="ma-empty">
+          <div className="ma-empty-title">Couldn’t load Reflection</div>
+          <p className="ma-empty-text">Check your connection and try again.</p>
+          <button type="button" className="ma-btn ma-btn-secondary" onClick={reload}><Reload /> Try again</button>
+        </div>
+      )
+      : <p className="rf-loading" role="status">Loading…</p>
+  } else if (open) {
+    body = <Report run={open} onBack={() => { setOpenId(null); reload() }} />
+  } else {
+    const decisions = data.runs.filter((run) => run.awaiting_owner).length
+    const pendingCount = data.rows.filter((row) => !row.outcome).length
+    body = (
+      <>
+        <div className="ma-seg" role="tablist" aria-label="View">
+          {TABS.map(([id, label]) => (
+            <button key={id} type="button" role="tab" id={`rf-tab-${id}`} aria-controls="rf-panel"
+              aria-selected={tab === id} className={`ma-seg-btn${tab === id ? ' is-active' : ''}`} onClick={() => setTab(id)}>
+              {label}
+              {id === 'reports' && decisions
+                ? <span className="rf-count"><span className="rf-sr">, </span>{decisions}<span className="rf-sr"> waiting for your answer</span></span>
+                : null}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id="rf-panel" aria-labelledby={`rf-tab-${tab}`}>
+          {tab === 'reports' && <Reports runs={data.runs} onOpen={(run) => setOpenId(run.id)} />}
+          {tab === 'backlog' && (
+            <Backlog runs={data.runs} rows={data.rows} runTime={scheduleTime(data.schedule)} onOpen={(run) => setOpenId(run.id)} />
+          )}
+          {tab === 'settings' && (
+            <Settings appId={appId} token={token} schedule={data.schedule} pendingCount={pendingCount}
+              running={data.runs.some((run) => run.running)} onChange={reload} />
+          )}
+        </div>
+      </>
+    )
   }
-  const onTabKeyDown = (event, index) => {
-    const order = ['reports', 'settings']
-    let nextIndex = index
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % order.length
-    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + order.length) % order.length
-    else if (event.key === 'Home') nextIndex = 0
-    else if (event.key === 'End') nextIndex = order.length - 1
-    else return
-    event.preventDefault()
-    selectTab(order[nextIndex])
-    window.requestAnimationFrame(() => tabRefs.current[nextIndex]?.focus())
-  }
-  const appReadyFiredRef = useRef(false)
-  // A save can resolve 'queued' (durably outboxed offline) and then be FATALLY
-  // refused later, when the outbox drains — an async outcome the resolved
-  // promise at the call site can never carry. onDeadLetter is that out-of-band
-  // channel: it fires once per such write so a "Saved" the user already saw is
-  // honestly retracted here. Held at the app root because the originating
-  // component (a question card, the settings form) is likely unmounted by drain
-  // time. Replays unconsumed dead-letters on subscribe, so a refusal that
-  // landed while the app was closed still surfaces on next open.
-  const [deadLetter, setDeadLetter] = useState(null)
-  useEffect(() => {
-    if (!window.mobius || typeof window.mobius.onDeadLetter !== 'function') return undefined
-    return window.mobius.onDeadLetter((dl) => {
-      setDeadLetter(dl && dl.path === 'settings.json'
-        ? 'Your schedule didn’t save — it was refused after going offline. Reopen Settings and save again.'
-        : 'A queued change couldn’t be saved after you reconnected. Please try again.')
-    })
-  }, [])
-
-  // Surface the streak in the header on the reports tab. The read below goes
-  // through the runtime read-through cache (offline-capable), so the badge
-  // fills from the last-known state.json even before the list finishes its own
-  // load — and offline too. The list keeps its own authoritative copy.
-  const [headerStreak, setHeaderStreak] = useState(0)
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      const res = await storage.getJSON('state.json')
-      if (cancelled) return
-      if (res.data && Number.isFinite(res.data.streak)) {
-        setHeaderStreak(res.data.streak)
-      }
-      // app_ready fires once after the initial state load (whether empty or not).
-      if (!appReadyFiredRef.current) {
-        appReadyFiredRef.current = true
-        window.mobius?.signal?.('app_ready')
-      }
-    })()
-    return () => { cancelled = true }
-  }, [storage, appId, token])
-
-  const closeDetail = useCallback(() => {
-    try { detailNavRef.current?.close?.() } catch {}
-    detailNavRef.current = null
-    setOpenDate(null)
-  }, [])
-
-  useEffect(() => {
-    function onMessage(e) {
-      if (e.origin !== window.location.origin) return
-      if (e.data?.type === 'moebius:app-intent' && e.data.intent === 'setup') {
-        closeDetail()
-        setTab('settings')
-      }
-    }
-    window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
-  }, [closeDetail])
-
-  const openDetail = useCallback(async (dateStr) => {
-    try { detailNavRef.current?.close?.() } catch {}
-    detailNavRef.current = null
-    if (window.mobius?.nav?.open) {
-      let handle = null
-      handle = window.mobius.nav.open('reflection-report', {
-        onBack: () => {
-          if (detailNavRef.current !== handle) return
-          detailNavRef.current = null
-          setOpenDate(null)
-        },
-        onForward: () => {
-          detailNavRef.current = handle
-          setOpenDate(dateStr)
-        },
-      })
-      detailNavRef.current = handle
-      const { status } = await handle.outcome
-      if (detailNavRef.current !== handle) {
-        handle.close()
-        return
-      }
-      if (status !== 'owned' && status !== 'standalone') {
-        detailNavRef.current = null
-        return
-      }
-    }
-    window.mobius?.signal?.('brief_opened', { date: dateStr })
-    setOpenDate(dateStr)
-  }, [])
-
-  useEffect(() => () => {
-    try { detailNavRef.current?.close?.() } catch {}
-  }, [])
 
   return (
-    <div className="rf-root">
+    <div className="ma-root">
       <style>{CSS}</style>
-      <div className="rf-aurora" aria-hidden="true" />
-      <header className="rf-header">
-        <div className="rf-header-inner">
-        <div className="rf-brand">
-          {/* Brand mark: the app's real glossy icon (downscaled + cached).
-              Falls back to an accent tile when this install
-              has no custom icon and the route 404s. */}
-          <img
-            src={`/api/apps/${appId}/icon?size=64`}
-            alt=""
-            width={26}
-            height={26}
-            className="rf-brand-icon"
-            onError={(e) => {
-              e.currentTarget.style.display = 'none'
-              const f = e.currentTarget.nextElementSibling
-              if (f) f.style.display = 'flex'
-            }}
-          />
-          <span className="rf-brand-fallback" style={{ display: 'none' }} aria-hidden="true">R</span>
-          <div className="rf-brand-copy">
-            <h1>Reflection</h1>
-            <span>Daily briefs from your agent</span>
-          </div>
-        </div>
-        <div className="rf-header-right">
-          {headerStreak >= 1 && (
-            <span className="rf-streak-badge" title={`${headerStreak} mornings in a row`}>
-              <span aria-hidden="true">🔥</span>
-              {headerStreak}
-            </span>
-          )}
-          <div className="rf-seg" role="tablist" aria-label="View">
-            <button
-              id="rf-tab-reports"
-              ref={(node) => { tabRefs.current[0] = node }}
-              type="button"
-              role="tab"
-              aria-selected={tab === 'reports'}
-              aria-controls="rf-panel-reports"
-              tabIndex={tab === 'reports' ? 0 : -1}
-              className={`rf-seg-btn${tab === 'reports' ? ' is-active' : ''}`}
-              onClick={() => selectTab('reports')}
-              onKeyDown={(event) => onTabKeyDown(event, 0)}
-            >
-              Briefs
-            </button>
-            <button
-              id="rf-tab-settings"
-              ref={(node) => { tabRefs.current[1] = node }}
-              type="button"
-              role="tab"
-              aria-selected={tab === 'settings'}
-              aria-controls="rf-panel-settings"
-              tabIndex={tab === 'settings' ? 0 : -1}
-              className={`rf-seg-btn${tab === 'settings' ? ' is-active' : ''}`}
-              onClick={() => selectTab('settings')}
-              onKeyDown={(event) => onTabKeyDown(event, 1)}
-            >
-              Settings
-            </button>
-          </div>
-        </div>
-        </div>
-      </header>
-      <div className="rf-scroll">
-        {deadLetter && (
-          <div className="rf-deadletter" role="alert">
-            <span>{deadLetter}</span>
-            <button
-              type="button"
-              className="rf-deadletter__x rf-pressable"
-              aria-label="Dismiss"
-              onClick={() => setDeadLetter(null)}
-            >
-              <X width="1em" height="1em" aria-hidden="true" />
-            </button>
-          </div>
-        )}
-        {tab === 'reports' ? (
-          <div id="rf-panel-reports" role="tabpanel" aria-labelledby="rf-tab-reports">
-            <ReportsList
-              appId={appId}
-              storage={storage}
-              online={online}
-              onOpen={openDetail}
-              onSetup={() => { closeDetail(); setTab('settings') }}
-            />
-            {openDate && (
-              <ReportDetail
-                dateStr={openDate}
-                storage={storage}
-                online={online}
-                onBack={closeDetail}
-                appId={appId}
-                token={token}
-              />
-            )}
-          </div>
-        ) : (
-          <div id="rf-panel-settings" role="tabpanel" aria-labelledby="rf-tab-settings">
-            <SettingsTab
-              appId={appId}
-              storage={storage}
-              token={token}
-              onSetupComplete={() => markSetupComplete(appId)}
-            />
-          </div>
-        )}
-      </div>
+      <Header appId={appId} status={data && statusLine(data)} />
+      <main className="rf-page">{body}</main>
     </div>
   )
 }
