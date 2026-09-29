@@ -4,8 +4,8 @@
 # hand it the backlog; otherwise do nothing.
 # The chat is an ordinary Möbius agent turn: the platform supervises it, picks
 # the model from the owner's background agents, and records its cost. Every run
-# with pending friction gets its own chat. Should two runs overlap, a duplicate
-# outcome is harmless: outcomes are keyed by friction id.
+# with pending friction gets its own chat. The report handoff rechecks the
+# queue under a short lock, so overlapping runs cannot settle one entry twice.
 set -euo pipefail
 
 APP_ID="${1:?numeric app id required}"

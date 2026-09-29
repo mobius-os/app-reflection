@@ -10,12 +10,12 @@ Möbius learns from the friction its agents actually hit.
    fixed since, and asks the logging agent why it acted as it did when the
    friction seems to come from its instructions. Then it writes a report. On
    days with no new friction, nothing runs.
-3. **It asks before fixing anything.** Its questions wait beside the report.
-   Only a fix you approve is made; problems already fixed since are reported
-   without a question.
+3. **It proposes, but never fixes, in a scheduled run.** Decisions to consider
+   appear in the report; they do not hold the run open. You can ask for a
+   specific fix later. Problems already fixed since are reported too.
 
-The app has three tabs: **Reports** (each run's report with its chat, where
-you answer), **Backlog** (waiting, needs your decision, done, each linked to
+The app has three tabs: **Reports** (each run's report with its chat),
+**Backlog** (waiting, fixes proposed, done, each linked to
 the chat where it happened), and **Settings** (which agent runs it, the daily
 run time, and run now).
 
