@@ -58,6 +58,17 @@ def test_empty_friction_is_a_tool_error(storage):
   assert not (storage / "friction.jsonl").exists()
 
 
+def test_friction_at_limit_is_preserved_but_over_limit_is_rejected_without_a_write(storage):
+  at_limit = "x" * service.MAX_FRICTION_CHARS
+  assert service.dispatch(_request({"friction": f" {at_limit} "}))["status"] == 200
+  assert _entries(storage)[0]["friction"] == at_limit
+
+  response = service.dispatch(_request({"friction": at_limit + "x"}))
+  assert response["status"] == 422
+  assert str(service.MAX_FRICTION_CHARS) in response["body"]["detail"]
+  assert len(_entries(storage)) == 1
+
+
 def test_friction_needs_the_platforms_chat_identity(storage):
   assert service.dispatch(_request({"friction": "x"}, call={}))["status"] == 403
 

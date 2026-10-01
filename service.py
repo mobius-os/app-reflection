@@ -28,10 +28,15 @@ def log_friction(arguments: dict, call: dict) -> dict:
   friction = arguments.get("friction")
   if not isinstance(friction, str) or not friction.strip():
     return {"status": 422, "body": {"detail": "Describe the friction in one short text."}}
+  friction = friction.strip()
+  if len(friction) > MAX_FRICTION_CHARS:
+    return {"status": 422, "body": {
+      "detail": f"Friction must be at most {MAX_FRICTION_CHARS} characters. Shorten it and retry.",
+    }}
   entry = {
     "id": uuid.uuid4().hex,
     "at": datetime.now(UTC).isoformat(timespec="seconds"),
-    "friction": friction.strip()[:MAX_FRICTION_CHARS],
+    "friction": friction,
     "call": call,
   }
   path = friction_log()
