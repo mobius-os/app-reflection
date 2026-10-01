@@ -36,7 +36,7 @@ test('a report is headed by its first heading', () => {
   assert.equal(reportHeadline(null), '')
 })
 
-test('the backlog separates waiting work, open decisions, and what is done', () => {
+test('the backlog separates waiting work, reported proposals, and what is done', () => {
   const rows = [
     { id: 'a', outcome: null },
     { id: 'b', outcome: { outcome: 'asked', run: 'r2' } },
@@ -50,8 +50,26 @@ test('the backlog separates waiting work, open decisions, and what is done', () 
   const sections = backlogSections(rows, runs)
   assert.deepEqual(
     [sections.pending, sections.decision, sections.done].map((list) => list.map((row) => row.id)),
-    [['a'], ['b'], ['c', 'd']],
+    [['a'], ['b', 'c'], ['d']],
   )
   assert.equal(sections.working, false)
   assert.equal(backlogSections(rows, [...runs, { id: 'r3', running: true }]).working, true)
+})
+
+test('a reportless outcome stays visible as waiting after an interrupted run', () => {
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = line({ friction_id: 'a', outcome: 'asked', run: 'lost-report' })
+  const visible = frictionRows(friction, outcomes, [{ id: 'lost-report', report: null }])
+  assert.equal(visible[0].outcome, null)
+  assert.deepEqual(backlogSections(visible, []).pending.map((row) => row.id), ['a'])
+  assert.equal(frictionRows(friction, outcomes, [{ id: 'lost-report', report: '# Proposal' }])[0].outcome.outcome, 'asked')
+})
+
+test('a later orphan outcome does not hide an earlier reported outcome', () => {
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = [
+    line({ friction_id: 'a', outcome: 'explained', run: 'complete' }),
+    line({ friction_id: 'a', outcome: 'asked', run: 'lost-report' }),
+  ].join('\n')
+  assert.equal(frictionRows(friction, outcomes, [{ id: 'complete', report: '# Done' }])[0].outcome.outcome, 'explained')
 })

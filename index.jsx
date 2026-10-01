@@ -21,7 +21,6 @@ const CSS = `
   .ma-title { margin: 0; font-size: 18px; font-weight: 700; }
   .ma-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-  .rf-needs { color: var(--accent); font-weight: 600; }
   .rf-page { max-width: 760px; margin: 0 auto; padding: 16px 16px 48px; }
   .ma-seg { display: flex; gap: 2px; height: 44px; margin-bottom: 18px; background: var(--surface-2, var(--surface));
     border-radius: 10px; box-shadow: inset 0 0 0 1px var(--border); }
@@ -30,9 +29,6 @@ const CSS = `
     transition: background .15s, color .15s; }
   .ma-seg-btn:hover { color: var(--text); }
   .ma-seg-btn.is-active { background: var(--accent); color: var(--accent-fg); }
-  .rf-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .rf-count { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 11px; }
-  .is-active .rf-count { background: var(--accent-fg); color: var(--accent); }
   .ma-card { box-sizing: border-box; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 44px; padding: 15px 16px;
     text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px;
     font-family: var(--font); transition: border-color .16s ease, transform .12s ease; }
@@ -91,7 +87,7 @@ const CSS = `
 `
 
 const OUTCOME_LABELS = {
-  asked: 'Asked you',
+  asked: 'Proposed',
   resolved: 'Resolved since',
   joined: 'Same cause as another',
   explained: 'Explained',
@@ -149,7 +145,7 @@ function useData(appId, token) {
         .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
         .map(async (chat) => ({ ...chat, report: await readText(appId, token, `reports/${chat.id}.md`) })))
       const schedule = schedules.find((s) => s.id === Number(appId)) || null
-      setData({ runs, rows: frictionRows(friction, outcomes), schedule })
+      setData({ runs, rows: frictionRows(friction, outcomes, runs), schedule })
       setFailed(false)
     } catch {
       setFailed(true)
@@ -174,8 +170,6 @@ function statusLine({ runs, rows, schedule }) {
   const runTime = scheduleTime(schedule)
   const parts = []
   if (runs.some((run) => run.running)) parts.push('Working now')
-  const decisions = runs.filter((run) => run.awaiting_owner).length
-  if (decisions) parts.push(<span className="rf-needs">{decisions} {decisions === 1 ? 'needs' : 'need'} you</span>)
   const waiting = rows.filter((row) => !row.outcome).length
   if (waiting) parts.push(`${waiting} waiting`)
   if (runTime) parts.push(`Next run ${runTime}`)
@@ -235,14 +229,16 @@ function Report({ run, onBack }) {
   )
 }
 
-function runTag(run) {
+function runTag(run, proposals) {
   if (run.awaiting_owner) return <span className="rf-tag is-accent">Needs your answer</span>
   if (run.running) return <span className="rf-tag">Working</span>
   if (!run.report) return <span className="rf-tag">No report</span>
+  if (proposals.has(run.id)) return <span className="rf-tag is-accent">Fix proposed</span>
   return null
 }
 
-function Reports({ runs, onOpen }) {
+function Reports({ runs, rows, onOpen }) {
+  const proposals = new Set(rows.filter((row) => row.outcome?.outcome === 'asked').map((row) => row.outcome.run))
   if (!runs.length) {
     return (
       <Empty title="No reports yet">
@@ -255,10 +251,10 @@ function Reports({ runs, onOpen }) {
     <ul className="rf-list" aria-label="Reports">
       {runs.map((run) => (
         <li key={run.id}>
-          <button type="button" className={`ma-card${run.awaiting_owner ? ' is-featured' : ''}`} onClick={() => onOpen(run)}>
+          <button type="button" className={`ma-card${proposals.has(run.id) || run.awaiting_owner ? ' is-featured' : ''}`} onClick={() => onOpen(run)}>
             <div className="ma-card-main">
               <div className="ma-card-title">{reportHeadline(run.report) || run.title}</div>
-              <div className="ma-card-sub">{runTag(run)}<span>{when(run.created_at)}</span></div>
+              <div className="ma-card-sub">{runTag(run, proposals)}<span>{when(run.created_at)}</span></div>
             </div>
             <ChevronRight className="ma-card-chevron" aria-hidden="true" />
           </button>
@@ -316,7 +312,7 @@ function Backlog({ runs, rows, runTime, onOpen }) {
         pending,
         runTime ? `Nothing waiting. The next run is at ${runTime}.` : 'Nothing waiting.',
       )}
-      {section('Needs your decision', decision, 'Nothing needs your decision.')}
+      {section('Fixes proposed', decision, 'No fixes proposed.')}
       {section('Done', done, 'Nothing settled yet.')}
     </>
   )
@@ -425,7 +421,6 @@ export default function App({ appId, token }) {
   } else if (open) {
     body = <Report run={open} onBack={() => { setOpenId(null); reload() }} />
   } else {
-    const decisions = data.runs.filter((run) => run.awaiting_owner).length
     const pendingCount = data.rows.filter((row) => !row.outcome).length
     body = (
       <>
@@ -434,14 +429,11 @@ export default function App({ appId, token }) {
             <button key={id} type="button" role="tab" id={`rf-tab-${id}`} aria-controls="rf-panel"
               aria-selected={tab === id} className={`ma-seg-btn${tab === id ? ' is-active' : ''}`} onClick={() => setTab(id)}>
               {label}
-              {id === 'reports' && decisions
-                ? <span className="rf-count"><span className="rf-sr">, </span>{decisions}<span className="rf-sr"> waiting for your answer</span></span>
-                : null}
             </button>
           ))}
         </div>
         <div role="tabpanel" id="rf-panel" aria-labelledby={`rf-tab-${tab}`}>
-          {tab === 'reports' && <Reports runs={data.runs} onOpen={(run) => setOpenId(run.id)} />}
+          {tab === 'reports' && <Reports runs={data.runs} rows={data.rows} onOpen={(run) => setOpenId(run.id)} />}
           {tab === 'backlog' && (
             <Backlog runs={data.runs} rows={data.rows} runTime={scheduleTime(data.schedule)} onOpen={(run) => setOpenId(run.id)} />
           )}
