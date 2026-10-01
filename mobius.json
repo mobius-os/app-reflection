@@ -48,6 +48,7 @@
   "tools": [
     {
       "name": "log_friction",
+      "result_independent": true,
       "description": "Record friction you just hit: anything that made this work harder than it should have been. One short, self-contained description of what happened and what it cost. Returns immediately; carry on with the task.",
       "input_schema": {
         "type": "object",
