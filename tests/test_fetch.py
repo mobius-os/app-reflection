@@ -79,6 +79,20 @@ def test_pending_friction_opens_one_chat_per_run(tmp_path, api):
   assert "`reflection` skill" in body["content"]
 
 
+def test_a_reportless_prior_outcome_is_retried_by_the_daily_job(tmp_path, api):
+  base_url, requests = api
+  storage = tmp_path / "apps" / "7"
+  storage.mkdir(parents=True)
+  (storage / "friction.jsonl").write_text(json.dumps({"id": "a", "friction": "x"}) + "\n")
+  (storage / "outcomes.jsonl").write_text(json.dumps({
+    "friction_id": "a", "outcome": "asked", "run": "interrupted-run",
+  }) + "\n")
+
+  assert _run(tmp_path, base_url).returncode == 0
+  assert len(requests) == 1
+  assert requests[0][2]["content"].startswith("Friction entries waiting for an outcome: 1.")
+
+
 def test_a_later_run_the_same_day_is_not_swallowed_by_an_earlier_one(tmp_path, api):
   base_url, requests = api
   storage = tmp_path / "apps" / "7"

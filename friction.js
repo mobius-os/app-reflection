@@ -12,8 +12,11 @@ function lines(text) {
   return out
 }
 
-export function frictionRows(frictionText, outcomesText) {
-  const outcomes = new Map(lines(outcomesText).map((o) => [o.friction_id, o]))
+export function frictionRows(frictionText, outcomesText, runs = []) {
+  const reports = new Set(runs.filter((run) => run.report).map((run) => run.id))
+  const outcomes = new Map(lines(outcomesText)
+    .filter((outcome) => !outcome.run || reports.has(outcome.run))
+    .map((outcome) => [outcome.friction_id, outcome]))
   return lines(frictionText)
     .filter((entry) => typeof entry.friction === 'string')
     .map((entry) => ({ ...entry, outcome: outcomes.get(entry.id) || null }))
@@ -31,16 +34,15 @@ export function reportHeadline(markdown) {
   return match ? match[1].trim() : ''
 }
 
-// Sorts the friction log into what the owner needs to see: work waiting for
-// (or in) a run, causes that await the owner's decision, and what is done.
+// Sorts the friction log into work waiting for a run, proposals in reports,
+// and outcomes that need no owner decision.
 // `working` is true while a run's chat is actually running.
 export function backlogSections(rows, runs) {
-  const byId = new Map((runs || []).map((run) => [run.id, run]))
   const working = (runs || []).some((run) => run.running)
   const sections = { pending: [], decision: [], done: [], working }
   for (const row of rows) {
     if (!row.outcome) sections.pending.push(row)
-    else if (byId.get(row.outcome.run)?.awaiting_owner) sections.decision.push(row)
+    else if (row.outcome.outcome === 'asked') sections.decision.push(row)
     else sections.done.push(row)
   }
   return sections
