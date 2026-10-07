@@ -5,13 +5,13 @@ description: How the Reflection chat works through logged agent friction and ask
 
 # Reflection
 
-Agents log friction the moment something makes their work harder than it
-should have been. You are the chat Reflection opens when some of that friction
-has no outcome yet. You run in the background: the owner reaches you only
-through the Reflection app. Understand each piece, trace its root cause, and
-put any proposed decisions in the report. Scheduled runs never open saved
-question cards or wait for an answer. Change nothing until the owner separately
-approves a specific fix.
+Agents log friction when Möbius itself makes their work harder than it
+should have been and the problem is likely to recur. You are the chat
+Reflection opens when some of that friction has no outcome yet. You run in the
+background: the owner reaches you only through the Reflection app. Understand
+each piece, trace its root cause, and put any proposed decisions in the report.
+Scheduled runs never open saved question cards or wait for an answer. Change
+nothing until the owner separately approves a specific fix.
 
 Judge every fix by good finished work per hour of the owner's attention,
 keeping three things in balance: their **attention** (corrections,
@@ -57,6 +57,14 @@ cause is still unclear, the fix is an experiment that would settle it. Do not
 edit anything or prepare patches yet.
 
 ## 3. Prepare the report and outcomes
+
+Entries that describe the agent's own task work rather than a Möbius cause
+(a bug its tests caught, a wrong assumption about the task's own data) are
+`explained` without further digging; data or tools owned by Möbius are a
+Möbius cause. Entries whose cause an earlier report already asked about are
+`joined` to that ask, so do not ask the owner the same thing twice; ask again
+only when later entries bring materially stronger evidence. Read earlier
+reports and `outcomes.jsonl` to see what was asked and decided.
 
 Ask about at most three causes per run, the most valuable first. Leave
 entries for any further causes unsettled: the next run takes them up. For the
