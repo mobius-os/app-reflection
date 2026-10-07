@@ -73,3 +73,14 @@ test('a later orphan outcome does not hide an earlier reported outcome', () => {
   ].join('\n')
   assert.equal(frictionRows(friction, outcomes, [{ id: 'complete', report: '# Done' }])[0].outcome.outcome, 'explained')
 })
+
+test('an outcome stays joined to an older run whose report is not loaded yet', () => {
+  const friction = line({ id: 'a', at: '2026-09-25T10:00:00Z', friction: 'first' })
+  const outcomes = [
+    line({ friction_id: 'a', outcome: 'asked', run: 'old' }),
+  ].join('\n')
+  const unloaded = [{ id: 'old', report: undefined, hasReport: true }]
+  assert.equal(frictionRows(friction, outcomes, unloaded)[0].outcome?.run, 'old')
+  const missing = [{ id: 'old', report: null, hasReport: false }]
+  assert.equal(frictionRows(friction, outcomes, missing)[0].outcome, null)
+})

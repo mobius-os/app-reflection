@@ -13,7 +13,8 @@ function lines(text) {
 }
 
 export function frictionRows(frictionText, outcomesText, runs = []) {
-  const reports = new Set(runs.filter((run) => run.report).map((run) => run.id))
+  // `hasReport` covers older runs whose report text is loaded only on demand.
+  const reports = new Set(runs.filter((run) => run.report || run.hasReport).map((run) => run.id))
   const outcomes = new Map(lines(outcomesText)
     .filter((outcome) => !outcome.run || reports.has(outcome.run))
     .map((outcome) => [outcome.friction_id, outcome]))

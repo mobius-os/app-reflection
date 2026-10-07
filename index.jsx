@@ -50,6 +50,7 @@ const CSS = `
   .rf-section { margin: 0 0 26px; }
   .rf-section h2 { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
   .rf-quiet { margin: 0; padding: 4px 2px; font-size: 14px; color: var(--muted); }
+  .rf-report-error { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
   .ma-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
     min-height: 50dvh; max-width: 440px; margin: 0 auto; padding: 32px 24px; color: var(--muted); }
   .ma-empty-mark { width: 64px; height: 64px; margin-bottom: 10px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
@@ -116,40 +117,112 @@ function openChat(chatId) {
 
 // The live file; the runtime's cached copy only when offline. (Its cached read
 // answers with the last-seen copy first, which hides new friction and reports.)
-async function readText(appId, token, path) {
+// Null means the file does not exist; a read that could not answer throws, so
+// callers that remember results never mistake an outage for "no file".
+async function readTextOrThrow(appId, token, path) {
   try {
     const r = await api(token, `/api/storage/apps/${appId}/${path}`, { cache: 'no-store' })
     if (r.status === 404) return null
     if (r.ok) return await r.text()
   } catch {}
-  return window.mobius?.storage?.getText?.(path).catch(() => null) ?? null
+  const cached = await window.mobius?.storage?.getText?.(path).catch(() => null)
+  if (typeof cached === 'string') return cached
+  throw new Error(`Could not read ${path}.`)
+}
+
+// For views that are refreshed often anyway: an unavailable file reads as absent.
+function readText(appId, token, path) {
+  return readTextOrThrow(appId, token, path).catch(() => null)
+}
+
+// Reports are read for the newest runs only; older ones load when opened.
+// A refresh (every visibility change, and every 15 s while a run works) would
+// otherwise read one file per run ever made.
+const RECENT_REPORTS = 10
+
+// Names of the saved reports, so older runs can say whether they have one
+// without reading it. Null when the listing is unavailable.
+async function reportNames(appId, token) {
+  const names = new Set()
+  let cursor = ''
+  for (let page = 0; page < 20; page += 1) {
+    const query = `limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+    let body
+    try {
+      const r = await api(token, `/api/storage/apps-list/${appId}/reports/?${query}`, { cache: 'no-store' })
+      if (r.status === 404) return names
+      if (!r.ok) return null
+      body = await r.json()
+    } catch {
+      return null
+    }
+    for (const entry of body?.entries || []) {
+      if (entry?.type === 'file' && typeof entry?.name === 'string') names.add(entry.name)
+    }
+    cursor = body?.next_cursor || ''
+    if (!cursor) return names
+  }
+  return null
 }
 
 // Runs (the chats the daily job opened) with their reports, the friction log
 // joined with outcomes, and the next run time. All reload together; while a
 // run is working the view refreshes so its status and report appear.
+// A run's `report` is its text, null when it has none, or undefined while not
+// yet read; `hasReport` is known from the listing even before the read.
 function useData(appId, token) {
   const [data, setData] = useState(null)
   const [failed, setFailed] = useState(false)
+  const olderReports = useRef(new Map())
   const load = useCallback(async () => {
     try {
-      const [chatsResponse, friction, outcomes, schedules] = await Promise.all([
+      const [chatsResponse, friction, outcomes, schedules, saved] = await Promise.all([
         api(token, '/api/app-chats'),
         readText(appId, token, 'friction.jsonl'),
         readText(appId, token, 'outcomes.jsonl'),
         api(token, '/api/apps/schedules').then((r) => (r.ok ? r.json() : [])).catch(() => []),
+        reportNames(appId, token),
       ])
       if (!chatsResponse.ok) throw new Error(String(chatsResponse.status))
       const chats = await chatsResponse.json()
       const runs = await Promise.all(chats.filter(isRunChat)
         .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-        .map(async (chat) => ({ ...chat, report: await readText(appId, token, `reports/${chat.id}.md`) })))
+        .map(async (chat, index) => {
+          const listed = saved ? saved.has(`${chat.id}.md`) : null
+          if (index < RECENT_REPORTS) {
+            const report = await readText(appId, token, `reports/${chat.id}.md`)
+            return { ...chat, report, hasReport: Boolean(report) }
+          }
+          const report = olderReports.current.get(chat.id)
+          if (report !== undefined) return { ...chat, report, hasReport: Boolean(report) }
+          // Without a listing, assume a report exists so its outcomes stay.
+          return { ...chat, report: undefined, hasReport: listed ?? true }
+        }))
       const schedule = schedules.find((s) => s.id === Number(appId)) || null
       setData({ runs, rows: frictionRows(friction, outcomes, runs), schedule })
       setFailed(false)
     } catch {
       setFailed(true)
     }
+  }, [appId, token])
+  // Only a definite answer (the text, or null for no report) is remembered; a
+  // failed read marks the run so the view offers a retry, and reopening the
+  // report reads again.
+  const loadReport = useCallback(async (runId) => {
+    const update = (patch) => setData((current) => current && {
+      ...current,
+      runs: current.runs.map((run) => (run.id === runId ? { ...run, ...patch } : run)),
+    })
+    update({ reportError: false })
+    let report
+    try {
+      report = await readTextOrThrow(appId, token, `reports/${runId}.md`)
+    } catch {
+      update({ reportError: true })
+      return
+    }
+    olderReports.current.set(runId, report)
+    update({ report, hasReport: Boolean(report), reportError: false })
   }, [appId, token])
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -163,7 +236,7 @@ function useData(appId, token) {
     const timer = setInterval(load, 15000)
     return () => clearInterval(timer)
   }, [running, load])
-  return [data, failed, load]
+  return [data, failed, load, loadReport]
 }
 
 function statusLine({ runs, rows, schedule }) {
@@ -216,14 +289,25 @@ function RunChat({ chatId }) {
   return <div ref={mount} className="rf-chat" aria-label="Reflection chat" />
 }
 
-function Report({ run, onBack }) {
+function Report({ run, onBack, loadReport }) {
+  const pending = run.report === undefined
+  useEffect(() => { if (pending) loadReport(run.id) }, [pending, run.id, loadReport])
   const html = run.report ? DOMPurify.sanitize(marked.parse(run.report)) : ''
   return (
     <article>
       <button type="button" className="ma-btn ma-btn-ghost rf-back" onClick={onBack}><ArrowLeft /> Reports</button>
       {html
         ? <div className="rf-report" dangerouslySetInnerHTML={{ __html: html }} />
-        : <p className="rf-quiet">{run.running ? 'This run is still working. Its report will appear here.' : 'This run ended without a report.'}</p>}
+        : pending && run.reportError
+          ? (
+            <div className="rf-report-error" role="alert">
+              <p className="rf-quiet">This report could not be loaded.</p>
+              <button type="button" className="ma-btn ma-btn-secondary" onClick={() => loadReport(run.id)}>Try again</button>
+            </div>
+          )
+          : pending
+          ? <p className="rf-quiet" role="status">Loading report…</p>
+          : <p className="rf-quiet">{run.running ? 'This run is still working. Its report will appear here.' : 'This run ended without a report.'}</p>}
       <RunChat chatId={run.id} />
     </article>
   )
@@ -232,7 +316,7 @@ function Report({ run, onBack }) {
 function runTag(run, proposals) {
   if (run.awaiting_owner) return <span className="rf-tag is-accent">Needs your answer</span>
   if (run.running) return <span className="rf-tag">Working</span>
-  if (!run.report) return <span className="rf-tag">No report</span>
+  if (!run.report && !run.hasReport) return <span className="rf-tag">No report</span>
   if (proposals.has(run.id)) return <span className="rf-tag is-accent">Fix proposed</span>
   return null
 }
@@ -403,7 +487,7 @@ function Settings({ appId, token, schedule, pendingCount, running, onChange }) {
 export default function App({ appId, token }) {
   const [tab, setTab] = useState('reports')
   const [openId, setOpenId] = useState(null)
-  const [data, failed, reload] = useData(appId, token)
+  const [data, failed, reload, loadReport] = useData(appId, token)
   useEffect(() => { if (data || failed) window.mobius?.signal?.('app_ready') }, [data, failed])
 
   const open = data?.runs.find((run) => run.id === openId)
@@ -419,7 +503,7 @@ export default function App({ appId, token }) {
       )
       : <p className="rf-loading" role="status">Loading…</p>
   } else if (open) {
-    body = <Report run={open} onBack={() => { setOpenId(null); reload() }} />
+    body = <Report run={open} loadReport={loadReport} onBack={() => { setOpenId(null); reload() }} />
   } else {
     const pendingCount = data.rows.filter((row) => !row.outcome).length
     body = (
