@@ -73,3 +73,14 @@ test('a later orphan outcome does not hide an earlier reported outcome', () => {
   ].join('\n')
   assert.equal(frictionRows(friction, outcomes, [{ id: 'complete', report: '# Done' }])[0].outcome.outcome, 'explained')
 })
+
+test('proposal lifecycle events never become friction outcomes in the backlog', () => {
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = [
+    line({ friction_id: 'a', outcome: 'asked', run: 'complete' }),
+    line({ kind: 'proposal_event', proposal_id: 'a', friction_id: 'a', stage: 'verified' }),
+  ].join('\n')
+  const rows = frictionRows(friction, outcomes, [{ id: 'complete', report: '# Proposal' }])
+  assert.equal(rows[0].outcome.outcome, 'asked')
+  assert.deepEqual(backlogSections(rows, []).decision.map((row) => row.id), ['a'])
+})

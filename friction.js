@@ -15,7 +15,9 @@ function lines(text) {
 export function frictionRows(frictionText, outcomesText, runs = []) {
   const reports = new Set(runs.filter((run) => run.report).map((run) => run.id))
   const outcomes = new Map(lines(outcomesText)
-    .filter((outcome) => !outcome.run || reports.has(outcome.run))
+    .filter((outcome) => outcome.kind !== 'proposal_event'
+      && typeof outcome.friction_id === 'string'
+      && (!outcome.run || reports.has(outcome.run)))
     .map((outcome) => [outcome.friction_id, outcome]))
   return lines(frictionText)
     .filter((entry) => typeof entry.friction === 'string')

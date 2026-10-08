@@ -150,3 +150,114 @@ def test_cli_publishes_report_and_outcomes_together(tmp_path, monkeypatch, capsy
   assert json.loads(capsys.readouterr().out)[0]["id"] == "a"
   assert friction_queue.main(["q", "publish", str(tmp_path), str(draft), str(outcomes)]) == 0
   assert friction_queue.pending(tmp_path) == []
+
+
+def test_proposal_history_keeps_revision_and_verified_evidence_without_resettling_friction(tmp_path, monkeypatch):
+  _log(tmp_path, "ask", "other")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Propose a fix."))
+  revised = friction_queue.record_proposal(
+    tmp_path, "ask", "revised", "chat:decision-1", "Narrowed the proposed change.")
+  verified = friction_queue.record_proposal(
+    tmp_path, "ask", "verified", "test:live-1", "Observed the live path after activation.")
+  trail = friction_queue.history(tmp_path, "ask")
+  assert [(item.get("outcome"), item.get("stage")) for item in trail] == [
+    ("asked", None), (None, "revised"), (None, "verified")]
+  assert trail[1:] == [revised, verified]
+  assert [entry["id"] for entry in friction_queue.pending(tmp_path)] == ["other"]
+
+
+def test_proposal_event_requires_report_backed_ask_and_explicit_evidence(tmp_path, monkeypatch):
+  _log(tmp_path, "a")
+  with pytest.raises(ValueError, match="report-backed asked"):
+    friction_queue.record_proposal(tmp_path, "a", "approved", "chat:yes", "Owner approved.")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("a", "asked", "Proposed."))
+  for stage, reference, note, message in [
+    ("fixed", "chat:yes", "Approved.", "valid proposal stage"),
+    ("approved", "", "Approved.", "source reference"),
+    ("approved", "chat:yes", " ", "evidence note"),
+  ]:
+    with pytest.raises(ValueError, match=message):
+      friction_queue.record_proposal(tmp_path, "a", stage, reference, note)
+  assert len(friction_queue._read_jsonl(tmp_path / "outcomes.jsonl")) == 1
+
+
+def test_reportless_ask_cannot_gain_a_proposal_event(tmp_path):
+  (tmp_path / "outcomes.jsonl").write_text(json.dumps({
+    "friction_id": "a", "outcome": "asked", "run": "missing-report",
+  }) + "\n")
+  assert friction_queue.history(tmp_path, "a") == []
+  with pytest.raises(ValueError, match="report-backed asked"):
+    friction_queue.record_proposal(tmp_path, "a", "approved", "chat:yes", "Owner approved.")
+
+
+def test_runless_legacy_ask_is_not_a_report_backed_proposal(tmp_path):
+  (tmp_path / "outcomes.jsonl").write_text(json.dumps({
+    "friction_id": "a", "outcome": "asked",
+  }) + "\n")
+  assert friction_queue.history(tmp_path, "a") == []
+  with pytest.raises(ValueError, match="report-backed asked"):
+    friction_queue.record_proposal(tmp_path, "a", "approved", "chat:yes", "Owner approved.")
+
+
+def test_joined_outcome_links_to_an_existing_proposal_without_implying_approval(tmp_path, monkeypatch):
+  _log(tmp_path, "ask", "repeat", "unlinked")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposed."))
+  joined = {**_decision("repeat", "joined", "Same cause as ask."), "proposal_id": "ask"}
+  _publish(tmp_path, monkeypatch, "run-2", joined)
+  trail = friction_queue.history(tmp_path, "ask")
+  assert [(record.get("friction_id"), record.get("stage")) for record in trail] == [
+    ("ask", None), ("repeat", None)]
+  assert [entry["id"] for entry in friction_queue.pending(tmp_path)] == ["unlinked"]
+  with pytest.raises(ValueError, match="report-backed asked"):
+    _publish(tmp_path, monkeypatch, "run-3", {
+      **_decision("unlinked", "joined", "Unknown proposal."), "proposal_id": "missing"})
+  assert friction_queue.history(tmp_path, "ask") == trail
+
+
+def test_repeated_observation_is_idempotent_and_current_view_reports_only_evidence(tmp_path, monkeypatch):
+  _log(tmp_path, "ask")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposal."))
+  before = friction_queue.proposals(tmp_path)
+  assert before[0]["last_observation"] is None
+  assert before[0]["open_for_review"] is True
+  first = friction_queue.record_proposal(tmp_path, "ask", "activated", "deploy:one", "Observed running version.")
+  assert friction_queue.record_proposal(tmp_path, "ask", "activated", "deploy:one", "Saw it again.") == first
+  assert len(friction_queue._read_jsonl(tmp_path / "outcomes.jsonl")) == 2
+  view = friction_queue.proposals(tmp_path)
+  assert view[0]["last_observation"] == first
+  assert view[0]["open_for_review"] is True  # Activation is not verification.
+  friction_queue.record_proposal(tmp_path, "ask", "verified", "test:live", "Observed live behavior.")
+  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is False
+
+
+def test_current_proposal_view_reads_ledger_once(tmp_path, monkeypatch):
+  _log(tmp_path, "a", "b")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("a", "asked", "First."), _decision("b", "asked", "Second."))
+  original = friction_queue._read_jsonl
+  reads = []
+  def read(path):
+    reads.append(path)
+    return original(path)
+  monkeypatch.setattr(friction_queue, "_read_jsonl", read)
+  assert len(friction_queue.proposals(tmp_path)) == 2
+  assert reads == [tmp_path / "outcomes.jsonl"]
+
+
+def test_new_linked_friction_reopens_review_after_verification(tmp_path, monkeypatch):
+  _log(tmp_path, "ask", "repeat")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposed."))
+  friction_queue.record_proposal(tmp_path, "ask", "verified", "test:live", "Observed live behavior.")
+  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is False
+  _publish(tmp_path, monkeypatch, "run-2", {
+    **_decision("repeat", "joined", "Same cause recurred."), "proposal_id": "ask"})
+  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is True
+
+
+def test_malformed_ledger_objects_cannot_crash_proposal_projection(tmp_path, monkeypatch):
+  _log(tmp_path, "ask")
+  _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposed."))
+  with (tmp_path / "outcomes.jsonl").open("a") as ledger:
+    ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": ["ask"]}) + "\n")
+    ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": "ask"}) + "\n")
+    ledger.write(json.dumps({"outcome": "joined", "proposal_id": "ask", "run": "run-1"}) + "\n")
+  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is True
