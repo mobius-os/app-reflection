@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { backlogSections, frictionRows, isRunChat, reportHeadline } from '../friction.js'
+import { backlogSections, createOlderReports, frictionRows, isRunChat, reportHeadline } from '../friction.js'
 
 const line = (value) => JSON.stringify(value)
 
@@ -83,4 +83,33 @@ test('an outcome stays joined to an older run whose report is not loaded yet', (
   assert.equal(frictionRows(friction, outcomes, unloaded)[0].outcome?.run, 'old')
   const missing = [{ id: 'old', report: null, hasReport: false }]
   assert.equal(frictionRows(friction, outcomes, missing)[0].outcome, null)
+})
+
+test('a failed older-report read keeps offering a retry after a refresh', async () => {
+  const older = createOlderReports()
+  assert.equal(older.fields('run-1', true).report, undefined)
+  const failed = await older.read('run-1', async () => { throw new Error('offline') })
+  assert.deepEqual(failed, { report: undefined, hasReport: true, reportError: true })
+  // A refresh rebuilds the run from what was remembered.
+  assert.equal(older.fields('run-1', true).reportError, true)
+  assert.equal(older.fields('run-1', null).reportError, true)
+
+  const loaded = await older.read('run-1', async () => '# Report')
+  assert.deepEqual(loaded, { report: '# Report', hasReport: true, reportError: false })
+  assert.deepEqual(older.fields('run-1', true), loaded)
+})
+
+test('a remembered "no report" gives way once the listing has the report', async () => {
+  const older = createOlderReports()
+  await older.read('run-2', async () => null)
+  assert.deepEqual(older.fields('run-2', null), { report: null, hasReport: false, reportError: false })
+  assert.deepEqual(older.fields('run-2', false), { report: null, hasReport: false, reportError: false })
+  // The report appears later: the run is shown as having one, and is read again when opened.
+  assert.deepEqual(older.fields('run-2', true), { report: undefined, hasReport: true, reportError: false })
+})
+
+test('an unread older run is assumed to have a report until the listing says otherwise', () => {
+  const older = createOlderReports()
+  assert.equal(older.fields('run-3', null).hasReport, true)
+  assert.equal(older.fields('run-3', false).hasReport, false)
 })

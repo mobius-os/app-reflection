@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { ArrowLeft, Chat, ChevronRight, Lightbulb, Play, Reload } from '@openai/apps-sdk-ui/components/Icon'
-import { backlogSections, frictionRows, isRunChat, reportHeadline } from './friction.js'
+import { backlogSections, createOlderReports, frictionRows, isRunChat, reportHeadline } from './friction.js'
 import { dailyCron, scheduleTime } from './schedule.js'
 
 // Shapes follow the shared app-component catalog (mobius-ui:* labels).
@@ -173,7 +173,7 @@ async function reportNames(appId, token) {
 function useData(appId, token) {
   const [data, setData] = useState(null)
   const [failed, setFailed] = useState(false)
-  const olderReports = useRef(new Map())
+  const [olderReports] = useState(createOlderReports)
   const load = useCallback(async () => {
     try {
       const [chatsResponse, friction, outcomes, schedules, saved] = await Promise.all([
@@ -185,45 +185,30 @@ function useData(appId, token) {
       ])
       if (!chatsResponse.ok) throw new Error(String(chatsResponse.status))
       const chats = await chatsResponse.json()
-      const runs = await Promise.all(chats.filter(isRunChat)
+      const ordered = chats.filter(isRunChat)
         .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-        .map(async (chat, index) => {
-          const listed = saved ? saved.has(`${chat.id}.md`) : null
-          if (index < RECENT_REPORTS) {
-            const report = await readText(appId, token, `reports/${chat.id}.md`)
-            return { ...chat, report, hasReport: Boolean(report) }
-          }
-          const report = olderReports.current.get(chat.id)
-          if (report !== undefined) return { ...chat, report, hasReport: Boolean(report) }
-          // Without a listing, assume a report exists so its outcomes stay.
-          return { ...chat, report: undefined, hasReport: listed ?? true }
-        }))
+      const recent = await Promise.all(ordered.slice(0, RECENT_REPORTS)
+        .map((chat) => readText(appId, token, `reports/${chat.id}.md`)))
+      // Older runs are built after every await, so an on-demand read that
+      // settled meanwhile is included rather than overwritten.
+      const runs = ordered.map((chat, index) => (index < RECENT_REPORTS
+        ? { ...chat, report: recent[index], hasReport: Boolean(recent[index]) }
+        : { ...chat, ...olderReports.fields(chat.id, saved ? saved.has(`${chat.id}.md`) : null) }))
       const schedule = schedules.find((s) => s.id === Number(appId)) || null
       setData({ runs, rows: frictionRows(friction, outcomes, runs), schedule })
       setFailed(false)
     } catch {
       setFailed(true)
     }
-  }, [appId, token])
-  // Only a definite answer (the text, or null for no report) is remembered; a
-  // failed read marks the run so the view offers a retry, and reopening the
-  // report reads again.
+  }, [appId, token, olderReports])
   const loadReport = useCallback(async (runId) => {
     const update = (patch) => setData((current) => current && {
       ...current,
       runs: current.runs.map((run) => (run.id === runId ? { ...run, ...patch } : run)),
     })
     update({ reportError: false })
-    let report
-    try {
-      report = await readTextOrThrow(appId, token, `reports/${runId}.md`)
-    } catch {
-      update({ reportError: true })
-      return
-    }
-    olderReports.current.set(runId, report)
-    update({ report, hasReport: Boolean(report), reportError: false })
-  }, [appId, token])
+    update(await olderReports.read(runId, () => readTextOrThrow(appId, token, `reports/${runId}.md`)))
+  }, [appId, token, olderReports])
   useEffect(() => { load() }, [load])
   useEffect(() => {
     const onVisible = () => { if (document.visibilityState === 'visible') load() }
