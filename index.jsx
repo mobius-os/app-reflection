@@ -174,6 +174,8 @@ function useData(appId, token) {
   const [data, setData] = useState(null)
   const [failed, setFailed] = useState(false)
   const olderReports = useRef(new Map())
+  const reportErrors = useRef(new Set())
+  const reportReads = useRef(new Map())
   const load = useCallback(async () => {
     try {
       const [chatsResponse, friction, outcomes, schedules, saved] = await Promise.all([
@@ -193,10 +195,20 @@ function useData(appId, token) {
             const report = await readText(appId, token, `reports/${chat.id}.md`)
             return { ...chat, report, hasReport: Boolean(report) }
           }
+          // A successful listing owns presence, not a previously read 404 or
+          // text. An unavailable listing cannot invalidate either cached answer.
+          if (listed === false) {
+            olderReports.current.set(chat.id, null)
+            reportErrors.current.delete(chat.id)
+            reportReads.current.delete(chat.id)
+          } else if (listed === true && olderReports.current.get(chat.id) === null) {
+            olderReports.current.delete(chat.id)
+          }
           const report = olderReports.current.get(chat.id)
           if (report !== undefined) return { ...chat, report, hasReport: Boolean(report) }
+          // Keep a failed read's retry action through visibility/poll refreshes.
           // Without a listing, assume a report exists so its outcomes stay.
-          return { ...chat, report: undefined, hasReport: listed ?? true }
+          return { ...chat, report: undefined, hasReport: listed ?? true, reportError: reportErrors.current.has(chat.id) }
         }))
       const schedule = schedules.find((s) => s.id === Number(appId)) || null
       setData({ runs, rows: frictionRows(friction, outcomes, runs), schedule })
@@ -213,16 +225,24 @@ function useData(appId, token) {
       ...current,
       runs: current.runs.map((run) => (run.id === runId ? { ...run, ...patch } : run)),
     })
+    if (reportReads.current.has(runId)) return
+    const read = {}
+    reportReads.current.set(runId, read)
+    reportErrors.current.delete(runId)
     update({ reportError: false })
-    let report
     try {
-      report = await readTextOrThrow(appId, token, `reports/${runId}.md`)
+      const report = await readTextOrThrow(appId, token, `reports/${runId}.md`)
+      // A fresh listing may have removed this report while its read was pending.
+      if (reportReads.current.get(runId) !== read) return
+      olderReports.current.set(runId, report)
+      update({ report, hasReport: Boolean(report), reportError: false })
     } catch {
+      if (reportReads.current.get(runId) !== read) return
+      reportErrors.current.add(runId)
       update({ reportError: true })
-      return
+    } finally {
+      if (reportReads.current.get(runId) === read) reportReads.current.delete(runId)
     }
-    olderReports.current.set(runId, report)
-    update({ report, hasReport: Boolean(report), reportError: false })
   }, [appId, token])
   useEffect(() => { load() }, [load])
   useEffect(() => {
