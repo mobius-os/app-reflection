@@ -33,7 +33,8 @@ export function createOlderReports() {
   const texts = new Map()
   const failed = new Set()
   function fields(runId, listed) {
-    if (listed === false) texts.delete(runId)
+    // A confirmed absence must survive a later unavailable listing.
+    if (listed === false) texts.set(runId, null)
     const known = texts.get(runId)
     // Without a listing or a read, assume a report exists so its outcomes stay.
     if (!(listed ?? known !== null)) return { report: null, hasReport: false, reportError: false }

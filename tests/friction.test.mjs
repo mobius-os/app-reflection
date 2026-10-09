@@ -108,6 +108,31 @@ test('a remembered "no report" gives way once the listing has the report', async
   assert.deepEqual(older.fields('run-2', true), { report: undefined, hasReport: true, reportError: false })
 })
 
+test('a negative listing preserves known absence through an outage until a report appears', async () => {
+  const older = createOlderReports()
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = line({ friction_id: 'a', outcome: 'asked', run: 'old' })
+  const absent = { report: null, hasReport: false, reportError: false }
+  assert.deepEqual(await older.read('old', async () => null), absent)
+
+  // Refresh first confirms absence, then cannot list reports at all.
+  for (const listed of [false, null]) {
+    const run = { id: 'old', ...older.fields('old', listed) }
+    assert.deepEqual(run, { id: 'old', ...absent })
+    const rows = frictionRows(friction, outcomes, [run])
+    assert.equal(rows[0].outcome, null)
+    assert.deepEqual(backlogSections(rows, [run]).pending.map((row) => row.id), ['a'])
+  }
+
+  // A positive listing restores the outcome without eagerly reading the text.
+  const revived = { id: 'old', ...older.fields('old', true) }
+  assert.deepEqual(revived, { id: 'old', report: undefined, hasReport: true, reportError: false })
+  assert.equal(frictionRows(friction, outcomes, [revived])[0].outcome.outcome, 'asked')
+  const loaded = await older.read('old', async () => '# Report')
+  assert.deepEqual(loaded, { report: '# Report', hasReport: true, reportError: false })
+  assert.deepEqual(older.fields('old', null), loaded)
+})
+
 test('an unread older run is assumed to have a report until the listing says otherwise', () => {
   const older = createOlderReports()
   assert.equal(older.fields('run-3', null).hasReport, true)
