@@ -48,13 +48,13 @@
   "tools": [
     {
       "name": "log_friction",
-      "description": "Record friction you just hit: anything that made this work harder than it should have been. One short, self-contained description of what happened and what it cost. Returns immediately; carry on with the task.",
+      "description": "Record friction caused by Möbius itself (a tool, route, helper, skill, prompt or the environment) that is likely to trip up the next agent too. Not for bugs in your own task work. One short, self-contained description of what happened and what it cost. Returns immediately; carry on with the task.",
       "input_schema": {
         "type": "object",
         "properties": {
           "friction": {
             "type": "string",
-            "description": "What happened and what it cost, in one short text."
+            "description": "What Möbius did, what it cost, and the workaround, in one short text."
           }
         },
         "required": [
