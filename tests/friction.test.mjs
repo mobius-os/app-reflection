@@ -138,3 +138,40 @@ test('an unread older run is assumed to have a report until the listing says oth
   assert.equal(older.fields('run-3', null).hasReport, true)
   assert.equal(older.fields('run-3', false).hasReport, false)
 })
+
+test('a positive listing supersedes absence even when the on-demand read fails', async () => {
+  const older = createOlderReports()
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = line({ friction_id: 'a', outcome: 'asked', run: 'old' })
+  assert.equal(older.fields('old', false).hasReport, false)
+  assert.equal(older.fields('old', true).hasReport, true)
+
+  const failed = await older.read('old', async () => { throw new Error('offline') })
+  assert.deepEqual(failed, { report: undefined, hasReport: true, reportError: true })
+  assert.deepEqual(older.fields('old', null), failed)
+  const runs = [{ id: 'old', ...failed }]
+  const rows = frictionRows(friction, outcomes, runs)
+  assert.equal(rows[0].outcome.outcome, 'asked')
+  assert.deepEqual(backlogSections(rows, runs).pending, [])
+
+  const loaded = await older.read('old', async () => '# Report')
+  assert.deepEqual(loaded, { report: '# Report', hasReport: true, reportError: false })
+  assert.deepEqual(older.fields('old', true), loaded)
+  assert.deepEqual(older.fields('old', null), loaded)
+})
+
+test('a positive listing supersedes absence across a later listing outage without a read', () => {
+  const older = createOlderReports()
+  const friction = line({ id: 'a', friction: 'example' })
+  const outcomes = line({ friction_id: 'a', outcome: 'asked', run: 'old' })
+  assert.equal(older.fields('old', false).hasReport, false)
+  assert.equal(older.fields('old', true).hasReport, true)
+
+  const present = older.fields('old', null)
+  assert.deepEqual(present, { report: undefined, hasReport: true, reportError: false })
+  assert.equal(frictionRows(friction, outcomes, [{ id: 'old', ...present }])[0].outcome.outcome, 'asked')
+
+  // Another definitive absence still supersedes that positive listing.
+  assert.equal(older.fields('old', false).hasReport, false)
+  assert.equal(older.fields('old', null).hasReport, false)
+})
