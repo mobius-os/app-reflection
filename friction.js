@@ -13,7 +13,8 @@ function lines(text) {
 }
 
 export function frictionRows(frictionText, outcomesText, runs = []) {
-  const reports = new Set(runs.filter((run) => run.report).map((run) => run.id))
+  // `hasReport` covers older runs whose report text is loaded only on demand.
+  const reports = new Set(runs.filter((run) => run.report || run.hasReport).map((run) => run.id))
   const outcomes = new Map(lines(outcomesText)
     .filter((outcome) => !outcome.run || reports.has(outcome.run))
     .map((outcome) => [outcome.friction_id, outcome]))
@@ -21,6 +22,38 @@ export function frictionRows(frictionText, outcomesText, runs = []) {
     .filter((entry) => typeof entry.friction === 'string')
     .map((entry) => ({ ...entry, outcome: outcomes.get(entry.id) || null }))
     .reverse()
+}
+
+// Older runs' reports are read only when opened. This remembers each read
+// across refreshes: the text, null when the run had no report, or a failure
+// the view offers to retry. A successful reports listing (`listed` true or
+// false; null when unavailable) owns presence, so a remembered "no report"
+// gives way to a report listed later.
+export function createOlderReports() {
+  const texts = new Map()
+  const failed = new Set()
+  function fields(runId, listed) {
+    // Remember listing changes even if the next listing or read is unavailable.
+    if (listed === false) texts.set(runId, null)
+    else if (listed === true && texts.get(runId) === null) texts.delete(runId)
+    const known = texts.get(runId)
+    // Without a listing or a read, assume a report exists so its outcomes stay.
+    if (!(listed ?? known !== null)) return { report: null, hasReport: false, reportError: false }
+    if (typeof known === 'string') return { report: known, hasReport: true, reportError: false }
+    return { report: undefined, hasReport: true, reportError: failed.has(runId) }
+  }
+  // `readText` resolves the text or null for no report, and throws when the
+  // read could not answer.
+  async function read(runId, readText) {
+    failed.delete(runId)
+    try {
+      texts.set(runId, await readText())
+    } catch {
+      failed.add(runId)
+    }
+    return fields(runId, null)
+  }
+  return { fields, read }
 }
 
 // A chat the daily job opened (the app's other chats are not runs).
