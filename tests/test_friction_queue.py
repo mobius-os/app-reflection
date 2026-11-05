@@ -219,15 +219,11 @@ def test_repeated_observation_is_idempotent_and_current_view_reports_only_eviden
   _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposal."))
   before = friction_queue.proposals(tmp_path)
   assert before[0]["last_observation"] is None
-  assert before[0]["open_for_review"] is True
   first = friction_queue.record_proposal(tmp_path, "ask", "activated", "deploy:one", "Observed running version.")
   assert friction_queue.record_proposal(tmp_path, "ask", "activated", "deploy:one", "Saw it again.") == first
   assert len(friction_queue._read_jsonl(tmp_path / "outcomes.jsonl")) == 2
   view = friction_queue.proposals(tmp_path)
   assert view[0]["last_observation"] == first
-  assert view[0]["open_for_review"] is True  # Activation is not verification.
-  friction_queue.record_proposal(tmp_path, "ask", "verified", "test:live", "Observed live behavior.")
-  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is False
 
 
 def test_current_proposal_view_reads_ledger_once(tmp_path, monkeypatch):
@@ -243,14 +239,35 @@ def test_current_proposal_view_reads_ledger_once(tmp_path, monkeypatch):
   assert reads == [tmp_path / "outcomes.jsonl"]
 
 
-def test_new_linked_friction_reopens_review_after_verification(tmp_path, monkeypatch):
+def test_view_reports_observations_without_inferring_open_or_closed(tmp_path, monkeypatch):
   _log(tmp_path, "ask", "repeat")
   _publish(tmp_path, monkeypatch, "run-1", _decision("ask", "asked", "Proposed."))
   friction_queue.record_proposal(tmp_path, "ask", "verified", "test:live", "Observed live behavior.")
-  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is False
+  with (tmp_path / "outcomes.jsonl").open("a") as ledger:
+    ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": "ask",
+                             "stage": "superseded", "reference": "chat:later"}) + "\n")
   _publish(tmp_path, monkeypatch, "run-2", {
     **_decision("repeat", "joined", "Same cause recurred."), "proposal_id": "ask"})
-  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is True
+  [view] = friction_queue.proposals(tmp_path)
+  assert set(view) == {"proposal_id", "report_run", "proposal_note",
+                       "linked_friction_ids", "last_observation"}
+  assert view["linked_friction_ids"] == ["repeat"]
+  assert view["last_observation"]["stage"] == "superseded"  # Unknown stages are kept as observed.
+
+
+def test_lifecycle_event_cannot_seed_a_proposal(tmp_path, monkeypatch):
+  _log(tmp_path, "a")
+  (tmp_path / "outcomes.jsonl").write_text(json.dumps({
+    "kind": "proposal_event", "friction_id": "forged", "proposal_id": "forged",
+    "outcome": "asked", "stage": "approved", "reference": "chat:x", "note": "Forged.",
+  }) + "\n")
+  assert friction_queue.history(tmp_path, "forged") == []
+  assert friction_queue.proposals(tmp_path) == []
+  with pytest.raises(ValueError, match="report-backed asked"):
+    friction_queue.record_proposal(tmp_path, "forged", "approved", "chat:yes", "Owner approved.")
+  with pytest.raises(ValueError, match="report-backed asked"):
+    _publish(tmp_path, monkeypatch, "run-1", {
+      **_decision("a", "joined", "Same cause."), "proposal_id": "forged"})
 
 
 def test_malformed_ledger_objects_cannot_crash_proposal_projection(tmp_path, monkeypatch):
@@ -260,4 +277,5 @@ def test_malformed_ledger_objects_cannot_crash_proposal_projection(tmp_path, mon
     ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": ["ask"]}) + "\n")
     ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": "ask"}) + "\n")
     ledger.write(json.dumps({"outcome": "joined", "proposal_id": "ask", "run": "run-1"}) + "\n")
-  assert friction_queue.proposals(tmp_path)[0]["open_for_review"] is True
+    ledger.write(json.dumps({"kind": "proposal_event", "proposal_id": "ask", "outcome": "joined"}) + "\n")
+  assert friction_queue.proposals(tmp_path)[0]["linked_friction_ids"] == []

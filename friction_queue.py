@@ -83,7 +83,8 @@ def _proposal_trails(storage: Path) -> dict[str, list[dict]]:
   trails: dict[str, list[dict]] = {}
   for record in backed:
     proposal_id = record.get("friction_id")
-    if isinstance(proposal_id, str) and record.get("outcome") == "asked":
+    if (isinstance(proposal_id, str) and record.get("outcome") == "asked" and
+        record.get("kind") != "proposal_event"):
       trails.setdefault(proposal_id, [record])
   for record in backed:
     proposal_id = record.get("proposal_id")
@@ -108,10 +109,8 @@ def proposals(storage: Path) -> list[dict]:
     view.append({"proposal_id": proposal_id, "report_run": origin.get("run"),
                  "proposal_note": origin.get("note"),
                  "linked_friction_ids": [record["friction_id"] for record in trail[1:]
-                                         if record.get("outcome") == "joined"],
-                 "last_observation": last,
-                 "open_for_review": (last is None or trail[-1].get("outcome") == "joined"
-                                     or last.get("stage") not in ("declined", "verified"))})
+                                         if record.get("kind") != "proposal_event"],
+                 "last_observation": last})
   return view
 
 
