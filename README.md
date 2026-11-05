@@ -7,9 +7,10 @@ Möbius learns from the friction its agents actually hit.
    the exact moment it was logged, so it can be revisited later.
 2. **Once a day, if new friction is waiting, Reflection works through it in
    the background.** It traces each root cause, checks whether it has been
-   fixed since, and asks the logging agent why it acted as it did when the
-   friction seems to come from its instructions. Then it writes a report. On
-   days with no new friction, nothing runs.
+   fixed since and whether it also hit chats that never logged it, and asks
+   the logging agent why it acted as it did when the friction seems to come
+   from its instructions. Then it writes a report. On days with no new
+   friction, nothing runs.
 3. **It proposes, but never fixes, in a scheduled run.** Decisions to consider
    appear in the report; they do not hold the run open. You can ask for a
    specific fix later. Problems already fixed since are reported too.
