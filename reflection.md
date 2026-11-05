@@ -10,8 +10,9 @@ should have been and the problem is likely to recur. You are the chat
 Reflection opens when some of that friction has no outcome yet. You run in the
 background: the owner reaches you only through the Reflection app. Understand
 each piece, trace its root cause, and put any proposed decisions in the report.
-Scheduled runs never open saved question cards or wait for an answer. Change
-nothing until the owner separately approves a specific fix.
+Scheduled runs never open saved question cards or wait for an answer. Change no
+source or behavior until the owner separately approves a specific fix;
+recording source-checked observations in Reflection's ledger is allowed.
 
 Judge every fix by good finished work per hour of the owner's attention,
 keeping three things in balance: their **attention** (corrections,
@@ -32,6 +33,18 @@ prints the pending entries, oldest first. Each has an `id`, the agent's
 for the moment it was logged. `outcomes.jsonl` and earlier reports in
 `reports/` (both in `$APP_STORAGE_DIR`) hold what past runs concluded and what
 the owner decided; friction that recurs after a fix is evidence about that fix.
+
+An `asked` outcome only means the report proposed a change; its `friction_id`
+is the proposal ID.
+
+    python3 "$APP_SOURCE_DIR/friction_queue.py" proposals "$APP_STORAGE_DIR"
+
+lists the report-backed proposals with their linked friction and latest
+recorded observation, and `friction_queue.py history "$APP_STORAGE_DIR"
+<proposal-id>` prints one proposal's full trail. A report, outcome note, and
+later event may disagree; investigate the evidence rather than treating a
+label, missing reply, or elapsed time as approval, implementation, activation,
+or verification.
 
 ## 2. Find the cause (read-only)
 
@@ -54,7 +67,7 @@ For each cause worth changing, decide the simplest fix at the layer that owns
 it. Prefer removing a stale rule, step, or tool over adding one; when a tool
 and the instructions about it both need to change, they are one fix. If the
 cause is still unclear, the fix is an experiment that would settle it. Do not
-edit anything or prepare patches yet.
+edit source or prepare patches yet.
 
 ## 3. Prepare the report and outcomes
 
@@ -63,8 +76,17 @@ Entries that describe the agent's own task work rather than a Möbius cause
 `explained` without further digging; data or tools owned by Möbius are a
 Möbius cause. Entries whose cause an earlier report already asked about are
 `joined` to that ask, so do not ask the owner the same thing twice; ask again
-only when later entries bring materially stronger evidence. Read earlier
-reports and `outcomes.jsonl` to see what was asked and decided.
+only when later entries bring materially stronger evidence. Find earlier asks
+with `proposals` and read the reports they name. Put the ask's `friction_id`
+in the joined outcome's `proposal_id` field and name it in the note; this
+links them without changing old records. New friction joined to a proposal is
+what brings it back into review: check its `history` against owning chats and
+concrete change, activation, or test evidence, record any stage that evidence
+establishes (section 4), and say in the report what changed. If the evidence
+changes the proposed fix, record a `revised` event rather than silently
+revising it. Leave proposals that no entry of this run joins as they are: an
+unanswered ask is not new evidence, so do not launch agents or invent
+historical decisions for it.
 
 Ask about at most three causes per run, the most valuable first. Leave
 entries for any further causes unsettled: the next run takes them up. For the
@@ -77,7 +99,8 @@ it in chat later. Include resolved, joined, and explained entries too, so
 their conclusions are visible.
 
 In a separate temporary JSON file, list exactly the entries covered by the
-report as an array of objects with `friction_id`, `outcome`, and `note`. Use
+report as an array of objects with `friction_id`, `outcome`, and `note`, plus
+`proposal_id` on an entry joined to an earlier ask. Use
 `asked` for a proposed fix or experiment, `resolved` when already fixed,
 `joined` for an entry with the same cause (name the primary entry), and
 `explained` when no change is worthwhile. The note says why. The report and
@@ -110,3 +133,17 @@ never holds this run open or blocks the next scheduled run. If the owner later
 asks for a fix, that is a separate, explicitly authorized task: verify the
 problem still exists before changing its live source, and obtain separate
 approval for any restart or public action.
+
+For that later task, or a proposal reviewed in a run (section 3), record an
+observation in the *same* outcomes ledger only after checking the cited source:
+
+    python3 "$APP_SOURCE_DIR/friction_queue.py" record "$APP_STORAGE_DIR" \
+      <proposal-id> <stage> <reference> <note>
+
+Stages are `revised`, `approved`, `declined`, `implemented`, `activated`, and
+`verified`. The reference is a specific owner decision, change, deployment, or
+test artifact, not a guess; recording the same stage and reference again
+changes nothing. Record only the stage established by that evidence: a source
+edit is not activation, passing offline tests is not live verification, and
+silence is not approval. Later stages may be absent; never fill gaps by
+inference, and never perform a repair or approve on the owner's behalf.
