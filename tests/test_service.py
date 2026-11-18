@@ -80,3 +80,17 @@ def test_the_manifest_declares_exactly_the_served_tool():
   assert [tool["name"] for tool in manifest["tools"]] == ["log_friction"]
   assert manifest["service"] == {"entry": "service.py"}
   assert "service.py" in manifest["source_files"]
+
+
+def test_the_reflection_chat_declares_admin_access():
+  # The run reads Möbius source, skills, other chats and other apps, forks the
+  # logging chat, commits to the data repo, and fixes what the owner approves:
+  # no confined scope reaches those, so it says plainly that it needs Admin.
+  manifest = json.loads(
+    (Path(__file__).resolve().parents[1] / "mobius.json").read_text("utf-8"),
+  )
+  agent = manifest["agent"]
+  assert agent["scope"] == "admin"
+  assert "allow_tools" not in agent
+  assert 1 <= len(agent["reason"].strip()) <= 80
+  assert manifest["embeds_agent"] is True

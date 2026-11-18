@@ -19,6 +19,15 @@ The app has three tabs: **Reports** (each run's report with its chat),
 the chat where it happened), and **Settings** (which agent runs it, the daily
 run time, and run now).
 
+## Access
+
+The Reflection chat declares **Admin** access. Tracing a cause means reading
+Möbius's own source and history, its skills, the chat where the friction was
+logged (and forking it to ask why), and other apps' code; it commits its report
+to your Möbius history, and a fix you approve in that chat changes Möbius or an
+app. A confined scope reaches none of those. Agents that log friction never
+need Reflection's access: `log_friction` only appends to Reflection's storage.
+
 ## Pieces
 
 | File | Role |
