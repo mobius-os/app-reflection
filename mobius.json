@@ -1,7 +1,7 @@
 {
   "id": "reflection",
   "name": "Reflection",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Agents log friction as it happens; on days with new friction, Reflection investigates and reports proposed fixes without making changes.",
   "author": "mobius-os",
   "license": "MIT",
@@ -15,6 +15,10 @@
     "execution": "none"
   },
   "embeds_agent": true,
+  "agent": {
+    "scope": "admin",
+    "reason": "Traces agent friction across your Möbius and fixes what you approve."
+  },
   "permissions": {},
   "schedule": {
     "default": "0 6 * * *",
